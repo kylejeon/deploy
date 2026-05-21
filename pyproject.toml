@@ -1,0 +1,37 @@
+[project]
+name = "autodeploy"
+version = "0.1.0"
+description = "AutoDeploy — 병원 납품 서버 자동 설치 및 Slack 진행상황 공유 봇"
+requires-python = ">=3.11"
+dependencies = [
+    "slack-bolt>=1.18.0",
+    "asyncssh>=2.14.0",
+    "aiosqlite>=0.19.0",
+    "pyyaml>=6.0",
+    "python-dotenv>=1.0.0",
+    "aiohttp>=3.9.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.4.0",
+    "pytest-asyncio>=0.21.0",
+    "pytest-mock>=3.12.0",
+]
+
+[project.scripts]
+autodeploy = "autodeploy.__main__:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+autodeploy = ["schema.sql"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]

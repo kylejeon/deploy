@@ -1,0 +1,44 @@
+# AutoDeploy 배포 형태 정의
+# 새 type 추가는 이 파일만 수정 + 봇 재시작. 코드 변경 불필요.
+#
+# 각 type 항목:
+#   description: 사람 읽는 설명 (Slack help에 노출)
+#   infra:
+#     script: 인프라 설치 스크립트 파일명 (~/gateway-infra-next 기준)
+#     sudo:   true면 sudo로 실행
+#     args:   위치 인자 템플릿. {code} 치환자 지원
+#   app:
+#     동일 필드. 일반적으로 non-sudo
+
+on-premise:
+  description: "On-premise 전용 (병원 내부망 단독)"
+  infra:
+    script: setup-onpremise.sh
+    sudo: true
+    args: ["{code}"]
+  app:
+    script: deploy-applications-onpremise.sh
+    sudo: false
+    args: ["{code}"]
+
+hybrid-with-ai:
+  description: "Hybrid + inference 컨테이너 포함"
+  infra:
+    script: setup-site.sh
+    sudo: true
+    args: ["{code}"]
+  app:
+    script: deploy-applications.sh
+    sudo: false
+    args: ["w-ai", "{code}"]
+
+hybrid-without-ai:
+  description: "Hybrid + AWS의 inference 사용 (로컬 inference 미포함)"
+  infra:
+    script: setup-site.sh
+    sudo: true
+    args: ["{code}"]
+  app:
+    script: deploy-applications.sh
+    sudo: false
+    args: ["wo-ai", "{code}"]

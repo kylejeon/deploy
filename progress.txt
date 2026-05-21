@@ -3,9 +3,9 @@
 ### 이번 세션에서 한 것
 1. `.claude/agents/` 에 5개 에이전트 정의 생성 (researcher, planner, designer, developer, qa). qa.md는 권한 차단으로 사용자가 직접 저장.
 2. 모든 에이전트의 회사명을 "Testably" → "AutoDeploy"로 사용자가 수정.
-3. CEO 인터뷰로 도메인·요구사항 수집:
+3. 용혁 인터뷰로 도메인·요구사항 수집:
    - 타겟: 병원 납품용 Ubuntu 24.04 서버, 자사 컨테이너 제품
-   - 오케스트레이터: CEO 맥미니 (SSH로 타겟 접속)
+   - 오케스트레이터: 용혁 맥미니 (SSH로 타겟 접속)
    - 설치: git pull → infra.sh → app.sh 순차
    - 통신: Slack 양방향 봇 (Socket Mode), 명령 = install/status/list, 화이트리스트 사용자
    - 상태: SQLite 단일 파일
@@ -18,18 +18,67 @@
 
 ### 어디까지 됐는가
 - Phase 1 (Research): 스킵 (요구사항이 충분히 명확)
-- Phase 2 (Planning): **개발지시서 v0.1 초안 완료**, CEO 컨펌 대기 중
-- Phase 3 (Design): 대기
-- Phase 4 (Dev): 대기
-- Phase 5 (QA): 대기
+- Phase 2 (Planning): **개발지시서 v0.3** 완료, 용혁 컨펌 대기 중
+  - v0.2: deployment_type 도입 + config 외부화
+  - v0.3: D1·D2 확정 (레포 = bitbucket gateway-infra-next dev, 클론 위치 = ~/gateway-infra-next), 스크립트 이름 정정 (setup-onpremise/setup-site/deploy-applications-onpremise/deploy-applications), sudo 분리 (infra만 sudo), 헬스체크 교체 (HTTP → kubectl 폴링), DB script_commit_sha 추가, D13~D16 신설
+  - v0.4: AI 분기 방식 정정 (env var 아닌 위치 인자 w-ai/wo-ai). config 스키마를 args 템플릿 리스트로 변경 ({code} placeholder). hybrid app: `./deploy-applications.sh w-ai|wo-ai <code>`. setup-site.sh는 병원코드만 받음 (AI 모드 인자 없음). **D12 완전 해결.**
+- Phase 3 (Design): **디자인 명세 v0.1 완료** — docs/specs/design-spec-autodeploy-mvp-20260521.md. Slack 메시지 13종(M-1~M-13) 명세, Block Kit 구조, 디자인 토큰(색·이모지·포맷), 접근성, DD-1~DD-11 결정 필요 항목
+- Phase 4 (Dev): **Phase 1 scaffolding 완료** (19/19 테스트 통과)
+  - pyproject.toml, .env.example, README, .gitignore
+  - config/deployment_types.yaml (on-premise / hybrid-with-ai / hybrid-without-ai)
+  - src/autodeploy/: __init__, __main__, config (DeploymentType 로더 + 검증), db (init/connect), schema.sql, models (Job/JobEvent/ScriptLogLine + JobStatus/Step StrEnum)
+  - tests/: 19 테스트 (config 10, db 5, models 4) — pytest 0.21s 통과
+  - venv (.venv/) + Python 3.14.2 + slack-bolt 1.28 + asyncssh 2.23 + aiosqlite 0.22 + pyyaml 6.0.3
+  - Phase 2a 완료 (42/42 테스트 통과)
+    - src/autodeploy/ssh.py: SSHClient Protocol + AsyncSSHClient(asyncssh) + FakeSSHClient
+    - src/autodeploy/git_sync.py: sync_repo (clone or update), 토큰 .git/config 노출 방지
+    - src/autodeploy/scripts.py: run_script (sudo/non-sudo + args 템플릿 + shlex 보호)
+    - src/autodeploy/healthcheck.py: wait_for_cluster_ready (kubectl 폴링, timeout/HealthResult)
+    - tests/: test_ssh(7) + test_git_sync(5) + test_scripts(6) + test_healthcheck(5) = 23 신규 테스트
+  - 다음 Phase 2b: workflow.py (5단계 상태머신) + repository layer (DB CRUD) + Notifier protocol stub
+  - Phase 2b 완료 (63/63 테스트 통과)
+    - src/autodeploy/repository.py: Job/JobEvent/ScriptLog CRUD (create_job, mark_running, update_current_step/commit_sha, finish_job, add_event, add_script_log, get_job, list_recent_jobs, find_active_by_ip)
+    - src/autodeploy/notifier.py: Notifier Protocol + NullNotifier + RecordingNotifier
+    - src/autodeploy/workflow.py: Workflow 클래스 (ssh_factory + db + deployment_types + notifier + cfg). 5단계 상태머신 + WorkflowConfig + WorkflowError
+    - tests/: test_repository(8) + test_notifier(3) + test_workflow(10) = 21 신규 테스트
+    - FakeSSHClient에 fail_connect 옵션 + repeat=True 옵션 추가 (워크플로 시나리오 친화)
+  - Phase 3a 완료 (111/111 테스트 통과)
+    - src/autodeploy/settings.py: Settings dataclass + load_settings(env) (req 필드 누락 시 SettingsError)
+    - src/autodeploy/commands.py: parse_command → Install/Status/List/Cancel/Help | ParseError union. IP·flag·type·code 검증
+    - src/autodeploy/messages.py: design-spec M-1 ~ M-13 Block Kit 빌더 13종 (parent/ack/step/stdout/success/failure/cancel/status/list/help/permission/validation 등)
+    - tests/: test_settings(7) + test_commands(22) + test_messages(19) = 48 신규 테스트
+  - Phase 3b 완료 (134/134 테스트 통과)
+    - src/autodeploy/slack_notifier.py: Notifier 실 구현 (SlackNotifier). 스레드 관리, chat.update 시간 기반 batching, 부모 헤더 갱신. KST 시각 포맷
+    - src/autodeploy/slack_app.py: handle_command (pure) + AutoDeployBot (Bolt Socket Mode 래퍼). 권한·채널 체크, 명령 라우팅, 동시 IP 거부, 백그라운드 workflow task 관리
+    - tests/: test_slack_notifier(8) + test_slack_app(15) = 23 신규 테스트. MockSlackClient로 chat.postMessage/update 호출 기록 검증
+    - 버그 잡음: time.monotonic() 기준점 임의 → step_started에서 last_flush를 now로 초기화. stdout 빈 단계는 preview 메시지 생략
+  - Phase 4 완료 (134 테스트 그대로 통과, entry point import OK)
+    - src/autodeploy/__main__.py: 본격 데몬. .env 로드 → settings → DB init → deployment_types → Workflow + SlackNotifier + AsyncWebClient → AutoDeployBot → Socket Mode 시작. SIGINT/SIGTERM 그레이스풀 종료
+    - deploy/launchd/com.connecteve.autodeploy.plist: KeepAlive + RunAtLoad + 10초 ThrottleInterval + 로그 경로. __USER__/__INSTALL_DIR__ 자리표시자
+    - docs/operations.md: 사전 준비, 설치, launchd 등록, 운영 명령, Slack 명령, 문제해결, 자격증명 회전 절차
+    - settings에 SSH_USER 추가 (기본 connecteve, env override 가능)
+  - 다음 단계 (Phase 5, @qa): 코드 검수 + 보안 리뷰 + 명세-구현 대조. 그 후 실 배포
+- Phase 5 (QA): **검수 보고서 작성 완료** — docs/qa/qa-report-autodeploy-mvp-20260521.md
+  - 판정: Conditional Pass (AC 13/17 통과, 1 fail, 3 partial)
+  - 결함 5건 (D-1~D-5): SSH 재시도 미구현(High), 종료 시 진행 작업 미정리(Medium), git clone 토큰 stderr 누출(High-Security), status 경과 시간 누락(Medium), timestamp 컬럼 파싱 누락(Low)
+  - 개선 제안 8건 (O-1~O-8): launchd 자동화, 커버리지, 권장 조치 패턴, 부팅 알림 등
+
+- Phase 5.1 (배포 전 핫픽스, @developer 재호출): **150/150 테스트 통과**
+  - D-3 (Critical-Security) ✅: workflow.py에 mask_url_secrets — `https://user:TOKEN@host` → `https://user:***@host`. log collector에서 적용해 DB·Slack 양쪽 차단
+  - D-1 (High-Reliability) ✅: ssh.py에 _retry_async 헬퍼 + AsyncSSHClient.__aenter__에서 사용. 기본 3회 + 백오프 (1s, 2s)
+  - O-6 (High-Functional) ✅: app 스크립트 stdout 파싱 (`[INFO] Frontend URL: http://172.17.0.1:31489` 등 3종). 172.17.0.1 docker bridge IP → target_ip로 재구성. Job.extra_urls에 보관, success_summary에 admin + 기타(Temporal/PACS) 표시
+  - 신규 테스트 16건 (_retry 5, mask 5, url 추출 4, success_summary extras 1, 통합 1)
+  - 배포 후 v1.0.1 잔여: D-2 (shutdown), D-4+D-5 (timestamp/status duration), O-5 (내부 재시도)
+  - v1.1 의도적 보류: AC-11 cancel
 
 ### 다음에 해야 할 것
-1. **CEO 컨펌**: 개발지시서 §9 결정 필요 항목 D1~D10 검토
-   - D1: 설치 스크립트 git 레포 주소 (사용자 확인 중)
-   - D2~D10: 추천안 채택 또는 수정
-2. 컨펌 후 → `@designer` 호출하여 Slack 메시지/명령 UX 디자인 명세 작성
-3. 그 후 → `@developer` 호출하여 구현 (Python 3.11+, slack-sdk + asyncssh + aiosqlite 추천)
+1. **용혁 컨펌**:
+   - dev-spec §9 남은 D-items (D3·D4·D13·D14·D15·D16) — 구현 시점 자연스럽게 확정 가능
+   - design-spec §8 DD-1~DD-11 — 별다른 의견 없으면 추천안 채택
+2. `@developer` 호출하여 구현 시작 (Python 3.11+, slack-sdk + asyncssh + aiosqlite, launchd 데몬)
+3. 구현 완료 후 `@qa` 호출하여 검수
 
 ### 미해결 보안 이슈
 - 채팅에 SSH 패스워드(`connecteve` 계정) 평문 노출됨 → 로테이션 권장
+- 채팅에 Bitbucket App Password (`ATBB...`) 평문 노출됨 → **즉시 폐기 + 신규 발급 필요**
 - 운영 시 SSH 키 인증 + 비밀번호 로그인 disable 검토
