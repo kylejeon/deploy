@@ -1,0 +1,34 @@
+# macOS
+.DS_Store
+
+# Secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+credentials.json
+secrets/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# Node
+node_modules/
+
+# Logs / runtime
+*.log
+logs/
+
+# Editor
+.vscode/
+.idea/
+
+# Build / cache
+dist/
+build/
+.cache/

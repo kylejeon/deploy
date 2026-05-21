@@ -1,0 +1,35 @@
+## 2026-05-21 — @planner 단계 완료
+
+### 이번 세션에서 한 것
+1. `.claude/agents/` 에 5개 에이전트 정의 생성 (researcher, planner, designer, developer, qa). qa.md는 권한 차단으로 사용자가 직접 저장.
+2. 모든 에이전트의 회사명을 "Testably" → "AutoDeploy"로 사용자가 수정.
+3. CEO 인터뷰로 도메인·요구사항 수집:
+   - 타겟: 병원 납품용 Ubuntu 24.04 서버, 자사 컨테이너 제품
+   - 오케스트레이터: CEO 맥미니 (SSH로 타겟 접속)
+   - 설치: git pull → infra.sh → app.sh 순차
+   - 통신: Slack 양방향 봇 (Socket Mode), 명령 = install/status/list, 화이트리스트 사용자
+   - 상태: SQLite 단일 파일
+4. claude 브랜치로 전환 (main 보호)
+5. **개발지시서 작성**: `docs/specs/dev-spec-autodeploy-mvp-20260521.md`
+6. `.gitignore` 추가 (.env·.DS_Store·시크릿류 차단)
+7. 메모리 저장:
+   - `~/.claude/projects/-Users-yonghyuk-deploy/memory/project_autodeploy_overview.md`
+   - `~/.claude/projects/-Users-yonghyuk-deploy/memory/feedback_no_secrets_in_files.md`
+
+### 어디까지 됐는가
+- Phase 1 (Research): 스킵 (요구사항이 충분히 명확)
+- Phase 2 (Planning): **개발지시서 v0.1 초안 완료**, CEO 컨펌 대기 중
+- Phase 3 (Design): 대기
+- Phase 4 (Dev): 대기
+- Phase 5 (QA): 대기
+
+### 다음에 해야 할 것
+1. **CEO 컨펌**: 개발지시서 §9 결정 필요 항목 D1~D10 검토
+   - D1: 설치 스크립트 git 레포 주소 (사용자 확인 중)
+   - D2~D10: 추천안 채택 또는 수정
+2. 컨펌 후 → `@designer` 호출하여 Slack 메시지/명령 UX 디자인 명세 작성
+3. 그 후 → `@developer` 호출하여 구현 (Python 3.11+, slack-sdk + asyncssh + aiosqlite 추천)
+
+### 미해결 보안 이슈
+- 채팅에 SSH 패스워드(`connecteve` 계정) 평문 노출됨 → 로테이션 권장
+- 운영 시 SSH 키 인증 + 비밀번호 로그인 disable 검토
