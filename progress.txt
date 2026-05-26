@@ -206,6 +206,36 @@ DB는 영원히 NULL.
   - test_auto_install_injects_sudo_password_when_set (apt + setup 모두 검증)
   - test_auto_install_uses_plain_sudo_when_no_password
 
+## 2026-05-26 (later 7) — work_dir 의 `~` literal 폴더 버그 픽스
+
+### 증상
+타겟 서버에서 `ls ~` 했을 때 `'~'` 라는 literal 폴더가 있고 그 안에
+`gateway-infra-next`가 들어있음. 정상이라면 `/home/connecteve/gateway-infra-next`여야 함.
+
+### 원인
+git_sync.py에서 `shlex.quote(work_dir)`로 경로를 감싸는데, work_dir이
+`~/gateway-infra-next`로 들어오면 `'~/gateway-infra-next'`가 됨. bash의
+tilde expansion은 **단일 인용 안에서 동작하지 않아**서 `~`가 literal로 처리됨.
+→ 봇이 `git clone ... '~/gateway-infra-next'`로 호출하면 진짜로 `~`라는
+이름의 폴더가 홈 디렉토리에 생기고 그 안에 clone됨.
+
+### 픽스 (181/181 통과)
+- settings.py: `_expand_remote_home(path, ssh_user)` 헬퍼 추가.
+  로드 시점에 `~/foo` → `/home/<ssh_user>/foo`로 치환. 이후 모든 코드가
+  절대경로만 다루게 됨. shlex.quote로 감싸도 안전.
+- 신규 테스트 3건:
+  - test_work_dir_tilde_expanded_to_remote_home
+  - test_work_dir_bare_tilde_becomes_home
+  - test_work_dir_absolute_path_unchanged
+- 기존 `test_loads_minimum_required_env`의 work_dir 단언 갱신
+
+### 운영 후속 (타겟 서버 정리)
+잘못 생성된 literal `~` 폴더는 사용자가 한 번 정리해야 함:
+  ssh connecteve@192.168.100.213
+  rm -rf '~'
+
+그 다음 봇이 새 절대경로(/home/connecteve/gateway-infra-next)로 clone.
+
 ## 2026-05-26 (later 6) — apt universe 저장소 자동 활성화
 
 ### 배경

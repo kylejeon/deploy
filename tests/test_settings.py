@@ -26,7 +26,8 @@ def test_loads_minimum_required_env():
     assert s.allowed_users == frozenset({"U01", "U02", "U03"})
     assert s.bitbucket_user == "youngwoochon"  # default
     assert s.repo_branch == "dev"
-    assert s.work_dir == "~/gateway-infra-next"
+    # work_dir의 ~는 원격 ssh_user 기준 절대경로로 확장됨
+    assert s.work_dir == "/home/connecteve/gateway-infra-next"
     assert s.log_level == "INFO"
 
 
@@ -69,3 +70,26 @@ def test_branch_override():
     env["AUTODEPLOY_REPO_BRANCH"] = "main"
     s = load_settings(env)
     assert s.repo_branch == "main"
+
+
+def test_work_dir_tilde_expanded_to_remote_home():
+    """~/foo는 ssh_user 기준 /home/<user>/foo로 치환 (셸 quoting 안전성)."""
+    env = _full_env()
+    env["AUTODEPLOY_WORK_DIR"] = "~/custom-path"
+    env["SSH_USER"] = "someuser"
+    s = load_settings(env)
+    assert s.work_dir == "/home/someuser/custom-path"
+
+
+def test_work_dir_bare_tilde_becomes_home():
+    env = _full_env()
+    env["AUTODEPLOY_WORK_DIR"] = "~"
+    s = load_settings(env)
+    assert s.work_dir == "/home/connecteve"
+
+
+def test_work_dir_absolute_path_unchanged():
+    env = _full_env()
+    env["AUTODEPLOY_WORK_DIR"] = "/opt/custom/path"
+    s = load_settings(env)
+    assert s.work_dir == "/opt/custom/path"
