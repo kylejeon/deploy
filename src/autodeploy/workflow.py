@@ -130,6 +130,11 @@ class Workflow:
         await repo.mark_running(db, job.id)
         job.status = JobStatus.RUNNING
         await self.notifier.job_started(job)
+        # SlackNotifier가 install 경로에서 부모 메시지 ts를 job.slack_thread_ts에 채워준다.
+        # 그 값이 DB에도 들어가야 다음 retry 명령이 같은 스레드에서 동작 (find_jobs_by_thread_ts).
+        # retry 경로에선 create_job 시점에 이미 들어있어 이 update는 같은 값으로 no-op.
+        if job.slack_thread_ts is not None:
+            await repo.update_thread_ts(db, job.id, job.slack_thread_ts)
 
     async def _execute(self, db, job: Job) -> None:
         deployment = self.deployment_types.get(job.deployment_type)

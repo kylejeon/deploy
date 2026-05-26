@@ -123,6 +123,30 @@
 ### docs/operations.md 갱신
 "타겟 서버 (Ubuntu 24.04)" 사전 설치 도구 섹션 추가: `openssh-server`, `git`. 설치 한 줄 명령 명시
 
+## 2026-05-26 (later 2) — retry 스레드 인식 실패 버그 픽스
+
+### 원인
+SlackNotifier.job_started(install 경로)가 부모 메시지 ts를 `job.slack_thread_ts`에
+**객체에만** 세팅하고 DB에는 저장하지 않았음. 그 결과 모든 install 작업의 DB
+`slack_thread_ts` 컬럼이 NULL이라, retry가 `find_jobs_by_thread_ts(thread_ts)`로
+조회 시 매칭 0건 → "이 스레드는 작업과 연결돼 있지 않아요" 응답.
+
+retry 경로에선 create_job 전에 미리 세팅했기 때문에 DB에 들어가 있었지만,
+install은 create_job(slack_thread_ts=None) → notifier 호출(객체에만 세팅) 순서라
+DB는 영원히 NULL.
+
+### 패치 (169/169 통과)
+- workflow.py `_prepare`: notifier.job_started 호출 후 `job.slack_thread_ts`가
+  채워졌으면 `repo.update_thread_ts`로 DB에도 영구 저장. retry 경로에선 이미
+  같은 값이 들어있어 idempotent
+- 신규 테스트 `test_install_path_persists_slack_thread_ts_to_db`: ts를 세팅하는
+  스텁 notifier로 검증
+
+### 알려진 잔여
+- 이미 DB에 NULL로 들어간 기존 작업 #1~#5는 백필 안 됨 — 그 스레드에선 여전히
+  "연결 안 됨" 응답. 임시 우회: `@AutoDeploy retry <job-id>` 명시 형태 사용
+- 패치 배포 후 새로 생성된 작업부터는 스레드 retry가 정상 동작
+
 ### 다음에 해야 할 것
 1. **용혁 컨펌**:
    - dev-spec §9 남은 D-items (D3·D4·D13·D14·D15·D16) — 구현 시점 자연스럽게 확정 가능

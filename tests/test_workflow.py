@@ -190,6 +190,40 @@ async def test_git_pull_failure_stops_pipeline(temp_db):
 
 
 @pytest.mark.asyncio
+async def test_install_path_persists_slack_thread_ts_to_db(temp_db):
+    """SlackNotifier가 부모 ts를 job.slack_thread_ts에 채우면 DB에도 저장돼야 한다.
+    그래야 다음 retry가 같은 스레드 컨텍스트로 동작 (find_jobs_by_thread_ts).
+    """
+
+    class _ThreadStampingNotifier:
+        async def job_started(self, job):
+            job.slack_thread_ts = "1700000000.SETBYNOTIFIER"
+
+        async def step_started(self, job, step): pass
+        async def step_log(self, job, step, line): pass
+        async def step_finished(self, job, step, *, success, duration_s): pass
+        async def job_finished(self, job, *, error): pass
+
+    fake = FakeSSHClient()
+    _enqueue_happy_path_hybrid(fake)
+    wf = _make_workflow(fake, temp_db, _ThreadStampingNotifier())
+
+    # _handle_install이 미리 DB에 만들고 workflow.run으로 넘기는 흐름 모사
+    async with connect(temp_db) as db:
+        job = Job(
+            id=None, target_ip="1.1.1.1", deployment_type="hybrid-with-ai",
+            hospital_code="HOSP01", started_by="U01", slack_channel="C01",
+        )
+        job.id = await repo.create_job(db, job)
+
+    await wf.run(job)
+
+    async with connect(temp_db) as db:
+        loaded = await repo.get_job(db, job.id)
+    assert loaded.slack_thread_ts == "1700000000.SETBYNOTIFIER"
+
+
+@pytest.mark.asyncio
 async def test_preflight_missing_git_fails_git_pull_with_install_hint(temp_db):
     fake = FakeSSHClient()
     fake.enqueue("command -v git", [], exit_code=1)  # git 누락
