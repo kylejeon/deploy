@@ -18,7 +18,9 @@ async def test_runs_with_sudo_when_specified():
 
     assert rc == 0
     [cmd] = fake.executed
-    assert "sudo ./setup-onpremise.sh" in cmd
+    assert "sudo" in cmd
+    assert "./setup-onpremise.sh" in cmd
+    assert "DEBIAN_FRONTEND=noninteractive" in cmd  # apt debconf 비대화형 방어
     assert "HOSP01" in cmd
     assert "cd " in cmd
     assert "gateway-infra-next" in cmd
@@ -36,6 +38,7 @@ async def test_runs_without_sudo_when_not_specified():
     [cmd] = fake.executed
     assert "sudo " not in cmd
     assert "./deploy-applications.sh" in cmd
+    assert "DEBIAN_FRONTEND=noninteractive" in cmd  # non-sudo도 apt 호출 가능성 있어 동일 적용
     assert "w-ai" in cmd
     assert "HOSP42" in cmd
 
@@ -142,7 +145,8 @@ async def test_sudo_without_password_uses_plain_sudo():
         # sudo_password 기본값 ""
 
     [cmd] = fake.executed
-    assert "sudo ./setup-site.sh" in cmd  # plain sudo
+    assert "sudo" in cmd  # plain sudo (NOPASSWD)
+    assert "./setup-site.sh" in cmd
     assert "sudo -S" not in cmd
     assert "printf" not in cmd
 

@@ -206,6 +206,28 @@ DB는 영원히 NULL.
   - test_auto_install_injects_sudo_password_when_set (apt + setup 모두 검증)
   - test_auto_install_uses_plain_sudo_when_no_password
 
+## 2026-05-26 (later 5) — debconf 비대화형 강제
+
+### 배경
+sudo 비밀번호 패치 후 #9 작업이 인프라 설치(3/5)에서 exit 100으로 실패.
+stderr 마지막 줄:
+  debconf: 프론트엔드를 초기화할 수 없음: Dialog
+  debconf: 이 프론트엔드는 제어 TTY를 필요로 합니다.
+
+원인: setup-site.sh가 내부에서 apt install을 호출 → apt가 패키지 설정
+충돌·서비스 재시작 확인 등을 debconf로 물으려 함 → 비대화형 SSH에 TTY가
+없어 Dialog/Readline 둘 다 실패 → exit 100.
+
+우리 직접 apt-get(자동 git 설치)엔 DEBIAN_FRONTEND=noninteractive 박혀있었지만,
+스크립트 내부 apt 호출은 환경변수를 안 물려받음.
+
+### 구현 (176/176 통과)
+- scripts.py: 모든 스크립트 호출을 `env DEBIAN_FRONTEND=noninteractive`로 감쌈.
+  - sudo: `<sudo prefix> env DEBIAN_FRONTEND=noninteractive ./script ...`
+  - non-sudo: `env DEBIAN_FRONTEND=noninteractive ./script ...`
+  - 핵심: `env`가 자식 프로세스 환경에 변수를 박아넣어 sudo·apt 체인을 지나도 유지
+- test_scripts: 기존 단언 "sudo ./setup-onpremise.sh" → "sudo" + "./setup-onpremise.sh" + "DEBIAN_FRONTEND=noninteractive" 분리
+
 ### 다음에 해야 할 것
 1. **용혁 컨펌**:
    - dev-spec §9 남은 D-items (D3·D4·D13·D14·D15·D16) — 구현 시점 자연스럽게 확정 가능

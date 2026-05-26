@@ -33,11 +33,18 @@ async def run_script(
 
     spec.sudo=True면 sudo prefix. sudo_password가 주어지면 stdin으로 자동 주입(`sudo -S`).
     모든 인자는 shlex.quote로 셸 주입 방지.
+
+    `env DEBIAN_FRONTEND=noninteractive`로 감싸 스크립트가 내부에서 apt를 호출해도
+    debconf 프롬프트가 뜨지 않게 한다 (봇은 비대화형 SSH라 TTY 없음).
     """
     rendered = render_args(spec.args, code)
     cmd_parts = [f"./{spec.script}", *rendered]
-    cmd = " ".join(shlex.quote(p) for p in cmd_parts)
+    script_call = " ".join(shlex.quote(p) for p in cmd_parts)
+    # env로 감싸야 sudo·apt를 거치는 child 프로세스에도 환경변수가 상속됨
+    wrapped = f"env DEBIAN_FRONTEND=noninteractive {script_call}"
     if spec.sudo:
-        cmd = f"{_sudo_prefix(sudo_password)} {cmd}"
+        cmd = f"{_sudo_prefix(sudo_password)} {wrapped}"
+    else:
+        cmd = wrapped
     full = f"cd {shlex.quote(workdir)} && {cmd}"
     return await ssh.exec(full, on_line=on_line)
