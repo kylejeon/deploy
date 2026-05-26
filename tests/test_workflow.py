@@ -275,6 +275,73 @@ async def test_preflight_skips_install_when_tools_already_present(temp_db):
 
 
 @pytest.mark.asyncio
+async def test_auto_install_injects_sudo_password_when_set(temp_db):
+    """WorkflowConfig.sudo_password가 채워져 있으면 apt-get은 printf | sudo -S로 호출."""
+    fake = FakeSSHClient()
+    fake.enqueue("command -v git", [], exit_code=1)
+    fake.enqueue("apt-get install", [])
+    fake.enqueue("command -v git", [], exit_code=0)
+    fake.enqueue("test -d", [], exit_code=1)
+    fake.enqueue("git clone", [])
+    fake.enqueue("git fetch --all && git checkout", [])
+    fake.enqueue("git rev-parse HEAD", [StreamLine("stdout", "sha1")])
+    fake.enqueue("setup-site.sh", [])
+    fake.enqueue("deploy-applications.sh", [])
+    fake.enqueue("kubectl get pods", [])
+
+    cfg = WorkflowConfig(
+        bitbucket_user="u", bitbucket_app_password="x",
+        repo_host_path="bitbucket.org/x.git", repo_branch="dev",
+        work_dir="~/x",
+        healthcheck_poll_interval=0.001, healthcheck_timeout=0.5,
+        sudo_password="myPass#$",
+    )
+    wf = Workflow(
+        ssh_factory=lambda h: fake,
+        db_path=temp_db,
+        deployment_types=load_deployment_types(CONFIG_PATH),
+        notifier=RecordingNotifier(),
+        cfg=cfg,
+    )
+    result = await wf.run(_job())
+    assert result.status == JobStatus.SUCCEEDED
+
+    apt_cmd = next(c for c in fake.executed if "apt-get install" in c)
+    assert "printf '%s\\n'" in apt_cmd
+    assert "sudo -S -p ''" in apt_cmd
+    assert "'myPass#$'" in apt_cmd
+
+    # 인프라 스크립트도 같은 패턴으로 sudo -S 사용
+    infra_cmd = next(c for c in fake.executed if "setup-site.sh" in c)
+    assert "sudo -S -p ''" in infra_cmd
+    assert "'myPass#$'" in infra_cmd
+
+
+@pytest.mark.asyncio
+async def test_auto_install_uses_plain_sudo_when_no_password(temp_db):
+    """sudo_password가 비어있으면(NOPASSWD 가정) 기존 plain sudo 형태."""
+    fake = FakeSSHClient()
+    fake.enqueue("command -v git", [], exit_code=1)
+    fake.enqueue("apt-get install", [])
+    fake.enqueue("command -v git", [], exit_code=0)
+    fake.enqueue("test -d", [], exit_code=1)
+    fake.enqueue("git clone", [])
+    fake.enqueue("git fetch --all && git checkout", [])
+    fake.enqueue("git rev-parse HEAD", [StreamLine("stdout", "sha1")])
+    fake.enqueue("setup-site.sh", [])
+    fake.enqueue("deploy-applications.sh", [])
+    fake.enqueue("kubectl get pods", [])
+
+    wf = _make_workflow(fake, temp_db)  # default cfg: sudo_password=""
+    await wf.run(_job())
+
+    apt_cmd = next(c for c in fake.executed if "apt-get install" in c)
+    assert "sudo bash" in apt_cmd or "sudo apt-get" in apt_cmd
+    assert "sudo -S" not in apt_cmd
+    assert "printf" not in apt_cmd
+
+
+@pytest.mark.asyncio
 async def test_infra_script_failure_stops_pipeline(temp_db):
     fake = FakeSSHClient()
     _enqueue_preflight_ok(fake)

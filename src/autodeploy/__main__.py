@@ -84,6 +84,8 @@ async def _run() -> int:
             repo_host_path=settings.repo_host_path,
             repo_branch=settings.repo_branch,
             work_dir=settings.work_dir,
+            # sudo 비밀번호 = ssh 비밀번호 (connecteve 계정 공통). NOPASSWD가 아니어도 동작.
+            sudo_password=settings.ssh_password,
         ),
     )
 

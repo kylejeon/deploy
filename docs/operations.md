@@ -16,7 +16,7 @@
 
 **필수 사전 설치**:
 - `openssh-server` — 봇의 SSH 접속을 위함. 설치 후 `PasswordAuthentication yes` 확인
-- `connecteve` 계정 (sudo NOPASSWD 권장)
+- `connecteve` 계정 (sudo 권한 필요. NOPASSWD가 아니어도 OK — 봇이 .env의 `SSH_PASSWORD`를 stdin으로 자동 주입)
 
 ```bash
 sudo apt update && sudo apt install -y openssh-server

@@ -105,3 +105,62 @@ async def test_no_args_produces_minimal_command():
     [cmd] = fake.executed
     assert "./simple.sh" in cmd
     assert "UNUSED" not in cmd  # code not used when no args
+
+
+@pytest.mark.asyncio
+async def test_sudo_with_password_uses_stdin_injection():
+    """sudo_password가 주어지면 printf | sudo -S 형태로 비밀번호를 stdin으로 흘린다."""
+    fake = FakeSSHClient()
+    fake.enqueue("setup-site.sh", [])
+    spec = ScriptSpec(script="setup-site.sh", sudo=True, args=("{code}",))
+
+    async with fake as ssh:
+        await run_script(
+            ssh, workdir="~/g", spec=spec, code="HOSP01",
+            sudo_password="myPass#$",
+        )
+
+    [cmd] = fake.executed
+    assert "printf '%s\\n'" in cmd
+    assert "sudo -S -p ''" in cmd
+    # 특수문자 비밀번호도 shlex.quote로 안전하게 (단일 인용 안에)
+    assert "'myPass#$'" in cmd
+    # 실제 스크립트도 호출됨
+    assert "./setup-site.sh" in cmd
+    assert "HOSP01" in cmd
+
+
+@pytest.mark.asyncio
+async def test_sudo_without_password_uses_plain_sudo():
+    """sudo_password가 비어있으면 NOPASSWD 가정 plain sudo (기존 동작)."""
+    fake = FakeSSHClient()
+    fake.enqueue("setup-site.sh", [])
+    spec = ScriptSpec(script="setup-site.sh", sudo=True, args=("{code}",))
+
+    async with fake as ssh:
+        await run_script(ssh, workdir="~/g", spec=spec, code="HOSP01")
+        # sudo_password 기본값 ""
+
+    [cmd] = fake.executed
+    assert "sudo ./setup-site.sh" in cmd  # plain sudo
+    assert "sudo -S" not in cmd
+    assert "printf" not in cmd
+
+
+@pytest.mark.asyncio
+async def test_password_not_used_when_sudo_false():
+    """spec.sudo=False면 sudo 자체를 안 쓰니 비밀번호도 명령에 안 들어감."""
+    fake = FakeSSHClient()
+    fake.enqueue("deploy-applications.sh", [])
+    spec = ScriptSpec(script="deploy-applications.sh", sudo=False, args=("w-ai", "{code}"))
+
+    async with fake as ssh:
+        await run_script(
+            ssh, workdir="~/g", spec=spec, code="H1",
+            sudo_password="secretPassword",
+        )
+
+    [cmd] = fake.executed
+    assert "sudo" not in cmd
+    assert "secretPassword" not in cmd
+    assert "printf" not in cmd

@@ -82,21 +82,30 @@ async def check_target_tools(ssh: SSHClient) -> list[str]:
 async def install_missing_tools(
     ssh: SSHClient,
     missing: list[str],
+    *,
+    sudo_password: str = "",
     on_line=None,
 ) -> int:
-    """누락 도구를 sudo apt로 자동 설치 시도. 마지막 exec exit code 반환.
+    """누락 도구를 sudo apt로 자동 설치 시도. exit code 반환.
 
-    `apt update && apt install -y <tools>`를 한 chain으로 실행. DEBIAN_FRONTEND=noninteractive로
-    대화형 프롬프트(서비스 재시작 확인 등) 차단. connecteve 계정의 NOPASSWD sudo 권한 가정 —
-    이미 setup-*.sh가 같은 권한으로 동작 중이라 추가 권한 요구 없음.
+    `apt-get update && apt-get install -y <tools>`를 한 sudo 세션 안에서 실행 (bash -c).
+    DEBIAN_FRONTEND=noninteractive로 대화형 프롬프트(서비스 재시작 확인 등) 차단.
+    sudo_password가 주어지면 stdin으로 자동 주입(`sudo -S`) — connecteve 계정이
+    NOPASSWD가 아니어도 동작. 비어있으면 NOPASSWD 가정.
     """
     if not missing:
         return 0
     pkgs = " ".join(shlex.quote(t) for t in missing)
-    cmd = (
-        "sudo apt-get update && "
-        f"sudo DEBIAN_FRONTEND=noninteractive apt-get install -y {pkgs}"
+    inner = (
+        f"apt-get update && "
+        f"DEBIAN_FRONTEND=noninteractive apt-get install -y {pkgs}"
     )
+    sudo_prefix = "sudo"
+    if sudo_password:
+        pw_q = shlex.quote(sudo_password)
+        # printf은 bash 빌트인이라 별도 프로세스 안 생김 → ps에 비밀번호 노출 X
+        sudo_prefix = f"printf '%s\\n' {pw_q} | sudo -S -p ''"
+    cmd = f"{sudo_prefix} bash -c {shlex.quote(inner)}"
     return await ssh.exec(cmd, on_line=on_line)
 
 
@@ -110,6 +119,9 @@ class WorkflowConfig:
     admin_web_url_template: str = "http://{ip}/"
     healthcheck_poll_interval: float = 10.0
     healthcheck_timeout: float = 600.0
+    # sudo 비밀번호 (보통 settings.ssh_password와 동일). 비어있으면 NOPASSWD 가정.
+    # apt-get 자동 설치 + setup-*.sh sudo 호출에 stdin으로 주입.
+    sudo_password: str = ""
 
 
 class WorkflowError(RuntimeError):
@@ -187,7 +199,11 @@ class Workflow:
         missing = await check_target_tools(ssh)
         if missing:
             log_collector = self._make_log_collector(db, job, Step.GIT_PULL)
-            rc = await install_missing_tools(ssh, missing, on_line=log_collector)
+            rc = await install_missing_tools(
+                ssh, missing,
+                sudo_password=self.cfg.sudo_password,
+                on_line=log_collector,
+            )
             if rc != 0:
                 duration = time.monotonic() - start
                 await self._step_done(db, job, Step.GIT_PULL, success=False, duration=duration)
@@ -234,6 +250,7 @@ class Workflow:
             workdir=self.cfg.work_dir,
             spec=spec,
             code=job.hospital_code,
+            sudo_password=self.cfg.sudo_password,
             on_line=self._make_log_collector(db, job, step, capture=capture),
         )
         duration = time.monotonic() - start

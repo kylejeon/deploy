@@ -176,6 +176,36 @@ DB는 영원히 NULL.
 ### docs/operations.md
 "필수 사전 설치" / "자동 설치되는 도구" 섹션 분리. git은 후자로 이동
 
+## 2026-05-26 (later 4) — sudo 비밀번호 자동 주입 (stdin)
+
+### 배경
+앞 패치 직후 #7 작업이 `sudo: a terminal is required to read the password`로
+실패. connecteve 계정이 NOPASSWD가 아니라 sudo가 비밀번호를 요구했고, 봇은
+비대화형 SSH라 입력 불가. 그런데 .env에 이미 SSH_PASSWORD가 있고 sudo도
+같은 계정 비밀번호를 쓰니, 그걸 stdin으로 흘려넣으면 됨.
+
+### 구현 (176/176 통과)
+- scripts.py `_sudo_prefix(password)` 도입.
+  - 비밀번호 없으면 `sudo` (기존 동작 유지, NOPASSWD 환경)
+  - 비밀번호 있으면 `printf '%s\n' '<pw>' | sudo -S -p ''` (stdin 주입)
+  - `printf`는 bash 빌트인이라 별도 프로세스 안 생김 → ps에 비밀번호 노출 X
+  - shlex.quote로 특수문자(#$) 안전
+- run_script에 `sudo_password: str = ""` param 추가
+- workflow.install_missing_tools에 동일 패턴 적용 (apt-get update + install을
+  bash -c로 묶어 sudo 1회 호출로 처리)
+- WorkflowConfig에 sudo_password 필드 추가
+- workflow.Workflow가 _step_script와 install_missing_tools 호출 시 cfg.sudo_password 전달
+- __main__.py: WorkflowConfig(sudo_password=settings.ssh_password)
+
+### 테스트 갱신
+- test_scripts:
+  - test_sudo_with_password_uses_stdin_injection (특수문자 #$ 포함)
+  - test_sudo_without_password_uses_plain_sudo (회귀 방지)
+  - test_password_not_used_when_sudo_false
+- test_workflow:
+  - test_auto_install_injects_sudo_password_when_set (apt + setup 모두 검증)
+  - test_auto_install_uses_plain_sudo_when_no_password
+
 ### 다음에 해야 할 것
 1. **용혁 컨펌**:
    - dev-spec §9 남은 D-items (D3·D4·D13·D14·D15·D16) — 구현 시점 자연스럽게 확정 가능
