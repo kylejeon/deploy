@@ -57,7 +57,8 @@ def _make_workflow(fake: FakeSSHClient, temp_db, notifier=None) -> Workflow:
 
 
 def _enqueue_preflight_ok(fake: FakeSSHClient) -> None:
-    """preflight: `command -v git`가 0을 반환하는 상태."""
+    """preflight: universe 활성화 OK + `command -v git`가 0을 반환하는 상태."""
+    fake.enqueue("add-apt-repository", [])  # universe enable
     fake.enqueue("command -v git", [], exit_code=0)
 
 
@@ -227,6 +228,7 @@ async def test_install_path_persists_slack_thread_ts_to_db(temp_db):
 async def test_preflight_auto_installs_missing_git_and_proceeds(temp_db):
     """git 누락 → sudo apt install 자동 시도 → 재검증 통과 → workflow 계속."""
     fake = FakeSSHClient()
+    fake.enqueue("add-apt-repository", [])  # universe enable
     fake.enqueue("command -v git", [], exit_code=1)  # 첫 검증: 누락
     fake.enqueue("apt-get install", [StreamLine("stdout", "Setting up git")])  # 자동 설치 성공
     fake.enqueue("command -v git", [], exit_code=0)  # 재검증: 통과
@@ -250,6 +252,7 @@ async def test_preflight_auto_installs_missing_git_and_proceeds(temp_db):
 async def test_preflight_auto_install_failure_aborts_with_manual_hint(temp_db):
     """apt install 자체가 실패하면 분명한 에러로 종료. 수동 설치 안내 포함."""
     fake = FakeSSHClient()
+    fake.enqueue("add-apt-repository", [])  # universe enable
     fake.enqueue("command -v git", [], exit_code=1)
     fake.enqueue("apt-get install", [StreamLine("stderr", "E: package not found")], exit_code=100)
     wf = _make_workflow(fake, temp_db)
@@ -264,20 +267,58 @@ async def test_preflight_auto_install_failure_aborts_with_manual_hint(temp_db):
 
 
 @pytest.mark.asyncio
-async def test_preflight_skips_install_when_tools_already_present(temp_db):
-    """첫 검증부터 통과면 apt 명령은 아예 실행 안 함."""
+async def test_universe_repo_enabled_before_preflight(temp_db):
+    """git_pull 진입 시 universe 활성화가 가장 먼저 실행돼야 함 (apt 도구 확인보다 앞)."""
     fake = FakeSSHClient()
     _enqueue_happy_path_hybrid(fake)
     wf = _make_workflow(fake, temp_db)
 
     await wf.run(_job())
-    assert not any("apt-get" in c for c in fake.executed)
+
+    # add-apt-repository universe가 command -v git보다 먼저
+    universe_idx = next(i for i, c in enumerate(fake.executed) if "add-apt-repository" in c)
+    git_check_idx = next(i for i, c in enumerate(fake.executed) if "command -v git" in c)
+    assert universe_idx < git_check_idx
+
+    # universe 명령에 sudo + apt-get update 포함
+    universe_cmd = fake.executed[universe_idx]
+    assert "add-apt-repository -y universe" in universe_cmd
+    assert "apt-get update" in universe_cmd
+
+
+@pytest.mark.asyncio
+async def test_universe_failure_aborts_with_manual_hint(temp_db):
+    """universe 활성화 자체가 실패하면 명확한 메시지로 종료."""
+    fake = FakeSSHClient()
+    fake.enqueue("add-apt-repository", [StreamLine("stderr", "E: cannot add repo")], exit_code=1)
+    wf = _make_workflow(fake, temp_db)
+
+    result = await wf.run(_job())
+    assert result.status == JobStatus.FAILED
+    assert "universe" in result.error_message
+    assert "add-apt-repository" in result.error_message  # 수동 안내 포함
+    # preflight 이후 단계로 가지 않음
+    assert not any("command -v git" in c for c in fake.executed)
+
+
+@pytest.mark.asyncio
+async def test_preflight_skips_install_when_tools_already_present(temp_db):
+    """첫 검증부터 통과면 install_missing_tools는 호출 안 됨 (universe 활성화는 별개)."""
+    fake = FakeSSHClient()
+    _enqueue_happy_path_hybrid(fake)
+    wf = _make_workflow(fake, temp_db)
+
+    await wf.run(_job())
+    # 도구가 이미 있으면 `command -v git`는 한 번만 (재검증 없음)
+    git_check_count = sum(1 for c in fake.executed if "command -v git" in c)
+    assert git_check_count == 1
 
 
 @pytest.mark.asyncio
 async def test_auto_install_injects_sudo_password_when_set(temp_db):
     """WorkflowConfig.sudo_password가 채워져 있으면 apt-get은 printf | sudo -S로 호출."""
     fake = FakeSSHClient()
+    fake.enqueue("add-apt-repository", [])  # universe enable
     fake.enqueue("command -v git", [], exit_code=1)
     fake.enqueue("apt-get install", [])
     fake.enqueue("command -v git", [], exit_code=0)
@@ -321,6 +362,7 @@ async def test_auto_install_injects_sudo_password_when_set(temp_db):
 async def test_auto_install_uses_plain_sudo_when_no_password(temp_db):
     """sudo_password가 비어있으면(NOPASSWD 가정) 기존 plain sudo 형태."""
     fake = FakeSSHClient()
+    fake.enqueue("add-apt-repository", [])  # universe enable
     fake.enqueue("command -v git", [], exit_code=1)
     fake.enqueue("apt-get install", [])
     fake.enqueue("command -v git", [], exit_code=0)

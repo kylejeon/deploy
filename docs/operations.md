@@ -23,7 +23,8 @@ sudo apt update && sudo apt install -y openssh-server
 sudo systemctl enable --now ssh
 ```
 
-**자동 설치되는 도구** (사전 설치 불필요, 봇이 알아서 깔아줌):
+**자동 설치되는 도구** (사전 설치 불필요, 봇이 알아서 처리):
+- **apt universe 저장소** — 매 작업 시작 시 `add-apt-repository -y universe` 실행 (멱등). awscli 등 universe-only 패키지를 setup-*.sh가 깔 수 있도록 미리 활성화
 - `git` — git_pull 단계 진입 시 누락 감지하면 `sudo apt-get install -y git` 자동 실행
 - `kubectl`, `docker`, 컨테이너 런타임 등 — 인프라 스크립트(`setup-*.sh`)가 책임
 

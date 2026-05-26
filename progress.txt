@@ -206,6 +206,37 @@ DB는 영원히 NULL.
   - test_auto_install_injects_sudo_password_when_set (apt + setup 모두 검증)
   - test_auto_install_uses_plain_sudo_when_no_password
 
+## 2026-05-26 (later 6) — apt universe 저장소 자동 활성화
+
+### 배경
+debconf 비대화형 패치 후 #10이 또 다른 위치에서 실패:
+  E: 'awscli' 패키지는 설치할 수 있는 후보가 없습니다
+
+원인: setup-site.sh가 `apt install awscli`를 호출. Ubuntu 24.04의 awscli는
+`universe` 저장소에만 존재. 타겟 서버는 universe가 비활성이라 후보 없음.
+"자동으로 설치되어야 한다"는 요구로 봇이 universe를 켜도록 함.
+
+### 구현 (178/178 통과)
+- workflow.py: `ensure_universe_enabled(ssh, sudo_password)` 추가.
+  - `command -v add-apt-repository`로 prerequisite 확인
+  - 없으면 `software-properties-common` 먼저 설치
+  - `add-apt-repository -y universe && apt-get update` 실행
+  - 한 sudo bash -c 블록 안에서 처리. 멱등 (이미 활성이면 no-op)
+- `_step_git_pull`: preflight 검증 직전에 ensure_universe_enabled 호출.
+  실패 시 git_pull 단계 실패 + 수동 안내(`sudo add-apt-repository -y universe`)
+- log_collector를 git_pull 시작 시 한 번만 만들어 universe + install_missing_tools에 공유
+
+### 테스트
+- _enqueue_preflight_ok 헬퍼에 universe 응답 추가
+- 자동 설치 시나리오 테스트들에 universe 응답 추가
+- 신규:
+  - `test_universe_repo_enabled_before_preflight` — 실행 순서 검증
+  - `test_universe_failure_aborts_with_manual_hint` — universe 실패 시 명확한 에러
+- 기존 `test_preflight_skips_install_when_tools_already_present` — "apt-get install" 명령 매칭 대신 `command -v git` 호출 횟수(1회)로 재작성
+
+### docs/operations.md
+"자동 설치되는 도구" 섹션 상단에 universe 활성화 명시
+
 ## 2026-05-26 (later 5) — debconf 비대화형 강제
 
 ### 배경

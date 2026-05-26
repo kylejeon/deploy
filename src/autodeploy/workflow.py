@@ -79,6 +79,36 @@ async def check_target_tools(ssh: SSHClient) -> list[str]:
     return missing
 
 
+async def ensure_universe_enabled(
+    ssh: SSHClient,
+    *,
+    sudo_password: str = "",
+    on_line=None,
+) -> int:
+    """타겟의 apt universe 저장소를 활성화. 멱등 (이미 켜져있으면 no-op).
+
+    Ubuntu의 awscli·일부 K8s 도구는 universe에만 존재. setup-*.sh가 내부에서
+    `apt install <pkg>`를 호출했을 때 'no installation candidate'로 실패하는 것을
+    선제 차단. add-apt-repository가 없으면 software-properties-common을 먼저 깐다.
+    """
+    inner = (
+        # add-apt-repository가 없으면 software-properties-common 설치
+        "if ! command -v add-apt-repository > /dev/null 2>&1; then "
+        "apt-get update && "
+        "DEBIAN_FRONTEND=noninteractive apt-get install -y software-properties-common; "
+        "fi && "
+        # universe 활성화 (이미 활성이면 no-op) + 인덱스 갱신
+        "add-apt-repository -y universe && "
+        "apt-get update"
+    )
+    sudo_prefix = "sudo"
+    if sudo_password:
+        pw_q = shlex.quote(sudo_password)
+        sudo_prefix = f"printf '%s\\n' {pw_q} | sudo -S -p ''"
+    cmd = f"{sudo_prefix} bash -c {shlex.quote(inner)}"
+    return await ssh.exec(cmd, on_line=on_line)
+
+
 async def install_missing_tools(
     ssh: SSHClient,
     missing: list[str],
@@ -194,11 +224,26 @@ class Workflow:
         await self._step_start(db, job, Step.GIT_PULL)
         start = time.monotonic()
 
+        # universe 저장소를 먼저 활성화. setup-*.sh가 내부에서 awscli 같은 universe-only
+        # 패키지를 설치하려다 'no installation candidate'로 실패하는 것을 선제 차단.
+        log_collector = self._make_log_collector(db, job, Step.GIT_PULL)
+        rc = await ensure_universe_enabled(
+            ssh, sudo_password=self.cfg.sudo_password, on_line=log_collector,
+        )
+        if rc != 0:
+            duration = time.monotonic() - start
+            await self._step_done(db, job, Step.GIT_PULL, success=False, duration=duration)
+            raise WorkflowError(
+                Step.GIT_PULL,
+                f"apt universe 저장소 활성화 실패 (exit {rc}). "
+                f"`ssh connecteve@{job.target_ip}` 접속 후 "
+                f"`sudo add-apt-repository -y universe && sudo apt-get update` 수동 실행 필요.",
+            )
+
         # 사전 도구 검증 — 누락 시 자동 설치 시도 후 재검증. 봇이 이미 setup-*.sh에 sudo를
         # 쓰고 있어 단일 패키지 설치도 같은 권한 모델에서 일관성 있게 동작.
         missing = await check_target_tools(ssh)
         if missing:
-            log_collector = self._make_log_collector(db, job, Step.GIT_PULL)
             rc = await install_missing_tools(
                 ssh, missing,
                 sudo_password=self.cfg.sudo_password,
