@@ -56,6 +56,17 @@ def test_parent_cancelled():
     assert "취소" in out["text"]
 
 
+def test_parent_message_shows_retry_origin():
+    out = messages.parent_message(_job(status=JobStatus.RUNNING, retry_of=7))
+    body = str(out["blocks"])
+    assert "재시도 of #7" in body
+
+
+def test_parent_message_no_retry_annotation_when_normal_install():
+    out = messages.parent_message(_job(status=JobStatus.RUNNING))
+    assert "재시도" not in str(out["blocks"])
+
+
 # ---------- ack / step ----------
 
 def test_ack_includes_cancel_command():
@@ -201,6 +212,7 @@ def test_help_lists_valid_types_dynamically():
     assert "status" in body
     assert "list" in body
     assert "cancel" in body
+    assert "retry" in body
     assert "on-premise" in body
     assert "hybrid-with-ai" in body
 

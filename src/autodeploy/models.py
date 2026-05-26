@@ -54,6 +54,8 @@ class Job:
     # 런타임 캐시: app 스크립트가 출력한 URL 모음 ({"Frontend": "...", "Temporal Web": "...", ...}).
     # DB에는 admin_web_url(=Frontend)만 저장. 메시지 표시용.
     extra_urls: dict[str, str] = field(default_factory=dict)
+    # 런타임 표시용. 이 Job이 다른 Job(#N)의 재시도임을 의미. DB 저장 X — slack_thread_ts 공유로 추적.
+    retry_of: int | None = None
 
 
 @dataclass(slots=True)

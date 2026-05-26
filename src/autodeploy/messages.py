@@ -53,6 +53,11 @@ def parent_message(job: Job, *, total_duration_s: float | None = None) -> dict:
             ],
         },
     ]
+    if job.retry_of is not None:
+        blocks.append({
+            "type": "context",
+            "elements": [{"type": "mrkdwn", "text": f"↻ 재시도 of #{job.retry_of}"}],
+        })
     if job.status == JobStatus.RUNNING:
         blocks.append({
             "type": "context",
@@ -300,6 +305,8 @@ def help_response(valid_types: Sequence[str]) -> dict:
         "  최근 N건 (기본 10, 최대 50).\n\n"
         "`@autodeploy cancel <job-id>`\n"
         "  진행 중 작업 취소 (현재 단계 종료 후 중단).\n\n"
+        "`@autodeploy retry [job-id]`\n"
+        "  작업 재시도. 스레드 댓글로 실행하면 그 스레드의 원본 작업을 자동 인식.\n\n"
         "`@autodeploy help`\n"
         "  이 메시지.\n\n"
         f"*유효 TYPE*\n{types_lines}"

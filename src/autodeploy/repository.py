@@ -123,6 +123,18 @@ async def find_active_by_ip(db: aiosqlite.Connection, target_ip: str) -> list[Jo
     return [_row_to_job(r) for r in rows]
 
 
+async def find_jobs_by_thread_ts(
+    db: aiosqlite.Connection, thread_ts: str
+) -> list[Job]:
+    """같은 슬랙 스레드에 묶인 작업들 (재시도 체인). 가장 최근부터 반환."""
+    async with db.execute(
+        "SELECT * FROM jobs WHERE slack_thread_ts=? ORDER BY id DESC",
+        (thread_ts,),
+    ) as cur:
+        rows = await cur.fetchall()
+    return [_row_to_job(r) for r in rows]
+
+
 def _row_to_job(row: aiosqlite.Row) -> Job:
     return Job(
         id=row["id"],

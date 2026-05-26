@@ -39,7 +39,10 @@ class SlackNotifier:
         self._flush_interval = stdout_flush_interval
 
         # job별 상태
-        self._parent_ts: dict[int, str] = {}      # job_id -> parent/thread ts
+        # _parent_ts: chat.update 대상 (헤더). install이면 부모 메시지 ts, retry면 스레드 안 sub-header ts
+        # _thread_ts: 모든 후속 메시지의 thread_ts 인자. install이면 _parent_ts와 동일, retry면 원본 부모 ts
+        self._parent_ts: dict[int, str] = {}
+        self._thread_ts: dict[int, str] = {}
         self._start_times: dict[int, float] = {}  # monotonic
         # (job_id, step)별 상태
         self._stdout_buf: dict[tuple[int, Step], list[str]] = {}
@@ -50,28 +53,46 @@ class SlackNotifier:
     # ---------- Notifier protocol ----------
 
     async def job_started(self, job: Job) -> None:
+        is_retry = job.slack_thread_ts is not None
         parent = messages.parent_message(job)
-        resp = await self._client.chat_postMessage(
-            channel=self._channel,
-            text=parent["text"],
-            blocks=parent["blocks"],
-        )
-        ts = resp["ts"]
-        self._parent_ts[job.id] = ts
+
+        if is_retry:
+            # 재시도: 기존 스레드 안에 sub-header를 게시한다.
+            # 이 sub-header가 새 작업의 헤더 역할 (chat.update 대상).
+            thread_ts = job.slack_thread_ts
+            resp = await self._client.chat_postMessage(
+                channel=self._channel,
+                thread_ts=thread_ts,
+                text=parent["text"],
+                blocks=parent["blocks"],
+            )
+            self._parent_ts[job.id] = resp["ts"]
+            self._thread_ts[job.id] = thread_ts  # 후속 메시지는 원본 스레드에
+        else:
+            # 신규 install: 채널에 부모 메시지 게시. 그 ts가 헤더이자 스레드 루트.
+            resp = await self._client.chat_postMessage(
+                channel=self._channel,
+                text=parent["text"],
+                blocks=parent["blocks"],
+            )
+            ts = resp["ts"]
+            self._parent_ts[job.id] = ts
+            self._thread_ts[job.id] = ts
+            job.slack_thread_ts = ts
+
         self._start_times[job.id] = time.monotonic()
-        job.slack_thread_ts = ts
 
         ack = messages.ack_message(job.id)
         await self._client.chat_postMessage(
             channel=self._channel,
-            thread_ts=ts,
+            thread_ts=self._thread_ts[job.id],
             text=ack["text"],
             blocks=ack["blocks"],
         )
 
     async def step_started(self, job: Job, step: Step) -> None:
-        ts = self._parent_ts.get(job.id)
-        if ts is None:
+        thread_ts = self._thread_ts.get(job.id)
+        if thread_ts is None:
             return
         key = (job.id, step)
         self._stdout_buf[key] = []
@@ -80,13 +101,13 @@ class SlackNotifier:
         msg = messages.step_started(step)
         await self._client.chat_postMessage(
             channel=self._channel,
-            thread_ts=ts,
+            thread_ts=thread_ts,
             text=msg["text"],
             blocks=msg["blocks"],
         )
 
     async def step_log(self, job: Job, step: Step, line: StreamLine) -> None:
-        if self._parent_ts.get(job.id) is None:
+        if self._thread_ts.get(job.id) is None:
             return
         key = (job.id, step)
         buf = self._stderr_buf if line.stream == "stderr" else self._stdout_buf
@@ -106,8 +127,8 @@ class SlackNotifier:
         success: bool,
         duration_s: float,
     ) -> None:
-        ts = self._parent_ts.get(job.id)
-        if ts is None:
+        thread_ts = self._thread_ts.get(job.id)
+        if thread_ts is None:
             return
         # stdout이 한 줄이라도 있었으면 마지막 상태 강제 flush (없으면 미리보기 메시지 자체 생략)
         if self._stdout_buf.get((job.id, step)):
@@ -116,14 +137,15 @@ class SlackNotifier:
         msg = messages.step_finished(step, success=success, duration_s=duration_s)
         await self._client.chat_postMessage(
             channel=self._channel,
-            thread_ts=ts,
+            thread_ts=thread_ts,
             text=msg["text"],
             blocks=msg["blocks"],
         )
 
     async def job_finished(self, job: Job, *, error: BaseException | None) -> None:
-        ts = self._parent_ts.get(job.id)
-        if ts is None:
+        header_ts = self._parent_ts.get(job.id)
+        thread_ts = self._thread_ts.get(job.id)
+        if header_ts is None or thread_ts is None:
             return
         total = time.monotonic() - self._start_times.get(job.id, time.monotonic())
 
@@ -131,17 +153,17 @@ class SlackNotifier:
         if summary is not None:
             await self._client.chat_postMessage(
                 channel=self._channel,
-                thread_ts=ts,
+                thread_ts=thread_ts,
                 text=summary["text"],
                 blocks=summary["blocks"],
                 attachments=_color_attachments(summary),
             )
 
-        # 부모 헤더 갱신
+        # 헤더 갱신 (install이면 부모, retry면 sub-header)
         parent = messages.parent_message(job, total_duration_s=total)
         await self._client.chat_update(
             channel=self._channel,
-            ts=ts,
+            ts=header_ts,
             text=parent["text"],
             blocks=parent["blocks"],
         )
@@ -172,8 +194,8 @@ class SlackNotifier:
         return None
 
     async def _flush_preview(self, job: Job, step: Step) -> None:
-        ts = self._parent_ts.get(job.id)
-        if ts is None:
+        thread_ts = self._thread_ts.get(job.id)
+        if thread_ts is None:
             return
         key = (job.id, step)
         lines = self._stdout_buf.get(key, [])
@@ -182,7 +204,7 @@ class SlackNotifier:
         if preview_ts is None:
             resp = await self._client.chat_postMessage(
                 channel=self._channel,
-                thread_ts=ts,
+                thread_ts=thread_ts,
                 text=msg["text"],
                 blocks=msg["blocks"],
             )
@@ -197,6 +219,7 @@ class SlackNotifier:
 
     def _cleanup(self, job_id: int) -> None:
         self._parent_ts.pop(job_id, None)
+        self._thread_ts.pop(job_id, None)
         self._start_times.pop(job_id, None)
         for key in list(self._stdout_buf):
             if key[0] == job_id:

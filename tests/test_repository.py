@@ -114,6 +114,27 @@ async def test_list_recent_jobs_ordered_desc(temp_db):
 
 
 @pytest.mark.asyncio
+async def test_find_jobs_by_thread_ts_returns_chain_newest_first(temp_db):
+    async with connect(temp_db) as db:
+        thread = "1700000000.000001"
+        # 같은 스레드: 3건
+        id1 = await repo.create_job(db, _new_job(slack_thread_ts=thread))
+        id2 = await repo.create_job(db, _new_job(slack_thread_ts=thread, target_ip="2.2.2.2"))
+        id3 = await repo.create_job(db, _new_job(slack_thread_ts=thread, target_ip="3.3.3.3"))
+        # 다른 스레드
+        other_thread = "1700000000.000002"
+        await repo.create_job(db, _new_job(slack_thread_ts=other_thread))
+        # 스레드 없음
+        await repo.create_job(db, _new_job())
+
+        chain = await repo.find_jobs_by_thread_ts(db, thread)
+        empty = await repo.find_jobs_by_thread_ts(db, "9999999999.999999")
+
+    assert [j.id for j in chain] == [id3, id2, id1]
+    assert empty == []
+
+
+@pytest.mark.asyncio
 async def test_find_active_by_ip_only_returns_running_or_queued(temp_db):
     async with connect(temp_db) as db:
         # 진행 중

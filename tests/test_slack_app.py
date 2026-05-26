@@ -226,3 +226,153 @@ async def test_strips_bot_mention_token_from_text(temp_db):
     ctx = CommandContext(user_id="U01", channel_id="C01", text="<@UBOTXYZ123> help")
     result = await handle_command(ctx, settings=s, deployment_types=TYPES)
     assert "AutoDeploy 명령어" in result.response["text"]
+
+
+# ---------- retry ----------
+
+async def _seed_failed_job(db_path, *, thread_ts="1700000000.000001") -> int:
+    """실패 상태의 시드 작업 생성 (재시도 원본용)."""
+    from autodeploy.models import Job
+    async with connect(db_path) as db:
+        job = Job(
+            id=None,
+            target_ip="10.0.0.99",
+            deployment_type="hybrid-with-ai",
+            hospital_code="HOSP01",
+            hospital_name="테스트병원",
+            hospital_address="서울시",
+            started_by="U01",
+            slack_channel="C01",
+            slack_thread_ts=thread_ts,
+        )
+        job_id = await repo.create_job(db, job)
+        await repo.finish_job(db, job_id, JobStatus.FAILED, error_message="boom")
+    return job_id
+
+
+@pytest.mark.asyncio
+async def test_retry_by_thread_context_creates_new_job_with_same_params(temp_db):
+    s = _settings(temp_db)
+    original_id = await _seed_failed_job(temp_db, thread_ts="1700000000.111111")
+
+    ctx = CommandContext(
+        user_id="U01", channel_id="C01", text="retry",
+        thread_ts="1700000000.111111",
+    )
+    result = await handle_command(ctx, settings=s, deployment_types=TYPES)
+
+    assert result.response is None
+    job = result.workflow_job
+    assert job is not None
+    assert job.id != original_id
+    assert job.target_ip == "10.0.0.99"
+    assert job.deployment_type == "hybrid-with-ai"
+    assert job.hospital_code == "HOSP01"
+    assert job.hospital_name == "테스트병원"
+    assert job.slack_thread_ts == "1700000000.111111"  # 같은 스레드 재사용
+    assert job.retry_of == original_id
+
+
+@pytest.mark.asyncio
+async def test_retry_by_explicit_id(temp_db):
+    s = _settings(temp_db)
+    original_id = await _seed_failed_job(temp_db, thread_ts="1700000000.222222")
+
+    ctx = CommandContext(
+        user_id="U02", channel_id="C01",
+        text=f"retry {original_id}",
+        # 스레드 컨텍스트 없이도 명시 id로 동작
+    )
+    result = await handle_command(ctx, settings=s, deployment_types=TYPES)
+    assert result.workflow_job is not None
+    assert result.workflow_job.retry_of == original_id
+    assert result.workflow_job.slack_thread_ts == "1700000000.222222"
+    assert result.workflow_job.started_by == "U02"  # 새 요청자 기록
+
+
+@pytest.mark.asyncio
+async def test_retry_without_thread_and_without_id_returns_error(temp_db):
+    s = _settings(temp_db)
+    ctx = CommandContext(user_id="U01", channel_id="C01", text="retry")
+    result = await handle_command(ctx, settings=s, deployment_types=TYPES)
+    assert result.workflow_job is None
+    assert "스레드 안에서" in result.response["text"] or "retry" in result.response["text"]
+
+
+@pytest.mark.asyncio
+async def test_retry_with_unknown_thread_ts(temp_db):
+    s = _settings(temp_db)
+    ctx = CommandContext(
+        user_id="U01", channel_id="C01", text="retry",
+        thread_ts="9999999999.999999",
+    )
+    result = await handle_command(ctx, settings=s, deployment_types=TYPES)
+    assert result.workflow_job is None
+    assert "연결돼 있지 않" in result.response["text"]
+
+
+@pytest.mark.asyncio
+async def test_retry_with_unknown_job_id(temp_db):
+    s = _settings(temp_db)
+    ctx = CommandContext(user_id="U01", channel_id="C01", text="retry 99999")
+    result = await handle_command(ctx, settings=s, deployment_types=TYPES)
+    assert result.workflow_job is None
+    assert "99999" in result.response["text"]
+
+
+@pytest.mark.asyncio
+async def test_retry_refused_when_target_ip_already_active(temp_db):
+    s = _settings(temp_db)
+    original_id = await _seed_failed_job(temp_db, thread_ts="1700000000.333333")
+    # 같은 IP로 새 작업이 진행 중인 상황 시뮬레이션
+    from autodeploy.models import Job
+    async with connect(temp_db) as db:
+        active = Job(
+            id=None,
+            target_ip="10.0.0.99",
+            deployment_type="on-premise",
+            hospital_code="HOSP_OTHER",
+            started_by="U02",
+            slack_channel="C01",
+        )
+        active_id = await repo.create_job(db, active)
+        await repo.mark_running(db, active_id)
+
+    ctx = CommandContext(
+        user_id="U01", channel_id="C01", text="retry",
+        thread_ts="1700000000.333333",
+    )
+    result = await handle_command(ctx, settings=s, deployment_types=TYPES)
+    assert result.workflow_job is None
+    assert "진행 중" in result.response["text"]
+    assert str(active_id) in result.response["text"]
+
+
+@pytest.mark.asyncio
+async def test_retry_picks_latest_in_thread_chain(temp_db):
+    """같은 스레드에 여러 시도가 있으면 가장 최근 작업의 파라미터를 사용."""
+    s = _settings(temp_db)
+    thread = "1700000000.444444"
+    first_id = await _seed_failed_job(temp_db, thread_ts=thread)
+    # 두 번째 시도 — 다른 병원코드로 가정 (실제 retry 시 동일하겠지만, 추출 로직 검증용)
+    from autodeploy.models import Job
+    async with connect(temp_db) as db:
+        second = Job(
+            id=None,
+            target_ip="10.0.0.99",
+            deployment_type="hybrid-with-ai",
+            hospital_code="HOSP_NEW",
+            started_by="U01",
+            slack_channel="C01",
+            slack_thread_ts=thread,
+        )
+        second_id = await repo.create_job(db, second)
+        await repo.finish_job(db, second_id, JobStatus.FAILED, error_message="boom2")
+
+    ctx = CommandContext(
+        user_id="U01", channel_id="C01", text="retry", thread_ts=thread,
+    )
+    result = await handle_command(ctx, settings=s, deployment_types=TYPES)
+    assert result.workflow_job.retry_of == second_id  # 가장 최근
+    assert result.workflow_job.hospital_code == "HOSP_NEW"
+    assert first_id != second_id  # 사용 변수 안 쓴 경고 회피

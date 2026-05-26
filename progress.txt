@@ -71,6 +71,32 @@
   - 배포 후 v1.0.1 잔여: D-2 (shutdown), D-4+D-5 (timestamp/status duration), O-5 (내부 재시도)
   - v1.1 의도적 보류: AC-11 cancel
 
+## 2026-05-26 — retry 명령 추가 (스레드 컨텍스트 인식)
+
+### 배경
+첫 배포 후 SSH "No route to host" 실패 발생 → 타겟 서버 sshd 미설치 → 설치 후 재시도 필요.
+용혁 요청: "댓글 스레드에서 재시작 명령". 매번 IP·type·code 풀로 다시 적기 싫음.
+
+### 구현 (167/167 테스트 통과)
+- **commands.py**: `RetryCommand(job_id: int | None)`. `retry` (스레드 컨텍스트 사용) / `retry 5` (명시) 모두 파싱
+- **slack_app.py**: `CommandContext.thread_ts` 필드 추가 (Slack 멘션 이벤트의 thread_ts 전달). `_handle_retry`에서 원본 작업 찾고 같은 슬랙 스레드 재사용한 새 Job 생성
+- **repository.py**: `find_jobs_by_thread_ts(thread_ts) -> list[Job]` (가장 최근 시도부터)
+- **models.py**: `Job.retry_of: int | None` 런타임 필드 (DB 저장 X — slack_thread_ts 공유로 추적)
+- **slack_notifier.py**: `_thread_ts` dict 분리. job.slack_thread_ts 사전 설정 감지 → 새 채널 부모 대신 그 스레드에 sub-header 게시. chat.update는 sub-header(헤더), 후속 메시지는 원본 스레드(thread_ts)
+- **messages.py**: parent_message에 "↻ 재시도 of #N" context 블록. help_response에 retry 항목 추가
+- **신규 테스트 17건**: test_commands(3) + test_slack_app(7) + test_slack_notifier(4) + test_messages(3 = retry annotation 2 + help mention 1) + test_repository(1 - find_jobs_by_thread_ts)
+
+### UX
+실패한 작업 스레드 안에서:
+```
+@autodeploy retry
+```
+→ 같은 IP/type/code/name으로 새 작업 시작. 진행상황·완료 메시지가 원본 스레드 아래로 이어 붙음. status/list엔 새 job_id로 표시.
+
+### 알려진 잔여 (이번 변경 외)
+- 타겟 서버 sshd 설치/연결 확립 (사용자 작업)
+- 운영: 비밀번호 → SSH 키 인증 전환
+
 ### 다음에 해야 할 것
 1. **용혁 컨펌**:
    - dev-spec §9 남은 D-items (D3·D4·D13·D14·D15·D16) — 구현 시점 자연스럽게 확정 가능

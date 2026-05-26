@@ -8,6 +8,7 @@ from autodeploy.commands import (
     InstallCommand,
     ListCommand,
     ParseError,
+    RetryCommand,
     StatusCommand,
     parse_command,
 )
@@ -130,6 +131,26 @@ def test_cancel_with_id():
 def test_cancel_without_id_returns_error():
     cmd = parse_command("cancel", TYPES)
     assert isinstance(cmd, ParseError)
+
+
+# ---------- retry ----------
+
+def test_retry_without_args_defers_to_thread_context():
+    cmd = parse_command("retry", TYPES)
+    assert isinstance(cmd, RetryCommand)
+    assert cmd.job_id is None
+
+
+def test_retry_with_id():
+    cmd = parse_command("retry 3", TYPES)
+    assert isinstance(cmd, RetryCommand)
+    assert cmd.job_id == 3
+
+
+def test_retry_with_non_integer_returns_error():
+    cmd = parse_command("retry abc", TYPES)
+    assert isinstance(cmd, ParseError)
+    assert "retry" in cmd.message
 
 
 # ---------- help / unknown / empty ----------

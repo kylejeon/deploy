@@ -31,6 +31,11 @@ class CancelCommand:
 
 
 @dataclass(frozen=True, slots=True)
+class RetryCommand:
+    job_id: int | None  # None = derive from thread context (스레드 안에서 실행)
+
+
+@dataclass(frozen=True, slots=True)
 class HelpCommand:
     pass
 
@@ -41,7 +46,10 @@ class ParseError:
     suggestion: str | None = None
 
 
-Command = InstallCommand | StatusCommand | ListCommand | CancelCommand | HelpCommand | ParseError
+Command = (
+    InstallCommand | StatusCommand | ListCommand | CancelCommand
+    | RetryCommand | HelpCommand | ParseError
+)
 
 
 def parse_command(text: str, valid_types: frozenset[str] | set[str]) -> Command:
@@ -62,6 +70,8 @@ def parse_command(text: str, valid_types: frozenset[str] | set[str]) -> Command:
         return _parse_list(rest)
     if verb == "cancel":
         return _parse_cancel(rest)
+    if verb == "retry":
+        return _parse_retry(rest)
     if verb in {"help", "?"}:
         return HelpCommand()
     return ParseError(f"unknown command: {verb}", suggestion="@autodeploy help")
@@ -155,6 +165,17 @@ def _parse_cancel(rest: str) -> Command:
         return CancelCommand(job_id=int(rest))
     except ValueError:
         return ParseError(f"cancel expects integer job-id, got: {rest}")
+
+
+def _parse_retry(rest: str) -> Command:
+    rest = rest.strip()
+    if not rest:
+        # 스레드 컨텍스트에서 원본 작업을 찾는다 — 호출자(slack_app)가 처리
+        return RetryCommand(job_id=None)
+    try:
+        return RetryCommand(job_id=int(rest))
+    except ValueError:
+        return ParseError(f"retry expects integer job-id, got: {rest}")
 
 
 def _is_valid_ip(s: str) -> bool:

@@ -18,6 +18,7 @@ from autodeploy.commands import (
     InstallCommand,
     ListCommand,
     ParseError,
+    RetryCommand,
     StatusCommand,
     parse_command,
 )
@@ -35,6 +36,8 @@ class CommandContext:
     user_id: str
     channel_id: str
     text: str
+    # 멘션이 스레드 댓글로 왔을 때만 채워짐. retry 명령이 스레드 컨텍스트로 원본을 찾는 데 사용.
+    thread_ts: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -97,6 +100,9 @@ async def handle_command(
             )
         )
 
+    if isinstance(cmd, RetryCommand):
+        return await _handle_retry(cmd, ctx, settings=settings)
+
     if isinstance(cmd, InstallCommand):
         async with connect(settings.db_path) as db:
             active = await repo.find_active_by_ip(db, cmd.target_ip)
@@ -121,6 +127,66 @@ async def handle_command(
         return CommandResult(response=None, workflow_job=job)
 
     return CommandResult(response=messages.validation_error("internal error"))
+
+
+async def _handle_retry(
+    cmd: RetryCommand,
+    ctx: CommandContext,
+    *,
+    settings: Settings,
+) -> CommandResult:
+    """retry: 원본 작업을 찾아 같은 파라미터로 새 Job 생성. 같은 슬랙 스레드에 묶음."""
+    async with connect(settings.db_path) as db:
+        original: Job | None = None
+        if cmd.job_id is not None:
+            original = await repo.get_job(db, cmd.job_id)
+            if original is None:
+                return CommandResult(
+                    response=messages.validation_error(f"작업 #{cmd.job_id}을(를) 찾을 수 없습니다.")
+                )
+        elif ctx.thread_ts:
+            jobs_in_thread = await repo.find_jobs_by_thread_ts(db, ctx.thread_ts)
+            if not jobs_in_thread:
+                return CommandResult(
+                    response=messages.validation_error(
+                        "이 스레드는 작업과 연결돼 있지 않아요.",
+                        suggestion="`@autodeploy retry <job-id>` 형태로 명시할 수 있습니다.",
+                    )
+                )
+            original = jobs_in_thread[0]  # 가장 최근 시도
+        else:
+            return CommandResult(
+                response=messages.validation_error(
+                    "retry는 작업 스레드 안에서 실행하거나, `retry <job-id>`로 명시해주세요.",
+                )
+            )
+
+        # 같은 IP로 진행 중인 작업이 있으면 거부 (install과 동일)
+        active = await repo.find_active_by_ip(db, original.target_ip)
+        if active:
+            return CommandResult(
+                response=messages.validation_error(
+                    f"`{original.target_ip}`에 진행 중인 작업이 있습니다: #{active[0].id}",
+                    suggestion=f"`@autodeploy status {active[0].id}`",
+                )
+            )
+
+        # 원본의 슬랙 스레드를 그대로 이어쓴다. SlackNotifier는 slack_thread_ts가 사전 설정된 걸 보고
+        # 새 부모 메시지를 만들지 않고 기존 스레드에 sub-header를 게시한다.
+        new_job = Job(
+            id=None,
+            target_ip=original.target_ip,
+            deployment_type=original.deployment_type,
+            hospital_code=original.hospital_code,
+            hospital_name=original.hospital_name,
+            hospital_address=original.hospital_address,
+            started_by=ctx.user_id,
+            slack_channel=ctx.channel_id,
+            slack_thread_ts=original.slack_thread_ts,
+            retry_of=original.id,
+        )
+        new_job.id = await repo.create_job(db, new_job)
+    return CommandResult(response=None, workflow_job=new_job)
 
 
 class AutoDeployBot:
@@ -161,6 +227,8 @@ class AutoDeployBot:
                 user_id=event.get("user", ""),
                 channel_id=event.get("channel", ""),
                 text=event.get("text", ""),
+                # Slack은 스레드 댓글 이벤트에서 thread_ts(=부모 ts)를 같이 보냄. 채널 본문이면 None.
+                thread_ts=event.get("thread_ts"),
             )
             result = await handle_command(
                 ctx,
