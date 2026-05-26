@@ -56,11 +56,16 @@ def _make_workflow(fake: FakeSSHClient, temp_db, notifier=None) -> Workflow:
     )
 
 
+def _enqueue_preflight_ok(fake: FakeSSHClient) -> None:
+    """preflight: `command -v git`가 0을 반환하는 상태."""
+    fake.enqueue("command -v git", [], exit_code=0)
+
+
 def _enqueue_happy_path_hybrid(fake: FakeSSHClient) -> None:
     """hybrid-with-ai 성공 시나리오 응답 등록 (디렉토리 미존재 → clone)."""
+    _enqueue_preflight_ok(fake)
     fake.enqueue("test -d", [], exit_code=1)  # missing → clone path
     fake.enqueue("git clone", [])
-    fake.enqueue("remote set-url", [])
     fake.enqueue("git fetch --all && git checkout", [])
     fake.enqueue("git rev-parse HEAD", [StreamLine("stdout", "abc123")])
     fake.enqueue("setup-site.sh", [StreamLine("stdout", "infra ok")])
@@ -103,8 +108,9 @@ async def test_happy_path_hybrid_with_ai(temp_db):
 @pytest.mark.asyncio
 async def test_on_premise_uses_correct_scripts(temp_db):
     fake = FakeSSHClient()
+    _enqueue_preflight_ok(fake)
     fake.enqueue("test -d", [], exit_code=0)  # exists → update path
-    fake.enqueue("git checkout -- . && git fetch", [])
+    fake.enqueue("git remote set-url origin", [])
     fake.enqueue("git rev-parse HEAD", [StreamLine("stdout", "sha1")])
     fake.enqueue("setup-onpremise.sh", [])
     fake.enqueue("deploy-applications-onpremise.sh", [])
@@ -124,8 +130,9 @@ async def test_on_premise_uses_correct_scripts(temp_db):
 @pytest.mark.asyncio
 async def test_hybrid_without_ai_passes_wo_ai_arg(temp_db):
     fake = FakeSSHClient()
+    _enqueue_preflight_ok(fake)
     fake.enqueue("test -d", [], exit_code=0)
-    fake.enqueue("git checkout -- . && git fetch", [])
+    fake.enqueue("git remote set-url origin", [])
     fake.enqueue("git rev-parse HEAD", [StreamLine("stdout", "sha1")])
     fake.enqueue("setup-site.sh", [])
     fake.enqueue("deploy-applications.sh", [])
@@ -169,8 +176,9 @@ async def test_ssh_connect_failure(temp_db):
 @pytest.mark.asyncio
 async def test_git_pull_failure_stops_pipeline(temp_db):
     fake = FakeSSHClient()
+    _enqueue_preflight_ok(fake)
     fake.enqueue("test -d", [], exit_code=0)
-    fake.enqueue("git checkout -- . && git fetch", [], exit_code=128)  # 실패
+    fake.enqueue("git remote set-url origin", [], exit_code=128)  # 실패
     wf = _make_workflow(fake, temp_db)
 
     result = await wf.run(_job())
@@ -182,10 +190,28 @@ async def test_git_pull_failure_stops_pipeline(temp_db):
 
 
 @pytest.mark.asyncio
+async def test_preflight_missing_git_fails_git_pull_with_install_hint(temp_db):
+    fake = FakeSSHClient()
+    fake.enqueue("command -v git", [], exit_code=1)  # git 누락
+    wf = _make_workflow(fake, temp_db)
+
+    result = await wf.run(_job())
+
+    assert result.status == JobStatus.FAILED
+    assert "필수 도구 누락" in result.error_message
+    assert "git" in result.error_message
+    assert "sudo apt" in result.error_message  # 설치 힌트
+    # preflight에서 멈춰서 sync_repo는 호출 안 됨
+    assert not any("git clone" in c for c in fake.executed)
+    assert not any("test -d" in c for c in fake.executed)
+
+
+@pytest.mark.asyncio
 async def test_infra_script_failure_stops_pipeline(temp_db):
     fake = FakeSSHClient()
+    _enqueue_preflight_ok(fake)
     fake.enqueue("test -d", [], exit_code=0)
-    fake.enqueue("git checkout -- . && git fetch", [])
+    fake.enqueue("git remote set-url origin", [])
     fake.enqueue("git rev-parse HEAD", [StreamLine("stdout", "sha1")])
     fake.enqueue("setup-site.sh", [StreamLine("stderr", "boom")], exit_code=1)
     wf = _make_workflow(fake, temp_db)
@@ -202,8 +228,9 @@ async def test_infra_script_failure_stops_pipeline(temp_db):
 @pytest.mark.asyncio
 async def test_healthcheck_timeout_marks_failed(temp_db):
     fake = FakeSSHClient()
+    _enqueue_preflight_ok(fake)
     fake.enqueue("test -d", [], exit_code=0)
-    fake.enqueue("git checkout -- . && git fetch", [])
+    fake.enqueue("git remote set-url origin", [])
     fake.enqueue("git rev-parse HEAD", [StreamLine("stdout", "sha1")])
     fake.enqueue("setup-site.sh", [])
     fake.enqueue("deploy-applications.sh", [])
@@ -276,8 +303,9 @@ def test_extract_urls_empty_when_no_match():
 @pytest.mark.asyncio
 async def test_workflow_captures_app_urls_and_uses_frontend_as_admin(temp_db):
     fake = FakeSSHClient()
+    _enqueue_preflight_ok(fake)
     fake.enqueue("test -d", [], exit_code=0)
-    fake.enqueue("git checkout -- . && git fetch", [])
+    fake.enqueue("git remote set-url origin", [])
     fake.enqueue("git rev-parse HEAD", [StreamLine("stdout", "sha1")])
     fake.enqueue("setup-site.sh", [])
     fake.enqueue(
@@ -305,8 +333,9 @@ async def test_workflow_captures_app_urls_and_uses_frontend_as_admin(temp_db):
 @pytest.mark.asyncio
 async def test_workflow_admin_url_falls_back_to_template_when_no_frontend(temp_db):
     fake = FakeSSHClient()
+    _enqueue_preflight_ok(fake)
     fake.enqueue("test -d", [], exit_code=0)
-    fake.enqueue("git checkout -- . && git fetch", [])
+    fake.enqueue("git remote set-url origin", [])
     fake.enqueue("git rev-parse HEAD", [StreamLine("stdout", "sha1")])
     fake.enqueue("setup-site.sh", [])
     fake.enqueue(
@@ -346,13 +375,13 @@ def test_mask_url_secrets_passes_through_plain_text():
 async def test_workflow_masks_token_in_script_logs(temp_db):
     """git clone stderr가 토큰 포함 URL을 echo해도 DB에는 마스킹된 형태로 저장."""
     fake = FakeSSHClient()
+    _enqueue_preflight_ok(fake)
     fake.enqueue("test -d", [], exit_code=1)  # clone path
     # clone 명령의 stderr에 토큰 URL이 echo되는 상황 시뮬레이션
     fake.enqueue(
         "git clone",
         [StreamLine("stderr", "fatal: cloning https://youngwoochon:ATBBleak@bitbucket.org/x.git failed")],
     )
-    fake.enqueue("remote set-url", [])
     fake.enqueue("git fetch --all && git checkout", [])
     fake.enqueue("git rev-parse HEAD", [StreamLine("stdout", "sha1")])
     fake.enqueue("setup-site.sh", [])

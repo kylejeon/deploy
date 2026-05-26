@@ -1,4 +1,12 @@
-"""gateway-infra-next 레포 동기화 (clone or update). dev-spec F2.2."""
+"""gateway-infra-next 레포 동기화 (clone or update). dev-spec F2.2.
+
+Bitbucket App Password를 URL에 포함한 채로 `.git/config`에 유지한다.
+봇은 비대화형 SSH라 자격증명 프롬프트를 처리할 수 없으므로 토큰 URL 유지가
+유일하게 안정적인 방법. 마스킹은 workflow.mask_url_secrets()가 담당해
+Slack/DB 로그에는 토큰이 노출되지 않는다. 디스크상 `.git/config`의 평문
+토큰은 단일 사용자 `connecteve` 소유 폴더 안에서만 접근 가능 — 병원 단독
+서버 운영 환경에서 수용한 트레이드오프.
+"""
 from __future__ import annotations
 
 import shlex
@@ -20,28 +28,16 @@ async def sync_repo(
     target_dir: str,
     on_line: LineCallback | None = None,
 ) -> str:
-    """타겟 디렉토리 없으면 clone, 있으면 update. HEAD commit SHA 반환.
-
-    clone 시 토큰이 포함된 URL로 clone 후 즉시 git remote set-url 로 origin URL을 토큰
-    없는 형태로 재설정. .git/config 평문 토큰 노출을 막는다 (D14).
-    """
+    """타겟 디렉토리 없으면 clone, 있으면 update. HEAD commit SHA 반환."""
     target_q = shlex.quote(target_dir)
     branch_q = shlex.quote(branch)
+    url_token = f"https://{user}:{app_password}@{repo_host_path}"
+    url_token_q = shlex.quote(url_token)
 
     if not await _dir_exists(ssh, target_dir, on_line):
-        url_token = f"https://{user}:{app_password}@{repo_host_path}"
-        url_clean = f"https://{repo_host_path}"
-
-        rc = await ssh.exec(f"git clone {shlex.quote(url_token)} {target_q}", on_line=on_line)
+        rc = await ssh.exec(f"git clone {url_token_q} {target_q}", on_line=on_line)
         if rc != 0:
             raise GitSyncError(f"git clone failed (exit {rc})")
-
-        rc = await ssh.exec(
-            f"cd {target_q} && git remote set-url origin {shlex.quote(url_clean)}",
-            on_line=on_line,
-        )
-        if rc != 0:
-            raise GitSyncError(f"git remote set-url failed (exit {rc})")
 
         rc = await ssh.exec(
             f"cd {target_q} && git fetch --all && git checkout {branch_q}",
@@ -50,8 +46,12 @@ async def sync_repo(
         if rc != 0:
             raise GitSyncError(f"git checkout {branch} failed (exit {rc})")
     else:
+        # 기존 폴더가 있어도 토큰 URL을 강제로 재주입 (이전 버전이 토큰을 제거한
+        # .git/config일 수 있고, 그러면 fetch가 비대화형 환경에서 자격증명 프롬프트로
+        # 죽음).
         cmd = (
             f"cd {target_q} && "
+            f"git remote set-url origin {url_token_q} && "
             f"git checkout -- . && "
             f"git fetch --all && "
             f"git checkout {branch_q} && "

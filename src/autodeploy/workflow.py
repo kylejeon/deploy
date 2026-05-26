@@ -7,6 +7,7 @@ ssh_connect → git_pull → infra_install → app_install → healthcheck → d
 from __future__ import annotations
 
 import re
+import shlex
 import time
 from collections.abc import Callable
 from contextlib import AbstractAsyncContextManager
@@ -60,6 +61,22 @@ def extract_urls_from_lines(target_ip: str, lines) -> dict[str, str]:
             path = m.group("path") or ""
             out[label] = f"{scheme}://{target_ip}:{port}{path}"
     return out
+
+
+# 타겟에 사전 설치되어 있어야 하는 명령. 누락 시 git_pull 단계에서 명확한 메시지로 거부.
+# 봇은 비대화형 SSH라 자격증명 프롬프트나 도구 누락 에러(127)를 사람이 못 보기 때문에,
+# 사람이 읽기 쉬운 한 줄 메시지로 빨리 떨어뜨리는 게 중요하다.
+_REQUIRED_TARGET_TOOLS: tuple[str, ...] = ("git",)
+
+
+async def check_target_tools(ssh: SSHClient) -> list[str]:
+    """타겟 서버에 _REQUIRED_TARGET_TOOLS가 모두 설치돼 있는지 확인. 누락 도구 리스트 반환."""
+    missing: list[str] = []
+    for tool in _REQUIRED_TARGET_TOOLS:
+        rc = await ssh.exec(f"command -v {shlex.quote(tool)} > /dev/null 2>&1")
+        if rc != 0:
+            missing.append(tool)
+    return missing
 
 
 @dataclass(frozen=True, slots=True)
@@ -138,6 +155,20 @@ class Workflow:
     async def _step_git_pull(self, db, job: Job, ssh: SSHClient) -> str:
         await self._step_start(db, job, Step.GIT_PULL)
         start = time.monotonic()
+
+        # 사전 도구 검증 — git이 없으면 sync_repo는 exit 127로 죽을 뿐 어떤 도구가 빠졌는지 모름.
+        # 봇이 비대화형이라 자격증명 프롬프트도 처리 못 하니 빨리 사람 읽기 좋게 거부한다.
+        missing = await check_target_tools(ssh)
+        if missing:
+            duration = time.monotonic() - start
+            await self._step_done(db, job, Step.GIT_PULL, success=False, duration=duration)
+            raise WorkflowError(
+                Step.GIT_PULL,
+                f"타겟 서버에 필수 도구 누락: {', '.join(missing)}. "
+                f"`ssh connecteve@{job.target_ip}` 접속 후 "
+                f"`sudo apt update && sudo apt install -y {' '.join(missing)}` 실행 후 재시도.",
+            )
+
         try:
             sha = await sync_repo(
                 ssh,

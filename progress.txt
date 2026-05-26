@@ -97,6 +97,32 @@
 - 타겟 서버 sshd 설치/연결 확립 (사용자 작업)
 - 운영: 비밀번호 → SSH 키 인증 전환
 
+## 2026-05-26 (later) — 사전 도구 점검 + git 토큰 URL 유지
+
+### 배경
+첫 실배포 시도에서 두 가지 문제 발견:
+1. 타겟 서버에 git이 안 깔려있어 git_pull 단계가 `bash: git: command not found` (exit 127)로 죽었음
+2. 더 큰 잠재 버그: git_sync.py가 clone 직후 `git remote set-url`로 토큰을 제거하는데, 후속 `git fetch --all`은 비대화형 SSH에서 자격증명을 못 받아 죽음 (수동 검증 중 발견)
+
+### 구현 (a + b 동시 패치, 168/168 테스트 통과)
+
+**(a) Preflight 도구 점검**
+- workflow.py: `check_target_tools(ssh) -> list[str]` 추가. `_REQUIRED_TARGET_TOOLS = ("git",)`을 `command -v <tool>`로 확인
+- `_step_git_pull` 진입 직후 호출. 누락 시 `WorkflowError(GIT_PULL, "필수 도구 누락: git. `sudo apt install -y git` 실행 후 재시도")`로 빨리 떨어짐
+
+**(b) Git 토큰 URL 유지**
+- git_sync.py: clone 직후 `git remote set-url <clean URL>` 단계 제거. `.git/config`에 토큰 포함 URL 유지
+- update 경로: 매 실행마다 `git remote set-url origin <token URL>`을 chain 맨 앞에 끼워, 이전 버전이 토큰을 제거했더라도 다시 주입
+- 디스크 평문 토큰 트레이드오프 수용 (단일 사용자 connecteve 소유 폴더, 병원 단독 서버). Slack/DB 로그는 `mask_url_secrets`로 여전히 차단
+
+### 테스트 갱신
+- test_git_sync: clone 경로 — set-url 제거 검증, 토큰이 URL에 남아있는지 확인. update 경로 — set-url에 토큰 주입 검증
+- test_workflow: 모든 성공 시나리오에 `_enqueue_preflight_ok` 추가 (8건), update 경로 명령 패턴을 `git remote set-url origin`으로 교체
+- 신규: `test_preflight_missing_git_fails_git_pull_with_install_hint` — git 없음 시 에러 메시지에 "필수 도구 누락" + "sudo apt" 포함 검증
+
+### docs/operations.md 갱신
+"타겟 서버 (Ubuntu 24.04)" 사전 설치 도구 섹션 추가: `openssh-server`, `git`. 설치 한 줄 명령 명시
+
 ### 다음에 해야 할 것
 1. **용혁 컨펌**:
    - dev-spec §9 남은 D-items (D3·D4·D13·D14·D15·D16) — 구현 시점 자연스럽게 확정 가능

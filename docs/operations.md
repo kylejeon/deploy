@@ -4,12 +4,28 @@
 
 ## 1. 사전 준비
 
+### 맥미니 (오케스트레이터)
 - macOS 맥미니에 인터넷 + 사내망 연결
 - Python 3.11+ 설치 (3.14 검증)
-- git 설치 (Bitbucket 클론용 — 타겟 서버 쪽에서도 필요)
+- git 설치 (이 레포 clone용)
 - Slack 앱 발급 (Bot Token, App-Level Token, Channel ID, Allowed User IDs)
 - Bitbucket App Password (gateway-infra-next 접근용)
 - 병원용 타겟 서버 자격증명 (`connecteve` 패스워드)
+
+### 타겟 서버 (Ubuntu 24.04)
+**사전 설치 필수 도구** — 봇이 git_pull 단계에서 점검하며 누락 시 명확한 에러로 거부합니다:
+- `openssh-server` — 봇의 SSH 접속을 위함. 설치 후 `PasswordAuthentication yes` 확인
+- `git` — 봇이 `gateway-infra-next`를 clone/pull
+
+```bash
+# 타겟 서버에서 한 줄로
+sudo apt update && sudo apt install -y openssh-server git
+sudo systemctl enable --now ssh
+```
+
+추가로 `connecteve` 계정이 sudo 권한을 가지고 있어야 인프라 스크립트(`setup-*.sh`)가 동작합니다.
+
+> **참고**: `kubectl`, `docker` 등 쿠버네티스 도구는 인프라 스크립트가 자동 설치하므로 사전 설치 불필요.
 
 ## 2. 설치
 
