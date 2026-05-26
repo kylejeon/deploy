@@ -147,6 +147,35 @@ DB는 영원히 NULL.
   "연결 안 됨" 응답. 임시 우회: `@AutoDeploy retry <job-id>` 명시 형태 사용
 - 패치 배포 후 새로 생성된 작업부터는 스레드 retry가 정상 동작
 
+## 2026-05-26 (later 3) — git 누락 자동 설치
+
+### 결정 변경
+초기에 "sudo apt install을 봇이 임의로 돌리는 건 권장하지 않음"이라고 막아뒀으나,
+봇이 이미 setup-*.sh에 sudo를 쓰고 있어 단일 패키지 설치만 안 하는 건 일관성
+없는 결정. 자동 설치로 전환.
+
+### 구현 (171/171 통과)
+- workflow.py: `install_missing_tools(ssh, missing, on_line)` 헬퍼 추가.
+  `sudo apt-get update && sudo DEBIAN_FRONTEND=noninteractive apt-get install -y <pkgs>`
+  를 한 chain으로 실행. 대화형 프롬프트(서비스 재시작 확인) 차단
+- `_step_git_pull`: preflight에서 누락 감지 시 즉시 실패하지 않고 자동 설치 시도.
+  설치 후 재검증해서도 누락이면 그때 실패. apt 자체가 실패하면 수동 설치 안내
+- 로그: apt update/install의 stdout/stderr가 git_pull 단계의 log collector를 통해
+  Slack 미리보기 + DB script_logs에 들어감 (mask_url_secrets 적용 — apt에는 무의미하지만 일관성)
+
+### 테스트 갱신
+- 기존 `test_preflight_missing_git_fails_git_pull_with_install_hint` 제거
+- 신규:
+  - `test_preflight_auto_installs_missing_git_and_proceeds` — git 누락 → apt 자동 설치 →
+    재검증 통과 → workflow 정상 진행
+  - `test_preflight_auto_install_failure_aborts_with_manual_hint` — apt 실패 시
+    "자동 설치 실패 … sudo apt-get install" 메시지로 거부, clone 시도 안 함
+  - `test_preflight_skips_install_when_tools_already_present` — 첫 검증부터 통과면
+    apt 명령 자체를 호출 안 함
+
+### docs/operations.md
+"필수 사전 설치" / "자동 설치되는 도구" 섹션 분리. git은 후자로 이동
+
 ### 다음에 해야 할 것
 1. **용혁 컨펌**:
    - dev-spec §9 남은 D-items (D3·D4·D13·D14·D15·D16) — 구현 시점 자연스럽게 확정 가능

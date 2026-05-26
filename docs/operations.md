@@ -13,19 +13,24 @@
 - 병원용 타겟 서버 자격증명 (`connecteve` 패스워드)
 
 ### 타겟 서버 (Ubuntu 24.04)
-**사전 설치 필수 도구** — 봇이 git_pull 단계에서 점검하며 누락 시 명확한 에러로 거부합니다:
+
+**필수 사전 설치**:
 - `openssh-server` — 봇의 SSH 접속을 위함. 설치 후 `PasswordAuthentication yes` 확인
-- `git` — 봇이 `gateway-infra-next`를 clone/pull
+- `connecteve` 계정 (sudo NOPASSWD 권장)
 
 ```bash
-# 타겟 서버에서 한 줄로
-sudo apt update && sudo apt install -y openssh-server git
+sudo apt update && sudo apt install -y openssh-server
 sudo systemctl enable --now ssh
 ```
 
-추가로 `connecteve` 계정이 sudo 권한을 가지고 있어야 인프라 스크립트(`setup-*.sh`)가 동작합니다.
+**자동 설치되는 도구** (사전 설치 불필요, 봇이 알아서 깔아줌):
+- `git` — git_pull 단계 진입 시 누락 감지하면 `sudo apt-get install -y git` 자동 실행
+- `kubectl`, `docker`, 컨테이너 런타임 등 — 인프라 스크립트(`setup-*.sh`)가 책임
 
-> **참고**: `kubectl`, `docker` 등 쿠버네티스 도구는 인프라 스크립트가 자동 설치하므로 사전 설치 불필요.
+미리 깔아두는 게 마음 편하면:
+```bash
+sudo apt install -y git
+```
 
 ## 2. 설치
 

@@ -79,6 +79,27 @@ async def check_target_tools(ssh: SSHClient) -> list[str]:
     return missing
 
 
+async def install_missing_tools(
+    ssh: SSHClient,
+    missing: list[str],
+    on_line=None,
+) -> int:
+    """누락 도구를 sudo apt로 자동 설치 시도. 마지막 exec exit code 반환.
+
+    `apt update && apt install -y <tools>`를 한 chain으로 실행. DEBIAN_FRONTEND=noninteractive로
+    대화형 프롬프트(서비스 재시작 확인 등) 차단. connecteve 계정의 NOPASSWD sudo 권한 가정 —
+    이미 setup-*.sh가 같은 권한으로 동작 중이라 추가 권한 요구 없음.
+    """
+    if not missing:
+        return 0
+    pkgs = " ".join(shlex.quote(t) for t in missing)
+    cmd = (
+        "sudo apt-get update && "
+        f"sudo DEBIAN_FRONTEND=noninteractive apt-get install -y {pkgs}"
+    )
+    return await ssh.exec(cmd, on_line=on_line)
+
+
 @dataclass(frozen=True, slots=True)
 class WorkflowConfig:
     bitbucket_user: str
@@ -161,18 +182,29 @@ class Workflow:
         await self._step_start(db, job, Step.GIT_PULL)
         start = time.monotonic()
 
-        # 사전 도구 검증 — git이 없으면 sync_repo는 exit 127로 죽을 뿐 어떤 도구가 빠졌는지 모름.
-        # 봇이 비대화형이라 자격증명 프롬프트도 처리 못 하니 빨리 사람 읽기 좋게 거부한다.
+        # 사전 도구 검증 — 누락 시 자동 설치 시도 후 재검증. 봇이 이미 setup-*.sh에 sudo를
+        # 쓰고 있어 단일 패키지 설치도 같은 권한 모델에서 일관성 있게 동작.
         missing = await check_target_tools(ssh)
         if missing:
-            duration = time.monotonic() - start
-            await self._step_done(db, job, Step.GIT_PULL, success=False, duration=duration)
-            raise WorkflowError(
-                Step.GIT_PULL,
-                f"타겟 서버에 필수 도구 누락: {', '.join(missing)}. "
-                f"`ssh connecteve@{job.target_ip}` 접속 후 "
-                f"`sudo apt update && sudo apt install -y {' '.join(missing)}` 실행 후 재시도.",
-            )
+            log_collector = self._make_log_collector(db, job, Step.GIT_PULL)
+            rc = await install_missing_tools(ssh, missing, on_line=log_collector)
+            if rc != 0:
+                duration = time.monotonic() - start
+                await self._step_done(db, job, Step.GIT_PULL, success=False, duration=duration)
+                raise WorkflowError(
+                    Step.GIT_PULL,
+                    f"누락 도구({', '.join(missing)}) 자동 설치 실패 (exit {rc}). "
+                    f"`ssh connecteve@{job.target_ip}` 접속 후 "
+                    f"`sudo apt-get install -y {' '.join(missing)}` 수동 실행 필요.",
+                )
+            still_missing = await check_target_tools(ssh)
+            if still_missing:
+                duration = time.monotonic() - start
+                await self._step_done(db, job, Step.GIT_PULL, success=False, duration=duration)
+                raise WorkflowError(
+                    Step.GIT_PULL,
+                    f"자동 설치 후에도 도구 누락: {', '.join(still_missing)}. PATH 확인 필요.",
+                )
 
         try:
             sha = await sync_repo(

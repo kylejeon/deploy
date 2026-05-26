@@ -224,20 +224,54 @@ async def test_install_path_persists_slack_thread_ts_to_db(temp_db):
 
 
 @pytest.mark.asyncio
-async def test_preflight_missing_git_fails_git_pull_with_install_hint(temp_db):
+async def test_preflight_auto_installs_missing_git_and_proceeds(temp_db):
+    """git 누락 → sudo apt install 자동 시도 → 재검증 통과 → workflow 계속."""
     fake = FakeSSHClient()
-    fake.enqueue("command -v git", [], exit_code=1)  # git 누락
+    fake.enqueue("command -v git", [], exit_code=1)  # 첫 검증: 누락
+    fake.enqueue("apt-get install", [StreamLine("stdout", "Setting up git")])  # 자동 설치 성공
+    fake.enqueue("command -v git", [], exit_code=0)  # 재검증: 통과
+    fake.enqueue("test -d", [], exit_code=1)  # clone path
+    fake.enqueue("git clone", [])
+    fake.enqueue("git fetch --all && git checkout", [])
+    fake.enqueue("git rev-parse HEAD", [StreamLine("stdout", "abc")])
+    fake.enqueue("setup-site.sh", [])
+    fake.enqueue("deploy-applications.sh", [])
+    fake.enqueue("kubectl get pods", [])
     wf = _make_workflow(fake, temp_db)
 
     result = await wf.run(_job())
+    assert result.status == JobStatus.SUCCEEDED
+    # apt install 명령이 실제로 호출됐는지
+    assert any("apt-get install" in c and "git" in c for c in fake.executed)
+    assert any("DEBIAN_FRONTEND=noninteractive" in c for c in fake.executed)
 
+
+@pytest.mark.asyncio
+async def test_preflight_auto_install_failure_aborts_with_manual_hint(temp_db):
+    """apt install 자체가 실패하면 분명한 에러로 종료. 수동 설치 안내 포함."""
+    fake = FakeSSHClient()
+    fake.enqueue("command -v git", [], exit_code=1)
+    fake.enqueue("apt-get install", [StreamLine("stderr", "E: package not found")], exit_code=100)
+    wf = _make_workflow(fake, temp_db)
+
+    result = await wf.run(_job())
     assert result.status == JobStatus.FAILED
-    assert "필수 도구 누락" in result.error_message
+    assert "자동 설치 실패" in result.error_message
     assert "git" in result.error_message
-    assert "sudo apt" in result.error_message  # 설치 힌트
-    # preflight에서 멈춰서 sync_repo는 호출 안 됨
+    assert "sudo apt-get install" in result.error_message  # 수동 설치 힌트
+    # clone은 시도하지 않음
     assert not any("git clone" in c for c in fake.executed)
-    assert not any("test -d" in c for c in fake.executed)
+
+
+@pytest.mark.asyncio
+async def test_preflight_skips_install_when_tools_already_present(temp_db):
+    """첫 검증부터 통과면 apt 명령은 아예 실행 안 함."""
+    fake = FakeSSHClient()
+    _enqueue_happy_path_hybrid(fake)
+    wf = _make_workflow(fake, temp_db)
+
+    await wf.run(_job())
+    assert not any("apt-get" in c for c in fake.executed)
 
 
 @pytest.mark.asyncio
