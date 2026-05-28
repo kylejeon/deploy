@@ -85,6 +85,12 @@ def ack_message(job_id: int) -> dict:
     return {"text": text, "blocks": [{"type": "section", "text": {"type": "mrkdwn", "text": text}}]}
 
 
+def cancel_ack(job_id: int) -> dict:
+    """cancel 명령 즉시 응답 — 워크플로 정리는 백그라운드에서. 최종 결과는 스레드의 취소 요약."""
+    text = f"🛑  작업 #{job_id} 취소 요청 받았습니다. 잠시 후 스레드에 결과가 갱신됩니다."
+    return {"text": text, "blocks": [{"type": "section", "text": {"type": "mrkdwn", "text": text}}]}
+
+
 # ---------- M-3: 단계 시작·완료 ----------
 
 def step_started(step: Step) -> dict:
@@ -304,7 +310,7 @@ def help_response(valid_types: Sequence[str]) -> dict:
         "`@autodeploy list [N]`\n"
         "  최근 N건 (기본 10, 최대 50).\n\n"
         "`@autodeploy cancel <job-id>`\n"
-        "  진행 중 작업 취소 (현재 단계 종료 후 중단).\n\n"
+        "  진행 중인 작업을 즉시 취소. 다음 await 지점에서 중단되며 스레드에 취소 요약이 게시됨.\n\n"
         "`@autodeploy retry [job-id]`\n"
         "  작업 재시도. 스레드 댓글로 실행하면 그 스레드의 원본 작업을 자동 인식.\n\n"
         "`@autodeploy help`\n"

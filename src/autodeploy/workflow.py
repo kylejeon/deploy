@@ -6,6 +6,7 @@ ssh_connect → git_pull → infra_install → app_install → healthcheck → d
 """
 from __future__ import annotations
 
+import asyncio
 import re
 import shlex
 import time
@@ -185,6 +186,11 @@ class Workflow:
                 await self._mark_success(db, job)
             except WorkflowError as err:
                 await self._mark_failure(db, job, err)
+            except asyncio.CancelledError:
+                # 외부에서 task.cancel() 호출됨 (Slack의 @autodeploy cancel <id>).
+                # DB·Slack 모두 정리한 뒤 그대로 re-raise해서 task가 정상 cancel 상태로 끝나게.
+                await self._mark_cancelled(db, job)
+                raise
             return job
 
     async def _prepare(self, db, job: Job) -> None:
@@ -375,3 +381,11 @@ class Workflow:
         job.status = JobStatus.FAILED
         job.error_message = err.message
         await self.notifier.job_finished(job, error=err)
+
+    async def _mark_cancelled(self, db, job: Job) -> None:
+        """사용자 요청으로 작업이 취소됐을 때 정리. DB·이벤트·Slack 알림."""
+        step_label = job.current_step.value if job.current_step else "?"
+        await repo.add_event(db, job.id, step_label, "warn", "cancelled by user")
+        await repo.finish_job(db, job.id, JobStatus.CANCELLED)
+        job.status = JobStatus.CANCELLED
+        await self.notifier.job_finished(job, error=None)

@@ -75,6 +75,13 @@ def test_ack_includes_cancel_command():
     assert "cancel 42" in out["text"]
 
 
+def test_cancel_ack_returns_request_accepted():
+    out = messages.cancel_ack(42)
+    assert "#42" in out["text"]
+    assert "취소" in out["text"]
+    assert "🛑" in str(out["blocks"])
+
+
 def test_step_started_has_step_number_and_icon():
     out = messages.step_started(Step.INFRA_INSTALL)
     text = out["text"]

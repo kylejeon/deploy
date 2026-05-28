@@ -200,14 +200,59 @@ async def test_install_missing_type_returns_validation_error(temp_db):
     assert "--type" in result.response["text"]
 
 
-# ---------- cancel / unknown ----------
+# ---------- cancel ----------
 
 @pytest.mark.asyncio
-async def test_cancel_returns_not_yet_supported(temp_db):
+async def test_cancel_running_job_returns_cancel_job_id(temp_db):
+    """진행 중 작업에 cancel → CommandResult.cancel_job_id 세팅 + ephemeral ack."""
     s = _settings(temp_db)
-    ctx = CommandContext(user_id="U01", channel_id="C01", text="cancel 5")
+    async with connect(temp_db) as db:
+        from autodeploy.models import Job
+        job_id = await repo.create_job(db, Job(
+            id=None, target_ip="10.0.0.10", deployment_type="on-premise",
+            hospital_code="H1", started_by="U01", slack_channel="C01",
+        ))
+        await repo.mark_running(db, job_id)
+
+    ctx = CommandContext(user_id="U01", channel_id="C01", text=f"cancel {job_id}")
     result = await handle_command(ctx, settings=s, deployment_types=TYPES)
-    assert "v1.1" in result.response["text"]
+
+    assert result.cancel_job_id == job_id
+    assert result.workflow_job is None
+    assert str(job_id) in result.response["text"]
+    assert "취소" in result.response["text"]
+
+
+@pytest.mark.asyncio
+async def test_cancel_unknown_job_returns_error(temp_db):
+    s = _settings(temp_db)
+    ctx = CommandContext(user_id="U01", channel_id="C01", text="cancel 99999")
+    result = await handle_command(ctx, settings=s, deployment_types=TYPES)
+
+    assert result.cancel_job_id is None
+    assert "99999" in result.response["text"]
+
+
+@pytest.mark.asyncio
+async def test_cancel_already_finished_job_returns_error(temp_db):
+    s = _settings(temp_db)
+    async with connect(temp_db) as db:
+        from autodeploy.models import Job
+        job_id = await repo.create_job(db, Job(
+            id=None, target_ip="10.0.0.11", deployment_type="on-premise",
+            hospital_code="H1", started_by="U01", slack_channel="C01",
+        ))
+        await repo.finish_job(db, job_id, JobStatus.SUCCEEDED)
+
+    ctx = CommandContext(user_id="U01", channel_id="C01", text=f"cancel {job_id}")
+    result = await handle_command(ctx, settings=s, deployment_types=TYPES)
+
+    assert result.cancel_job_id is None
+    assert "이미 종료" in result.response["text"]
+    assert "succeeded" in result.response["text"]
+
+
+# ---------- unknown ----------
 
 
 @pytest.mark.asyncio

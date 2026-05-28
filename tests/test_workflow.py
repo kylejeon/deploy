@@ -1,6 +1,7 @@
 """end-to-end (mocked) 워크플로 시나리오."""
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 
 import pytest
@@ -579,6 +580,55 @@ async def test_workflow_masks_token_in_script_logs(temp_db):
     joined = "\n".join(lines)
     assert "ATBBleak" not in joined  # 토큰 평문 없음
     assert "***@bitbucket.org" in joined  # 마스킹 형태로
+
+
+@pytest.mark.asyncio
+async def test_workflow_cancellation_marks_db_and_notifies(temp_db):
+    """워크플로 도중 task.cancel() 호출 시 DB는 CANCELLED, notifier에 job_finished(cancelled)."""
+
+    class _HangingSSHClient(FakeSSHClient):
+        """특정 명령 substring을 만나면 이벤트가 set될 때까지 대기 → cancel 가능."""
+        def __init__(self, hang_on: str) -> None:
+            super().__init__()
+            self._hang_on = hang_on
+            self.entered_hang = asyncio.Event()
+            self._release = asyncio.Event()
+
+        async def exec(self, command, on_line=None):
+            if self._hang_on in command:
+                self.entered_hang.set()
+                await self._release.wait()  # never released → cancel로만 빠져나옴
+                return 0
+            return await super().exec(command, on_line)
+
+    fake = _HangingSSHClient(hang_on="setup-site.sh")
+    fake.enqueue("add-apt-repository", [])
+    fake.enqueue("command -v git", [], exit_code=0)
+    fake.enqueue("test -d", [], exit_code=0)
+    fake.enqueue("git remote set-url origin", [])
+    fake.enqueue("git rev-parse HEAD", [StreamLine("stdout", "sha1")])
+    fake.enqueue("setup-site.sh", [])  # 도달 시 hang
+
+    notifier = RecordingNotifier()
+    wf = _make_workflow(fake, temp_db, notifier)
+
+    task = asyncio.create_task(wf.run(_job()))
+    # setup-site.sh 진입까지 대기
+    await asyncio.wait_for(fake.entered_hang.wait(), timeout=2.0)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    # DB가 CANCELLED로 정리됐는지
+    async with connect(temp_db) as db:
+        async with db.execute("SELECT id, status FROM jobs ORDER BY id DESC LIMIT 1") as cur:
+            row = await cur.fetchone()
+    assert row["status"] == "cancelled"
+
+    # notifier에 job_finished(cancelled) 이벤트
+    finish_events = [e for e in notifier.events if e[0] == "job_finished"]
+    assert len(finish_events) == 1
+    assert finish_events[0][1]["status"] == "cancelled"
 
 
 @pytest.mark.asyncio

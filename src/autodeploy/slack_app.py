@@ -24,7 +24,7 @@ from autodeploy.commands import (
 )
 from autodeploy.config import DeploymentType
 from autodeploy.db import connect
-from autodeploy.models import Job
+from autodeploy.models import Job, JobStatus
 from autodeploy.settings import Settings
 from autodeploy.workflow import Workflow
 
@@ -42,10 +42,16 @@ class CommandContext:
 
 @dataclass(frozen=True, slots=True)
 class CommandResult:
-    """봇이 사용자에게 줄 응답 + 백그라운드로 시작할 workflow job."""
+    """봇이 사용자에게 줄 응답 + 부수효과 신호.
+
+    response: ephemeral로 게시할 메시지
+    workflow_job: 백그라운드에서 시작할 workflow job
+    cancel_job_id: 봇이 cancel해야 할 task의 job_id (검증은 이미 handle_command에서 완료)
+    """
 
     response: dict | None
     workflow_job: Job | None = None
+    cancel_job_id: int | None = None
 
 
 async def handle_command(
@@ -93,11 +99,22 @@ async def handle_command(
         return CommandResult(response=messages.list_response(jobs, limit=cmd.limit))
 
     if isinstance(cmd, CancelCommand):
-        return CommandResult(
-            response=messages.validation_error(
-                "cancel은 v1.1에서 지원 예정입니다.",
-                suggestion=f"`@autodeploy status {cmd.job_id}` 로 진행 상황 확인 가능",
+        async with connect(settings.db_path) as db:
+            target = await repo.get_job(db, cmd.job_id)
+        if target is None:
+            return CommandResult(
+                response=messages.validation_error(f"작업 #{cmd.job_id}을(를) 찾을 수 없습니다.")
             )
+        if target.status not in (JobStatus.QUEUED, JobStatus.RUNNING):
+            return CommandResult(
+                response=messages.validation_error(
+                    f"작업 #{cmd.job_id}은 이미 종료됨 (`{target.status.value}`).",
+                    suggestion=f"`@autodeploy status {cmd.job_id}` 로 자세히 확인",
+                )
+            )
+        return CommandResult(
+            response=messages.cancel_ack(cmd.job_id),
+            cancel_job_id=cmd.job_id,
         )
 
     if isinstance(cmd, RetryCommand):
@@ -213,7 +230,8 @@ class AutoDeployBot:
         self._workflow = workflow
         self._app = AsyncApp(token=settings.slack_bot_token)
         self._socket_handler = AsyncSocketModeHandler(self._app, settings.slack_app_token)
-        self._running_tasks: set[asyncio.Task] = set()
+        # job_id -> task. cancel 명령이 task.cancel()을 호출할 수 있도록.
+        self._tasks_by_job: dict[int, asyncio.Task] = {}
         self._register_handlers()
 
     def _register_handlers(self) -> None:
@@ -243,11 +261,29 @@ class AutoDeployBot:
                     blocks=result.response.get("blocks"),
                 )
             if result.workflow_job is not None:
+                job_id = result.workflow_job.id
                 task = asyncio.create_task(self._workflow.run(result.workflow_job))
-                self._running_tasks.add(task)
-                task.add_done_callback(self._running_tasks.discard)
+                self._tasks_by_job[job_id] = task
+                task.add_done_callback(lambda _t, jid=job_id: self._tasks_by_job.pop(jid, None))
+            if result.cancel_job_id is not None:
+                await self._cancel_task(result.cancel_job_id)
         except Exception:
             logger.exception("dispatch failed")
+
+    async def _cancel_task(self, job_id: int) -> None:
+        """task.cancel()로 워크플로 정상 종료 경로 발동. 정리(DB/Slack)는 workflow가 담당.
+
+        task가 메모리에 없으면 (예: 데몬 재시작 후의 orphan) DB만이라도 CANCELLED로 정정.
+        이 경로의 Slack 부모 메시지는 갱신 못함 — notifier의 _parent_ts가 사라졌기 때문.
+        """
+        task = self._tasks_by_job.get(job_id)
+        if task is not None and not task.done():
+            task.cancel()
+            return
+        async with connect(self._settings.db_path) as db:
+            target = await repo.get_job(db, job_id)
+            if target is not None and target.status in (JobStatus.QUEUED, JobStatus.RUNNING):
+                await repo.finish_job(db, job_id, JobStatus.CANCELLED)
 
     async def start(self) -> None:
         await self._socket_handler.start_async()

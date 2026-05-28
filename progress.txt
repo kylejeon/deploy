@@ -206,6 +206,51 @@ DB는 영원히 NULL.
   - test_auto_install_injects_sudo_password_when_set (apt + setup 모두 검증)
   - test_auto_install_uses_plain_sudo_when_no_password
 
+## 2026-05-28 (later) — cancel 명령 본격 구현 (v1.1 → v1.0 편입)
+
+### 배경
+초기엔 v1.1로 미뤘던 기능. 사용자 요청으로 본격 구현.
+
+### 구현 (187/187 통과)
+- workflow.py: Workflow.run에 `except asyncio.CancelledError` 추가.
+  - `_mark_cancelled(db, job)`: job_events에 "cancelled by user" 기록 + DB CANCELLED +
+    notifier.job_finished. 처리 후 CancelledError를 re-raise해 task가 정상 cancel 상태로 끝남.
+- slack_app.py:
+  - CommandResult에 `cancel_job_id: int | None` 필드 추가
+  - handle_command의 cancel 처리: DB에서 작업 찾고 상태(QUEUED/RUNNING) 검증.
+    유효하면 cancel_ack ephemeral + cancel_job_id 세팅. 없거나 이미 종료면 명확한 에러.
+  - AutoDeployBot._running_tasks(set) → _tasks_by_job(dict[int, Task])로 교체.
+    각 task의 done_callback에서 dict에서 자동 제거.
+  - AutoDeployBot._cancel_task(job_id): task가 메모리에 있으면 task.cancel() 호출 →
+    workflow의 CancelledError 핸들러가 알아서 정리. orphan(데몬 재시작 후)이면 DB만 정정.
+- messages.py:
+  - cancel_ack(job_id): 즉시 응답용 🛑 메시지
+  - help_response의 cancel 설명을 "v1.1 예정" → "즉시 취소" 로 갱신
+- slack_app.py imports에 JobStatus 추가
+
+### UX
+1. 사용자: `@AutoDeploy cancel 42`
+2. 봇: ephemeral "🛑 작업 #42 취소 요청 받았습니다" (handle_command 검증)
+3. 봇: task.cancel() (workflow.run의 다음 await에서 CancelledError 발생)
+4. workflow: DB CANCELLED + notifier.job_finished(status=cancelled)
+5. SlackNotifier: 부모 헤더 ⚠️ 취소 + 스레드에 cancel_summary 게시 (기존 M-7 로직)
+
+### 알려진 한계
+- 데몬 재시작 후 RUNNING으로 남아있는 orphan 작업을 cancel하면 DB만 CANCELLED로 정정.
+  notifier 메모리 상태가 사라져 Slack 부모 메시지는 갱신 안 됨. v1.0.x QA D-2와 동일 맥락.
+- cancel은 "다음 await 지점"에서 발동. SSH exec 중이면 asyncssh가 cancel을 처리해
+  연결 끊고 빠져나오며, 원격 명령은 OS가 SIGHUP으로 종료 (kernel 단). 보통 1~2초 내 정리.
+
+### 테스트
+- test_messages: cancel_ack
+- test_slack_app:
+  - test_cancel_running_job_returns_cancel_job_id
+  - test_cancel_unknown_job_returns_error
+  - test_cancel_already_finished_job_returns_error
+- test_workflow:
+  - test_workflow_cancellation_marks_db_and_notifies (내부 HangingSSHClient로 cancel
+    시점에 hang 후 task.cancel() → DB·notifier 검증)
+
 ## 2026-05-28 — SSH host key 검증 비활성화 (정정)
 
 ### 배경
