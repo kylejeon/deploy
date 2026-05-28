@@ -206,6 +206,35 @@ DB는 영원히 NULL.
   - test_auto_install_injects_sudo_password_when_set (apt + setup 모두 검증)
   - test_auto_install_uses_plain_sudo_when_no_password
 
+## 2026-05-28 (later 3) — URL 캡처 범위 확장 (infra+app, stdout+stderr)
+
+### 배경
+on-premise 첫 성공 후 success_summary가 다음 문제 발견:
+- admin URL이 포트 없는 template fallback (`http://192.168.100.213/`)
+- Temporal Web · Web-PACS URL 누락
+- 커밋 SHA가 `-` (별도 픽스로 해결, 커밋 09d5eaa)
+
+타겟 로그를 보니 `[INFO] Temporal Web URL: http://192.168.100.213:30851`
+같은 줄은 정상 출력 중. 즉 정규식 매칭은 가능. 우리가 잘못된 곳에서만
+캡처했던 게 원인:
+- APP_INSTALL 단계만 capture → infra 스크립트가 URL 내보내면 누락
+- stdout만 capture → 스크립트가 stderr로 [INFO] 보내면 누락
+
+### 패치 (194/194 통과)
+- workflow.py:
+  - `_step_script`의 capture 조건을 `INFRA_INSTALL` + `APP_INSTALL` 모두로 확장.
+  - 단계 끝날 때마다 추출 URL을 `job.extra_urls`에 **merge** (dict union).
+    같은 라벨이면 나중 단계(app)가 인프라 값을 덮음.
+  - `_make_log_collector`의 capture가 stdout/stderr 양쪽 모두 받도록.
+
+### 테스트 신규 3건
+- test_workflow_captures_urls_from_infra_step_too — setup-site.sh 출력에서
+  Temporal·PACS 잡기
+- test_workflow_captures_urls_from_stderr — stderr에 [INFO] Frontend URL
+  보내도 admin_web_url로 설정
+- test_workflow_merges_urls_across_infra_and_app — infra+app 둘 다 출력 시
+  병합 동작 (라벨 중복은 app 우선, 신규 라벨도 합쳐짐)
+
 ## 2026-05-28 (later 2) — `status` 무인자는 진행 중만 표시
 
 ### 배경

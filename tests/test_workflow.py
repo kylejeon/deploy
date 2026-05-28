@@ -509,6 +509,90 @@ async def test_workflow_captures_app_urls_and_uses_frontend_as_admin(temp_db):
 
 
 @pytest.mark.asyncio
+async def test_workflow_captures_urls_from_infra_step_too(temp_db):
+    """on-premise처럼 infra 스크립트가 URL을 출력하는 케이스도 잡아야 함."""
+    fake = FakeSSHClient()
+    _enqueue_preflight_ok(fake)
+    fake.enqueue("test -d", [], exit_code=0)
+    fake.enqueue("git remote set-url origin", [])
+    fake.enqueue("git rev-parse HEAD", [StreamLine("stdout", "sha1")])
+    fake.enqueue(
+        "setup-site.sh",
+        [
+            StreamLine("stdout", "[INFO] Temporal Web URL: http://192.168.100.213:30851"),
+            StreamLine("stdout", "[INFO] Web-PACS URL (Traefik): http://192.168.100.213:30080/"),
+        ],
+    )
+    fake.enqueue("deploy-applications.sh", [])
+    fake.enqueue("kubectl get pods", [])
+    wf = _make_workflow(fake, temp_db)
+
+    result = await wf.run(_job(ip="192.168.100.213"))
+
+    assert result.status == JobStatus.SUCCEEDED
+    assert "Temporal Web" in result.extra_urls
+    assert result.extra_urls["Temporal Web"] == "http://192.168.100.213:30851"
+    assert "Web-PACS" in result.extra_urls
+    assert result.extra_urls["Web-PACS"] == "http://192.168.100.213:30080/"
+
+
+@pytest.mark.asyncio
+async def test_workflow_captures_urls_from_stderr(temp_db):
+    """일부 스크립트는 [INFO] 로그를 stderr로 출력 — 그래도 잡아야 함."""
+    fake = FakeSSHClient()
+    _enqueue_preflight_ok(fake)
+    fake.enqueue("test -d", [], exit_code=0)
+    fake.enqueue("git remote set-url origin", [])
+    fake.enqueue("git rev-parse HEAD", [StreamLine("stdout", "sha1")])
+    fake.enqueue("setup-site.sh", [])
+    fake.enqueue(
+        "deploy-applications.sh",
+        [
+            StreamLine("stderr", "[INFO] Frontend URL: http://192.168.100.213:31489"),
+        ],
+    )
+    fake.enqueue("kubectl get pods", [])
+    wf = _make_workflow(fake, temp_db)
+
+    result = await wf.run(_job(ip="192.168.100.213"))
+    assert result.admin_web_url == "http://192.168.100.213:31489"
+
+
+@pytest.mark.asyncio
+async def test_workflow_merges_urls_across_infra_and_app(temp_db):
+    """infra·app 양쪽이 URL을 출력하면 모두 보관. 동일 라벨은 나중(app) 값이 우선."""
+    fake = FakeSSHClient()
+    _enqueue_preflight_ok(fake)
+    fake.enqueue("test -d", [], exit_code=0)
+    fake.enqueue("git remote set-url origin", [])
+    fake.enqueue("git rev-parse HEAD", [StreamLine("stdout", "sha1")])
+    fake.enqueue(
+        "setup-site.sh",
+        [
+            StreamLine("stdout", "[INFO] Temporal Web URL: http://10.0.0.1:30851"),
+            StreamLine("stdout", "[INFO] Web-PACS URL: http://10.0.0.1:30080/"),
+        ],
+    )
+    fake.enqueue(
+        "deploy-applications.sh",
+        [
+            # 같은 라벨이지만 다른 포트 — 새 값으로 덮어쓰기
+            StreamLine("stdout", "[INFO] Web-PACS URL: http://10.0.0.1:30090/"),
+            # 신규 라벨 추가
+            StreamLine("stdout", "[INFO] Frontend URL: http://10.0.0.1:31489"),
+        ],
+    )
+    fake.enqueue("kubectl get pods", [])
+    wf = _make_workflow(fake, temp_db)
+
+    result = await wf.run(_job(ip="10.0.0.1"))
+    assert result.extra_urls["Temporal Web"] == "http://10.0.0.1:30851"  # infra 단계 유지
+    assert result.extra_urls["Web-PACS"] == "http://10.0.0.1:30090/"      # app가 덮어씀
+    assert result.extra_urls["Frontend"] == "http://10.0.0.1:31489"       # app에서 신규
+    assert result.admin_web_url == "http://10.0.0.1:31489"                 # Frontend가 admin
+
+
+@pytest.mark.asyncio
 async def test_workflow_admin_url_falls_back_to_template_when_no_frontend(temp_db):
     fake = FakeSSHClient()
     _enqueue_preflight_ok(fake)

@@ -297,8 +297,11 @@ class Workflow:
     async def _step_script(self, db, job: Job, ssh: SSHClient, step: Step, spec) -> None:
         await self._step_start(db, job, step)
         start = time.monotonic()
-        # app_install 단계에서만 stdout을 별도로 캡처해 URL 추출에 사용 (QA O-6)
-        capture: list[str] | None = [] if step == Step.APP_INSTALL else None
+        # infra/app 단계 모두에서 URL 캡처 — on-premise는 인프라 스크립트가 URL을 출력하기도 함.
+        # stdout+stderr 양쪽 모두 수집 ([INFO] 줄이 stderr로 가는 스크립트도 있음).
+        capture: list[str] | None = (
+            [] if step in (Step.INFRA_INSTALL, Step.APP_INSTALL) else None
+        )
         rc = await run_script(
             ssh,
             workdir=self.cfg.work_dir,
@@ -312,7 +315,10 @@ class Workflow:
             await self._step_done(db, job, step, success=False, duration=duration)
             raise WorkflowError(step, f"script exited with {rc}")
         if capture is not None:
-            job.extra_urls = extract_urls_from_lines(job.target_ip, capture)
+            new_urls = extract_urls_from_lines(job.target_ip, capture)
+            if new_urls:
+                # 단계 별로 병합. 같은 라벨이면 나중 단계(app)가 인프라 단계 값을 덮음.
+                job.extra_urls = {**(job.extra_urls or {}), **new_urls}
         await self._step_done(db, job, step, success=True, duration=duration)
 
     async def _step_healthcheck(self, db, job: Job, ssh: SSHClient) -> None:
@@ -362,7 +368,9 @@ class Workflow:
     ) -> LineCallback:
         async def collect(line: StreamLine) -> None:
             masked = StreamLine(line.stream, mask_url_secrets(line.line))
-            if capture is not None and masked.stream == "stdout":
+            # capture는 URL 추출용. 일부 스크립트는 [INFO] 정보 로그를 stderr로 출력하므로
+            # 양쪽 stream 모두 받음. 토큰 마스킹은 이미 위에서 적용됨.
+            if capture is not None:
                 capture.append(masked.line)
             await repo.add_script_log(db, job.id, step.value, masked.stream, masked.line)
             await self.notifier.step_log(job, step, masked)
