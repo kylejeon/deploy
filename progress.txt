@@ -206,6 +206,30 @@ DB는 영원히 NULL.
   - test_auto_install_injects_sudo_password_when_set (apt + setup 모두 검증)
   - test_auto_install_uses_plain_sudo_when_no_password
 
+## 2026-05-28 (later 2) — `status` 무인자는 진행 중만 표시
+
+### 배경
+사용자가 `@AutoDeploy status` 쳤을 때 가장 최근 작업(cancelled 상태)이
+잡혀버려서 "진행 중 작업이 없는데도 종료된 작업이 status에 뜨는" UX 문제.
+종료된 작업은 list로 확인하면 되고, status는 "지금 뭐가 돌고 있나"에 집중.
+
+### 변경 (191/191 통과)
+- repository.py: `find_active_jobs(db, limit)` 추가.
+  status IN ('queued','running')만 가장 최근 id 순으로 반환.
+- slack_app.py: `status` 명령 무인자 분기를 list_recent_jobs → find_active_jobs로 교체.
+  - 명시 id (`status 42`)는 그대로 모든 상태 표시 (사용자가 콕 짚어 물어본 거)
+  - 무인자는 active 1건만 — 없으면 기존의 "진행 중인 작업이 없습니다" 메시지
+
+### 테스트
+- test_repository 신규 2건:
+  - find_active_jobs가 queued+running만, 종료된 3가지(succeeded/failed/cancelled) 제외
+  - limit 인자 존중 (최신 N건)
+- test_slack_app:
+  - test_status_without_id_returns_only_active (active 1건 우선, cancelled은 무시)
+  - test_status_without_id_when_only_finished_jobs_exist (전부 종료면 "없음" 메시지)
+  - test_status_with_explicit_id_shows_finished_jobs_too (명시 id는 그대로 표시)
+  - 기존 test_status_without_id_returns_latest → test_status_without_id_returns_only_active로 의도 변경
+
 ## 2026-05-28 (later) — cancel 명령 본격 구현 (v1.1 → v1.0 편입)
 
 ### 배경

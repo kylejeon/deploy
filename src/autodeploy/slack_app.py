@@ -87,10 +87,12 @@ async def handle_command(
     if isinstance(cmd, StatusCommand):
         async with connect(settings.db_path) as db:
             if cmd.job_id is not None:
+                # 명시 id면 종료된 작업도 그대로 표시 (사용자가 콕 짚어 물어본 거)
                 job = await repo.get_job(db, cmd.job_id)
             else:
-                recent = await repo.list_recent_jobs(db, limit=1)
-                job = recent[0] if recent else None
+                # 무인자면 진행 중(queued/running)만. 종료된 작업은 list로 보면 됨.
+                active = await repo.find_active_jobs(db, limit=1)
+                job = active[0] if active else None
         return CommandResult(response=messages.status_response(job))
 
     if isinstance(cmd, ListCommand):

@@ -135,6 +135,45 @@ async def test_find_jobs_by_thread_ts_returns_chain_newest_first(temp_db):
 
 
 @pytest.mark.asyncio
+async def test_find_active_jobs_returns_only_running_or_queued(temp_db):
+    async with connect(temp_db) as db:
+        # queued (방금 만들어 mark_running 안 함)
+        q_id = await repo.create_job(db, _new_job(target_ip="1.1.1.1"))
+        # running
+        r_id = await repo.create_job(db, _new_job(target_ip="2.2.2.2"))
+        await repo.mark_running(db, r_id)
+        # succeeded
+        s_id = await repo.create_job(db, _new_job(target_ip="3.3.3.3"))
+        await repo.finish_job(db, s_id, JobStatus.SUCCEEDED)
+        # failed
+        f_id = await repo.create_job(db, _new_job(target_ip="4.4.4.4"))
+        await repo.finish_job(db, f_id, JobStatus.FAILED, error_message="x")
+        # cancelled
+        c_id = await repo.create_job(db, _new_job(target_ip="5.5.5.5"))
+        await repo.finish_job(db, c_id, JobStatus.CANCELLED)
+
+        active = await repo.find_active_jobs(db, limit=10)
+
+    ids = {j.id for j in active}
+    assert ids == {q_id, r_id}  # 종료된 3건은 빠짐
+
+
+@pytest.mark.asyncio
+async def test_find_active_jobs_respects_limit(temp_db):
+    async with connect(temp_db) as db:
+        ids = []
+        for i in range(5):
+            jid = await repo.create_job(db, _new_job(target_ip=f"10.0.0.{i}"))
+            await repo.mark_running(db, jid)
+            ids.append(jid)
+
+        result = await repo.find_active_jobs(db, limit=2)
+
+    # 가장 최근 2건
+    assert [j.id for j in result] == [ids[-1], ids[-2]]
+
+
+@pytest.mark.asyncio
 async def test_find_active_by_ip_only_returns_running_or_queued(temp_db):
     async with connect(temp_db) as db:
         # 진행 중

@@ -92,18 +92,67 @@ async def test_list_returns_recent_jobs(temp_db):
 
 
 @pytest.mark.asyncio
-async def test_status_without_id_returns_latest(temp_db):
+async def test_status_without_id_returns_only_active(temp_db):
+    """status 무인자는 진행 중(running/queued) 작업만 표시. 종료된 작업은 무시."""
     s = _settings(temp_db)
     async with connect(temp_db) as db:
         from autodeploy.models import Job
-        await repo.create_job(db, Job(
+        # 종료된 작업 (가장 최근이지만 status는 cancelled)
+        finished_id = await repo.create_job(db, Job(
             id=None, target_ip="2.2.2.2", deployment_type="hybrid-with-ai",
             hospital_code="H1", started_by="U01", slack_channel="C01",
         ))
+        await repo.finish_job(db, finished_id, JobStatus.CANCELLED)
+        # 진행 중 작업 (더 오래된 id지만 running 상태)
+        active_id = await repo.create_job(db, Job(
+            id=None, target_ip="3.3.3.3", deployment_type="on-premise",
+            hospital_code="H2", started_by="U01", slack_channel="C01",
+        ))
+        await repo.mark_running(db, active_id)
 
     ctx = CommandContext(user_id="U01", channel_id="C01", text="status")
     result = await handle_command(ctx, settings=s, deployment_types=TYPES)
-    assert "2.2.2.2" in str(result.response["blocks"])
+    body = str(result.response["blocks"])
+    # active 한 작업이 잡혀야 함
+    assert "3.3.3.3" in body
+    # 종료된 cancelled 작업은 status에 안 나타남
+    assert "2.2.2.2" not in body
+
+
+@pytest.mark.asyncio
+async def test_status_without_id_when_only_finished_jobs_exist(temp_db):
+    """진행 중 작업이 0건이면 (모두 종료됐어도) '진행 중 없음' 메시지."""
+    s = _settings(temp_db)
+    async with connect(temp_db) as db:
+        from autodeploy.models import Job
+        job_id = await repo.create_job(db, Job(
+            id=None, target_ip="9.9.9.9", deployment_type="on-premise",
+            hospital_code="H", started_by="U01", slack_channel="C01",
+        ))
+        await repo.finish_job(db, job_id, JobStatus.SUCCEEDED)
+
+    ctx = CommandContext(user_id="U01", channel_id="C01", text="status")
+    result = await handle_command(ctx, settings=s, deployment_types=TYPES)
+    assert "진행 중인 작업이 없습니다" in result.response["text"]
+
+
+@pytest.mark.asyncio
+async def test_status_with_explicit_id_shows_finished_jobs_too(temp_db):
+    """`status <id>`는 종료된 작업도 그대로 표시 (사용자가 콕 짚어서 물어본 것)."""
+    s = _settings(temp_db)
+    async with connect(temp_db) as db:
+        from autodeploy.models import Job
+        job_id = await repo.create_job(db, Job(
+            id=None, target_ip="4.4.4.4", deployment_type="on-premise",
+            hospital_code="H", started_by="U01", slack_channel="C01",
+        ))
+        await repo.finish_job(db, job_id, JobStatus.FAILED, error_message="boom")
+
+    ctx = CommandContext(user_id="U01", channel_id="C01", text=f"status {job_id}")
+    result = await handle_command(ctx, settings=s, deployment_types=TYPES)
+    body = str(result.response["blocks"])
+    assert "4.4.4.4" in body  # 종료된 작업이지만 표시됨
+    assert "failed" in body
 
 
 @pytest.mark.asyncio

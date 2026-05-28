@@ -123,6 +123,18 @@ async def find_active_by_ip(db: aiosqlite.Connection, target_ip: str) -> list[Jo
     return [_row_to_job(r) for r in rows]
 
 
+async def find_active_jobs(
+    db: aiosqlite.Connection, limit: int = 10
+) -> list[Job]:
+    """진행 중(queued/running) 작업들. 가장 최근부터. `status` 명령 무인자 분기에 사용."""
+    async with db.execute(
+        "SELECT * FROM jobs WHERE status IN ('queued','running') ORDER BY id DESC LIMIT ?",
+        (limit,),
+    ) as cur:
+        rows = await cur.fetchall()
+    return [_row_to_job(r) for r in rows]
+
+
 async def find_jobs_by_thread_ts(
     db: aiosqlite.Connection, thread_ts: str
 ) -> list[Job]:
