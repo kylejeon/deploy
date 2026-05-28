@@ -84,12 +84,12 @@ def test_asyncssh_client_imports_without_error():
 
 
 def test_asyncssh_client_skips_host_key_verification_by_default():
-    """기본값이 빈 튜플 () — asyncssh에서 host key 검증 비활성 의미.
-    `None`이면 ~/.ssh/known_hosts를 사용해서 검증이 켜지므로, () 이어야 한다.
+    """기본값이 None — asyncssh 공식 문서상 host key 검증 완전 비활성 의미.
+    `()`(빈 튜플)는 직관과 반대로 "빈 키 리스트와 매칭 시도 → 항상 실패"이므로 부적합.
     """
     from autodeploy.ssh import AsyncSSHClient
     client = AsyncSSHClient("1.2.3.4", "user", "pw")
-    assert client._known_hosts == ()
+    assert client._known_hosts is None
 
 
 def test_asyncssh_client_known_hosts_override_respected():
