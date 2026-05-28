@@ -83,6 +83,25 @@ def test_asyncssh_client_imports_without_error():
     assert client._connect_backoff == (1.0, 2.0)
 
 
+def test_asyncssh_client_skips_host_key_verification_by_default():
+    """기본값이 빈 튜플 () — asyncssh에서 host key 검증 비활성 의미.
+    `None`이면 ~/.ssh/known_hosts를 사용해서 검증이 켜지므로, () 이어야 한다.
+    """
+    from autodeploy.ssh import AsyncSSHClient
+    client = AsyncSSHClient("1.2.3.4", "user", "pw")
+    assert client._known_hosts == ()
+
+
+def test_asyncssh_client_known_hosts_override_respected():
+    """필요 시 검증을 켜고 싶다면 known_hosts에 명시적으로 값을 넣을 수 있다."""
+    from autodeploy.ssh import AsyncSSHClient
+    client = AsyncSSHClient(
+        "1.2.3.4", "user", "pw",
+        known_hosts="/etc/ssh/known_hosts",
+    )
+    assert client._known_hosts == "/etc/ssh/known_hosts"
+
+
 # ---------- _retry_async (QA D-1 핫픽스) ----------
 
 @pytest.mark.asyncio

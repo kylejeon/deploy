@@ -74,7 +74,13 @@ async def _invoke(cb: LineCallback | None, line: StreamLine) -> None:
 
 
 class AsyncSSHClient:
-    """asyncssh 기반 SSHClient. known_hosts=None은 검증 생략 — 사내·폐쇄망 가정."""
+    """asyncssh 기반 SSHClient.
+
+    known_hosts 기본값은 빈 튜플 `()` — asyncssh에서 검증 완전 비활성 의미.
+    asyncssh 규약상 `None`은 `~/.ssh/known_hosts` 파일 사용(검증 켜짐)이므로 주의.
+    사내·폐쇄망 운영 가정에서 host key 검증을 끄고 다닌다 (병원 서버 재설치·
+    IP 변경 시에도 봇이 막히지 않도록).
+    """
 
     def __init__(
         self,
@@ -83,7 +89,7 @@ class AsyncSSHClient:
         password: str,
         *,
         port: int = 22,
-        known_hosts: Any = None,
+        known_hosts: Any = (),
         connect_attempts: int = 3,
         connect_backoff: Sequence[float] = (1.0, 2.0),
     ) -> None:

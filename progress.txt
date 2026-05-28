@@ -206,6 +206,24 @@ DB는 영원히 NULL.
   - test_auto_install_injects_sudo_password_when_set (apt + setup 모두 검증)
   - test_auto_install_uses_plain_sudo_when_no_password
 
+## 2026-05-28 — SSH host key 검증 실제로 비활성화
+
+### 배경
+docstring엔 "known_hosts=None은 검증 생략"이라고 적혀있었지만, asyncssh
+규약상 `None`은 ~/.ssh/known_hosts 사용(검증 켜짐)이 맞음. 빈 튜플 `()`이
+검증 완전 비활성. 그동안 문제 없었던 건 맥미니의 known_hosts에 타겟 키가
+이미 등록돼 있었기 때문.
+
+타겟 재설치·IP 변경·신규 병원 서버 배포 시 host key mismatch로 봇이
+죽을 위험. 명시적으로 검증 끄고 docstring 수정.
+
+### 픽스 (183/183 통과)
+- ssh.py: AsyncSSHClient의 known_hosts 기본값 None → () (빈 튜플).
+  docstring 갱신해 asyncssh 규약 명시.
+- 신규 테스트 2건:
+  - test_asyncssh_client_skips_host_key_verification_by_default
+  - test_asyncssh_client_known_hosts_override_respected (필요 시 검증 켤 수 있음)
+
 ## 2026-05-26 (later 7) — work_dir 의 `~` literal 폴더 버그 픽스
 
 ### 증상
