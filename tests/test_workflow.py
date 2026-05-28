@@ -87,7 +87,7 @@ async def test_happy_path_hybrid_with_ai(temp_db):
     assert result.status == JobStatus.SUCCEEDED
     assert result.admin_web_url == "http://192.168.1.50/"
     assert result.current_step == Step.DONE
-    assert result.script_commit_sha is None  # 객체에 직접 반영은 안 됨 (DB만)
+    assert result.script_commit_sha == "abc123"  # success_summary 표시용으로 객체에도 반영
 
     # DB 검증
     async with connect(temp_db) as db:

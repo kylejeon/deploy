@@ -219,6 +219,9 @@ class Workflow:
 
                 sha = await self._step_git_pull(db, job, ssh)
                 await repo.update_commit_sha(db, job.id, sha)
+                # runtime Job 객체에도 반영해야 success_summary가 "-" 대신 실제 SHA를 표시.
+                # DB만 업데이트하면 notifier가 받는 Job 인스턴스의 script_commit_sha는 None.
+                job.script_commit_sha = sha
 
                 await self._step_script(db, job, ssh, Step.INFRA_INSTALL, deployment.infra)
                 await self._step_script(db, job, ssh, Step.APP_INSTALL, deployment.app)
