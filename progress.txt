@@ -529,3 +529,42 @@ Host 헤더뿐이라 분기 로직만 추가.
   (gateway-infra-next의 deploy-applications.sh가 [INFO] Frontend URL 출력
   안 한 케이스). hybrid는 site_register 자동 등록과는 무관하지만,
   화면에 Admin Web URL이 정확하게 뜨려면 스크립트 측 보완 필요.
+
+---
+
+## 2026-06-01 (저녁) — register 명령어 추가: 6단계만 단독 재실행
+
+### 무엇을 했나 (232/232 통과)
+`@autodeploy register <job-id>` 명령어 신설. 기존 작업의 hospital 데이터로
+site_register API만 다시 호출. SSH/스크립트/healthcheck 같은 무거운 단계는
+일절 건드리지 않음. 작업 #23처럼 hybrid가 옛 코드로 설치돼 자동 등록이 빠진
+케이스를 손쉽게 보완하는 용도.
+
+### 동작
+1. `@autodeploy register 23` 받으면 DB에서 Job 로드
+2. ephemeral ack 즉시 응답 (백그라운드 처리 알림)
+3. workflow.register_existing_job(job)을 백그라운드 task로 실행
+4. 성공/실패 결과를 원본 작업의 슬랙 스레드(있으면)에 chat_postMessage로 게시
+5. DB에는 'job_events.site_register: 수동 재시도' 한 줄 기록 (jobs.status는 안 건드림)
+
+### on-premise vs hybrid
+- hybrid: cfg.site_cloud_base_url (https://dev-gateway.connecteve.com) 사용. 별도 정보 불필요.
+- on-premise: job.extra_urls["Frontend"] 우선, 없으면 job.admin_web_url에서 포트 파싱.
+  admin_web_url이 'http://IP/' 형태(설치 시 Frontend URL 못 잡은 케이스)면 명확한 에러.
+
+### 변경 파일
+- src/autodeploy/commands.py — RegisterCommand + 'register' verb 파시
+- src/autodeploy/workflow.py — register_existing_job(job) 공개 메서드,
+  _resolve_site_api_endpoint에 admin_web_url fallback 추가
+- src/autodeploy/slack_app.py — CommandResult.register_job 필드,
+  RegisterCommand 핸들러, _run_register 백그라운드 작업
+- src/autodeploy/messages.py — register_ack/register_success/register_failure 추가,
+  help_response에 register 명령 안내 추가
+- tests/test_commands.py — register 파시 3건
+- tests/test_slack_app.py — register handler 2건
+- tests/test_workflow.py — register_existing_job 6건 (hybrid·on-premise fallback·creds 누락·DB 이벤트·포트 누락 등)
+- tests/test_slack_app.py / _settings 헬퍼 — site_cloud_base_url/site_api_env 추가 (앞 커밋과 같이)
+
+### 즉시 효과
+- 작업 #23 (hybrid-with-ai, hch-bp, 자동 등록 빠짐): 맥미니에서 git pull + launchctl kickstart -k
+  하고 슬랙에서 `@autodeploy register 23` 보내면 cloud에 등록됨.

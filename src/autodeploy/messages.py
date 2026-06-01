@@ -94,6 +94,41 @@ def cancel_ack(job_id: int) -> dict:
     return {"text": text, "blocks": [{"type": "section", "text": {"type": "mrkdwn", "text": text}}]}
 
 
+def register_ack(job_id: int) -> dict:
+    """register 명령 즉시 응답 — API 호출은 백그라운드, 결과는 스레드에."""
+    text = f"🏥  작업 #{job_id}의 site_register 단계 재실행 중... 결과는 스레드에 게시됩니다."
+    return {"text": text, "blocks": [{"type": "section", "text": {"type": "mrkdwn", "text": text}}]}
+
+
+def register_success(job: Job, *, outcome: str) -> dict:
+    """site_register 단독 실행 성공. outcome='created'|'already_exists'."""
+    label = "이미 등록됨 (멱등)" if outcome == "already_exists" else "신규 등록 완료"
+    text = f"🏥  작업 #{job.id} 병원 자동 등록 — {label}"
+    hospital = _hospital_lines(job)
+    blocks: list[dict] = [
+        {"type": "section", "text": {"type": "mrkdwn", "text": f"✅  *{text}*"}},
+    ]
+    if hospital:
+        blocks.append({
+            "type": "section", "text": {"type": "mrkdwn", "text": hospital},
+        })
+    return {"text": text, "blocks": blocks, "attachment_color": "good"}
+
+
+def register_failure(job: Job, *, error: str) -> dict:
+    text = f"🏥  작업 #{job.id} 병원 자동 등록 실패"
+    return {
+        "text": text,
+        "blocks": [
+            {"type": "section", "text": {"type": "mrkdwn", "text": f"❌  *{text}*"}},
+            {"type": "context", "elements": [
+                {"type": "mrkdwn", "text": f"에러: `{_truncate(error, 240)}`"},
+            ]},
+        ],
+        "attachment_color": "danger",
+    }
+
+
 # ---------- M-3: 단계 시작·완료 ----------
 
 def step_started(step: Step) -> dict:
@@ -317,6 +352,8 @@ def help_response(valid_types: Sequence[str]) -> dict:
         "  진행 중인 작업을 즉시 취소. 다음 await 지점에서 중단되며 스레드에 취소 요약이 게시됨.\n\n"
         "`@autodeploy retry [job-id]`\n"
         "  작업 재시도. 스레드 댓글로 실행하면 그 스레드의 원본 작업을 자동 인식.\n\n"
+        "`@autodeploy register <job-id>`\n"
+        "  6단계(병원 자동 등록)만 단독 재실행. 설치는 안 건드림.\n\n"
         "`@autodeploy help`\n"
         "  이 메시지.\n\n"
         f"*유효 TYPE*\n{types_lines}"

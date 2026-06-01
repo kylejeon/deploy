@@ -18,6 +18,7 @@ from autodeploy.commands import (
     InstallCommand,
     ListCommand,
     ParseError,
+    RegisterCommand,
     RetryCommand,
     StatusCommand,
     parse_command,
@@ -26,7 +27,8 @@ from autodeploy.config import DeploymentType
 from autodeploy.db import connect
 from autodeploy.models import Job, JobStatus
 from autodeploy.settings import Settings
-from autodeploy.workflow import Workflow
+from autodeploy.site_registration import SiteAPIError
+from autodeploy.workflow import Workflow, WorkflowError
 
 _MENTION_RE = re.compile(r"<@[UW][A-Z0-9]+>")
 
@@ -47,11 +49,13 @@ class CommandResult:
     response: ephemeral로 게시할 메시지
     workflow_job: 백그라운드에서 시작할 workflow job
     cancel_job_id: 봇이 cancel해야 할 task의 job_id (검증은 이미 handle_command에서 완료)
+    register_job: site_register 단계만 단독 실행할 대상 Job
     """
 
     response: dict | None
     workflow_job: Job | None = None
     cancel_job_id: int | None = None
+    register_job: Job | None = None
 
 
 async def handle_command(
@@ -121,6 +125,18 @@ async def handle_command(
 
     if isinstance(cmd, RetryCommand):
         return await _handle_retry(cmd, ctx, settings=settings)
+
+    if isinstance(cmd, RegisterCommand):
+        async with connect(settings.db_path) as db:
+            target = await repo.get_job(db, cmd.job_id)
+        if target is None:
+            return CommandResult(
+                response=messages.validation_error(f"작업 #{cmd.job_id}을(를) 찾을 수 없습니다.")
+            )
+        return CommandResult(
+            response=messages.register_ack(cmd.job_id),
+            register_job=target,
+        )
 
     if isinstance(cmd, InstallCommand):
         async with connect(settings.db_path) as db:
@@ -269,8 +285,33 @@ class AutoDeployBot:
                 task.add_done_callback(lambda _t, jid=job_id: self._tasks_by_job.pop(jid, None))
             if result.cancel_job_id is not None:
                 await self._cancel_task(result.cancel_job_id)
+            if result.register_job is not None:
+                asyncio.create_task(
+                    self._run_register(result.register_job, client, logger),
+                    name=f"register-{result.register_job.id}",
+                )
         except Exception:
             logger.exception("dispatch failed")
+
+    async def _run_register(self, job: Job, client: Any, logger: Any) -> None:
+        """register 명령 백그라운드 실행. 결과를 원본 스레드(있으면)에 메시지로."""
+        try:
+            outcome = await self._workflow.register_existing_job(job)
+            msg = messages.register_success(job, outcome=outcome)
+        except (SiteAPIError, WorkflowError) as exc:
+            msg = messages.register_failure(job, error=str(exc))
+        except Exception as exc:
+            logger.exception("register failed unexpectedly")
+            msg = messages.register_failure(job, error=f"내부 오류: {exc}")
+        try:
+            await client.chat_postMessage(
+                channel=job.slack_channel or self._settings.slack_channel_id,
+                text=msg["text"],
+                blocks=msg.get("blocks"),
+                thread_ts=job.slack_thread_ts,
+            )
+        except Exception:
+            logger.exception("register result post failed")
 
     async def _cancel_task(self, job_id: int) -> None:
         """task.cancel()로 워크플로 정상 종료 경로 발동. 정리(DB/Slack)는 workflow가 담당.

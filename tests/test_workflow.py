@@ -965,3 +965,157 @@ async def test_site_register_already_exists_still_succeeds(temp_db, mocker):
 
     result = await wf.run(_job(deployment_type="on-premise"))
     assert result.status == JobStatus.SUCCEEDED
+
+
+# ---------- register_existing_job (단독 재시도) ----------
+
+@pytest.mark.asyncio
+async def test_register_existing_job_hybrid_uses_cloud_url(temp_db, mocker):
+    cfg = _cfg_with_site_creds()
+    wf = Workflow(
+        ssh_factory=lambda h: FakeSSHClient(),
+        db_path=temp_db,
+        deployment_types=load_deployment_types(CONFIG_PATH),
+        notifier=RecordingNotifier(),
+        cfg=cfg,
+    )
+    spy = mocker.patch(
+        "autodeploy.workflow.site_registration.register_hospital",
+        return_value="created",
+    )
+
+    async with connect(temp_db) as db:
+        job = _job(deployment_type="hybrid-with-ai")
+        job.hospital_name = "부평힘찬병원"
+        job.id = await repo.create_job(db, job)
+
+    result = await wf.register_existing_job(job)
+    assert result == "created"
+    args, kwargs = spy.call_args
+    assert args[0] == "https://dev-gateway.connecteve.com"
+    assert kwargs["host_header"] is None
+    assert kwargs["installation_type"] == "Hybrid On-Premise AI"
+    assert kwargs["code"] == "HOSP01"
+    assert kwargs["display_name"] == "부평힘찬병원"
+
+
+@pytest.mark.asyncio
+async def test_register_existing_job_onpremise_uses_admin_web_url_fallback(temp_db, mocker):
+    """DB에서 다시 로드한 Job은 extra_urls 비어있음 — admin_web_url에서 포트 파싱."""
+    cfg = _cfg_with_site_creds()
+    wf = Workflow(
+        ssh_factory=lambda h: FakeSSHClient(),
+        db_path=temp_db,
+        deployment_types=load_deployment_types(CONFIG_PATH),
+        notifier=RecordingNotifier(),
+        cfg=cfg,
+    )
+    spy = mocker.patch(
+        "autodeploy.workflow.site_registration.register_hospital",
+        return_value="created",
+    )
+
+    async with connect(temp_db) as db:
+        job = _job(deployment_type="on-premise", ip="192.168.1.50")
+        job.id = await repo.create_job(db, job)
+        await repo.finish_job(
+            db, job.id, JobStatus.SUCCEEDED,
+            admin_web_url="http://192.168.1.50:31435/",
+        )
+        job.admin_web_url = "http://192.168.1.50:31435/"
+    # extra_urls는 빈 채
+
+    result = await wf.register_existing_job(job)
+    assert result == "created"
+    args, kwargs = spy.call_args
+    assert args[0] == "http://192.168.1.50:31435"
+    assert kwargs["host_header"] == "localhost"
+
+
+@pytest.mark.asyncio
+async def test_register_existing_job_raises_when_creds_missing(temp_db):
+    from autodeploy.site_registration import SiteAPIError as _SiteErr
+
+    cfg = _cfg_with_site_creds(site_admin_email="", site_admin_password="")
+    wf = Workflow(
+        ssh_factory=lambda h: FakeSSHClient(),
+        db_path=temp_db,
+        deployment_types=load_deployment_types(CONFIG_PATH),
+        notifier=RecordingNotifier(),
+        cfg=cfg,
+    )
+    job = _job(deployment_type="hybrid-with-ai")
+    job.id = 42
+
+    with pytest.raises(_SiteErr):
+        await wf.register_existing_job(job)
+
+
+@pytest.mark.asyncio
+async def test_register_existing_job_records_db_event(temp_db, mocker):
+    cfg = _cfg_with_site_creds()
+    wf = Workflow(
+        ssh_factory=lambda h: FakeSSHClient(),
+        db_path=temp_db,
+        deployment_types=load_deployment_types(CONFIG_PATH),
+        notifier=RecordingNotifier(),
+        cfg=cfg,
+    )
+    mocker.patch(
+        "autodeploy.workflow.site_registration.register_hospital",
+        return_value="already_exists",
+    )
+
+    async with connect(temp_db) as db:
+        job = _job(deployment_type="hybrid-with-ai")
+        job.id = await repo.create_job(db, job)
+        await repo.finish_job(db, job.id, JobStatus.SUCCEEDED)
+
+    await wf.register_existing_job(job)
+
+    async with connect(temp_db) as db:
+        async with db.execute(
+            "SELECT step, level, message FROM job_events WHERE job_id=? AND step='site_register'",
+            (job.id,),
+        ) as cur:
+            rows = await cur.fetchall()
+    assert any("수동 재시도" in r["message"] and "이미 등록됨" in r["message"] for r in rows)
+
+
+@pytest.mark.asyncio
+async def test_register_existing_job_onpremise_without_admin_url_raises(temp_db):
+    cfg = _cfg_with_site_creds()
+    wf = Workflow(
+        ssh_factory=lambda h: FakeSSHClient(),
+        db_path=temp_db,
+        deployment_types=load_deployment_types(CONFIG_PATH),
+        notifier=RecordingNotifier(),
+        cfg=cfg,
+    )
+    job = _job(deployment_type="on-premise")
+    job.id = 42
+    # admin_web_url 미설정, extra_urls 빈 채
+
+    from autodeploy.workflow import WorkflowError as _WfErr
+    with pytest.raises(_WfErr):
+        await wf.register_existing_job(job)
+
+
+@pytest.mark.asyncio
+async def test_register_existing_job_onpremise_admin_url_without_port_raises(temp_db):
+    """admin_web_url이 'http://IP/' (template fallback) 형태면 포트 없음 → 명확한 에러."""
+    cfg = _cfg_with_site_creds()
+    wf = Workflow(
+        ssh_factory=lambda h: FakeSSHClient(),
+        db_path=temp_db,
+        deployment_types=load_deployment_types(CONFIG_PATH),
+        notifier=RecordingNotifier(),
+        cfg=cfg,
+    )
+    job = _job(deployment_type="on-premise", ip="192.168.1.50")
+    job.id = 42
+    job.admin_web_url = "http://192.168.1.50/"  # 포트 없음 (install 시 Frontend URL 못 잡은 케이스)
+
+    from autodeploy.workflow import WorkflowError as _WfErr
+    with pytest.raises(_WfErr, match="포트"):
+        await wf.register_existing_job(job)

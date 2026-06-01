@@ -305,6 +305,42 @@ async def test_cancel_already_finished_job_returns_error(temp_db):
     assert "succeeded" in result.response["text"]
 
 
+# ---------- register ----------
+
+@pytest.mark.asyncio
+async def test_register_loads_job_and_sets_register_job(temp_db):
+    """register N → DB에서 job 로드 후 register_job 필드에 담아 ack."""
+    s = _settings(temp_db)
+    async with connect(temp_db) as db:
+        from autodeploy.models import Job
+        job_id = await repo.create_job(db, Job(
+            id=None, target_ip="10.0.0.5", deployment_type="hybrid-with-ai",
+            hospital_code="hch-bp", hospital_name="부평힘찬병원",
+            started_by="U01", slack_channel="C01",
+        ))
+        await repo.finish_job(db, job_id, JobStatus.SUCCEEDED)
+
+    ctx = CommandContext(user_id="U01", channel_id="C01", text=f"register {job_id}")
+    result = await handle_command(ctx, settings=s, deployment_types=TYPES)
+
+    assert result.register_job is not None
+    assert result.register_job.id == job_id
+    assert result.register_job.hospital_code == "hch-bp"
+    assert str(job_id) in result.response["text"]
+    assert result.workflow_job is None
+    assert result.cancel_job_id is None
+
+
+@pytest.mark.asyncio
+async def test_register_unknown_job_returns_error(temp_db):
+    s = _settings(temp_db)
+    ctx = CommandContext(user_id="U01", channel_id="C01", text="register 99999")
+    result = await handle_command(ctx, settings=s, deployment_types=TYPES)
+
+    assert result.register_job is None
+    assert "99999" in result.response["text"]
+
+
 # ---------- unknown ----------
 
 

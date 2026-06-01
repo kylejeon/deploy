@@ -407,25 +407,67 @@ class Workflow:
         await self._step_done(db, job, Step.SITE_REGISTER, success=True, duration=duration)
 
     def _resolve_site_api_endpoint(self, job: Job) -> tuple[str, str | None]:
-        """(base_url, host_header_override) — deployment_type별 분기."""
+        """(base_url, host_header_override) — deployment_type별 분기.
+
+        on-premise는 Frontend URL이 필요. 워크플로 진행 중엔 job.extra_urls에서,
+        DB에서 다시 로드한 Job(register 재시도)이면 job.admin_web_url에서 가져옴.
+        """
         if job.deployment_type == "on-premise":
-            frontend_url = (job.extra_urls or {}).get("Frontend")
+            frontend_url = (job.extra_urls or {}).get("Frontend") or job.admin_web_url
             if not frontend_url:
                 raise WorkflowError(
                     Step.SITE_REGISTER,
-                    "Frontend URL이 캡쳐되지 않아 site API base URL을 결정할 수 없음. "
+                    "Frontend URL이 없어 site API base URL을 결정할 수 없음. "
                     "install 스크립트에서 `[INFO] Frontend URL: http://IP:PORT` 출력 확인 필요.",
                 )
             m = re.match(r"https?://[^:/\s]+:(\d+)", frontend_url)
             if not m:
                 raise WorkflowError(
                     Step.SITE_REGISTER,
-                    f"Frontend URL에서 포트를 파싱할 수 없음: {frontend_url}",
+                    f"Frontend URL에서 포트를 파싱할 수 없음: {frontend_url}. "
+                    "install 시 [INFO] Frontend URL 줄이 출력됐는지 확인 필요.",
                 )
             # target_ip로 직접 접속하되 Host: localhost로 Traefik 라우팅
             return f"http://{job.target_ip}:{m.group(1)}", self.cfg.site_host_header_onpremise
         # hybrid-with-ai / hybrid-without-ai — 클라우드 직접. Host 헤더는 URL에서 자동.
         return self.cfg.site_cloud_base_url, None
+
+    async def register_existing_job(self, job: Job) -> str:
+        """site_register 단계만 단독 실행 — 기존 작업의 데이터 재사용.
+
+        반환: 'created' | 'already_exists'
+        실패 시: WorkflowError 또는 SiteAPIError가 그대로 raise.
+
+        전체 워크플로와 달리:
+        - job.status는 건드리지 않음 (DB의 jobs.status는 그대로 유지)
+        - notifier로 step 이벤트 발행하지 않음 (호출자가 결과 메시지 직접 전송)
+        - DB에는 'manual site_register' 이벤트만 한 줄 남김
+        """
+        if not self.cfg.site_admin_email or not self.cfg.site_admin_password:
+            raise SiteAPIError(
+                "site_admin 자격증명이 비어있음 — .env의 SITE_ADMIN_EMAIL/PASSWORD 확인"
+            )
+        base_url, host_header = self._resolve_site_api_endpoint(job)
+        installation_type = INSTALLATION_TYPE_MAP.get(
+            job.deployment_type, job.deployment_type
+        )
+        display_name = job.hospital_name or job.hospital_code
+
+        result = await site_registration.register_hospital(
+            base_url,
+            email=self.cfg.site_admin_email,
+            password=self.cfg.site_admin_password,
+            code=job.hospital_code,
+            display_name=display_name,
+            address=job.hospital_address or "",
+            installation_type=installation_type,
+            host_header=host_header,
+            api_env=self.cfg.site_api_env,
+        )
+        msg = "수동 재시도: 이미 등록됨 (멱등)" if result == "already_exists" else "수동 재시도: 신규 등록"
+        async with connect(self.db_path) as db:
+            await repo.add_event(db, job.id, Step.SITE_REGISTER.value, "info", msg)
+        return result
 
     async def _step_start(self, db, job: Job, step: Step) -> None:
         await repo.update_current_step(db, job.id, step)

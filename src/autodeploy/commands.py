@@ -36,6 +36,12 @@ class RetryCommand:
 
 
 @dataclass(frozen=True, slots=True)
+class RegisterCommand:
+    """site_register 단계만 단독 실행 — 기존 작업의 hospital 데이터로 API 호출."""
+    job_id: int
+
+
+@dataclass(frozen=True, slots=True)
 class HelpCommand:
     pass
 
@@ -48,7 +54,7 @@ class ParseError:
 
 Command = (
     InstallCommand | StatusCommand | ListCommand | CancelCommand
-    | RetryCommand | HelpCommand | ParseError
+    | RetryCommand | RegisterCommand | HelpCommand | ParseError
 )
 
 
@@ -72,6 +78,8 @@ def parse_command(text: str, valid_types: frozenset[str] | set[str]) -> Command:
         return _parse_cancel(rest)
     if verb == "retry":
         return _parse_retry(rest)
+    if verb == "register":
+        return _parse_register(rest)
     if verb in {"help", "?"}:
         return HelpCommand()
     return ParseError(f"unknown command: {verb}", suggestion="@autodeploy help")
@@ -176,6 +184,16 @@ def _parse_retry(rest: str) -> Command:
         return RetryCommand(job_id=int(rest))
     except ValueError:
         return ParseError(f"retry expects integer job-id, got: {rest}")
+
+
+def _parse_register(rest: str) -> Command:
+    rest = rest.strip()
+    if not rest:
+        return ParseError("register requires <job-id>")
+    try:
+        return RegisterCommand(job_id=int(rest))
+    except ValueError:
+        return ParseError(f"register expects integer job-id, got: {rest}")
 
 
 def _is_valid_ip(s: str) -> bool:

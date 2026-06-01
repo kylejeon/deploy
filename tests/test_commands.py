@@ -8,6 +8,7 @@ from autodeploy.commands import (
     InstallCommand,
     ListCommand,
     ParseError,
+    RegisterCommand,
     RetryCommand,
     StatusCommand,
     parse_command,
@@ -151,6 +152,25 @@ def test_retry_with_non_integer_returns_error():
     cmd = parse_command("retry abc", TYPES)
     assert isinstance(cmd, ParseError)
     assert "retry" in cmd.message
+
+
+# ---------- register ----------
+
+def test_register_with_id():
+    cmd = parse_command("register 23", TYPES)
+    assert isinstance(cmd, RegisterCommand)
+    assert cmd.job_id == 23
+
+
+def test_register_without_id_returns_error():
+    cmd = parse_command("register", TYPES)
+    assert isinstance(cmd, ParseError)
+
+
+def test_register_with_non_integer_returns_error():
+    cmd = parse_command("register abc", TYPES)
+    assert isinstance(cmd, ParseError)
+    assert "register" in cmd.message
 
 
 # ---------- help / unknown / empty ----------
