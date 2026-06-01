@@ -93,3 +93,19 @@ def test_work_dir_absolute_path_unchanged():
     env["AUTODEPLOY_WORK_DIR"] = "/opt/custom/path"
     s = load_settings(env)
     assert s.work_dir == "/opt/custom/path"
+
+
+def test_site_admin_credentials_default_empty():
+    """site_admin_email/password는 미설정 시 빈 문자열 — workflow에서 skip 조건으로 사용."""
+    s = load_settings(_full_env())
+    assert s.site_admin_email == ""
+    assert s.site_admin_password == ""
+
+
+def test_site_admin_credentials_load_from_env():
+    env = _full_env()
+    env["SITE_ADMIN_EMAIL"] = "admin@x.com"
+    env["SITE_ADMIN_PASSWORD"] = "secret#$"
+    s = load_settings(env)
+    assert s.site_admin_email == "admin@x.com"
+    assert s.site_admin_password == "secret#$"

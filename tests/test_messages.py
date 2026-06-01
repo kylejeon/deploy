@@ -85,7 +85,7 @@ def test_cancel_ack_returns_request_accepted():
 def test_step_started_has_step_number_and_icon():
     out = messages.step_started(Step.INFRA_INSTALL)
     text = out["text"]
-    assert "단계 3/5" in text
+    assert "단계 3/6" in text
     assert "⚙️" in text
     assert "인프라 설치" in text
 

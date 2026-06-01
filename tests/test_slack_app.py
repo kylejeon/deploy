@@ -32,6 +32,8 @@ def _settings(db_path: Path, *, allowed: set[str] | None = None, channel: str = 
         repo_branch="dev",
         work_dir="~/x",
         log_level="INFO",
+        site_admin_email="",
+        site_admin_password="",
     )
 
 

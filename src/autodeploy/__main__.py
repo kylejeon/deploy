@@ -86,6 +86,8 @@ async def _run() -> int:
             work_dir=settings.work_dir,
             # sudo 비밀번호 = ssh 비밀번호 (connecteve 계정 공통). NOPASSWD가 아니어도 동작.
             sudo_password=settings.ssh_password,
+            site_admin_email=settings.site_admin_email,
+            site_admin_password=settings.site_admin_password,
         ),
     )
 

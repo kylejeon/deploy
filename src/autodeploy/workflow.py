@@ -23,6 +23,8 @@ from autodeploy.healthcheck import wait_for_cluster_ready
 from autodeploy.models import Job, JobStatus, Step
 from autodeploy.notifier import Notifier
 from autodeploy.scripts import run_script
+from autodeploy import site_registration
+from autodeploy.site_registration import INSTALLATION_TYPE_MAP, SiteAPIError
 from autodeploy.ssh import LineCallback, SSHClient, SSHError, StreamLine
 
 
@@ -153,6 +155,12 @@ class WorkflowConfig:
     # sudo 비밀번호 (보통 settings.ssh_password와 동일). 비어있으면 NOPASSWD 가정.
     # apt-get 자동 설치 + setup-*.sh sudo 호출에 stdin으로 주입.
     sudo_password: str = ""
+    # 설치 직후 자동 병원 등록용 마스터 계정. 비어있으면 site_register 단계 skip.
+    site_admin_email: str = ""
+    site_admin_password: str = ""
+    # 사이트 API 요청에 강제로 박는 Host 헤더. Traefik이 Host로 라우팅하므로
+    # IP로 직접 쳐도 'localhost'로 보내야 매칭되는 환경이 있음.
+    site_host_header: str = "localhost"
 
 
 class WorkflowError(RuntimeError):
@@ -226,6 +234,7 @@ class Workflow:
                 await self._step_script(db, job, ssh, Step.INFRA_INSTALL, deployment.infra)
                 await self._step_script(db, job, ssh, Step.APP_INSTALL, deployment.app)
                 await self._step_healthcheck(db, job, ssh)
+                await self._step_site_register(db, job)
         except SSHError as exc:
             raise WorkflowError(Step.SSH_CONNECT, str(exc)) from exc
 
@@ -337,6 +346,72 @@ class Workflow:
                 f"cluster not ready after {duration:.0f}s; last:\n{result.last_output}",
             )
         await self._step_done(db, job, Step.HEALTHCHECK, success=True, duration=duration)
+
+    async def _step_site_register(self, db, job: Job) -> None:
+        """설치 직후 frontend(site-management) API로 자동 병원 등록.
+
+        skip 조건 (조용히 단계 자체를 건너뜀, 부분 실행 흔적 없음):
+        - on-premise 외 deployment_type — hybrid는 클라우드 등록 정책이 별도
+        - site_admin_email/password가 비어있음 — 운영자 옵션-인 (.env 안 채움)
+
+        실패 조건 (WorkflowError로 작업 전체 실패):
+        - Frontend URL이 캡쳐되지 않아 base URL 결정 불가
+        - sign-in 실패 (계정 오류, 네트워크 등)
+        - sites 등록 실패 (멱등 케이스인 409/duplicate는 성공으로 간주)
+        """
+        if job.deployment_type != "on-premise":
+            return
+        if not self.cfg.site_admin_email or not self.cfg.site_admin_password:
+            return
+
+        await self._step_start(db, job, Step.SITE_REGISTER)
+        start = time.monotonic()
+
+        frontend_url = (job.extra_urls or {}).get("Frontend")
+        if not frontend_url:
+            duration = time.monotonic() - start
+            await self._step_done(db, job, Step.SITE_REGISTER, success=False, duration=duration)
+            raise WorkflowError(
+                Step.SITE_REGISTER,
+                "Frontend URL이 캡쳐되지 않아 site API base URL을 결정할 수 없음. "
+                "install 스크립트에서 `[INFO] Frontend URL: http://IP:PORT` 출력 확인 필요.",
+            )
+        m = re.match(r"https?://[^:/\s]+:(\d+)", frontend_url)
+        if not m:
+            duration = time.monotonic() - start
+            await self._step_done(db, job, Step.SITE_REGISTER, success=False, duration=duration)
+            raise WorkflowError(
+                Step.SITE_REGISTER,
+                f"Frontend URL에서 포트를 파싱할 수 없음: {frontend_url}",
+            )
+        port = m.group(1)
+        # Postman 캡쳐와 동일하게 target IP로 직접 접속하되 Host 헤더로 라우팅.
+        base_url = f"http://{job.target_ip}:{port}"
+        installation_type = INSTALLATION_TYPE_MAP.get(
+            job.deployment_type, job.deployment_type
+        )
+        display_name = job.hospital_name or job.hospital_code
+
+        try:
+            result = await site_registration.register_hospital(
+                base_url,
+                email=self.cfg.site_admin_email,
+                password=self.cfg.site_admin_password,
+                code=job.hospital_code,
+                display_name=display_name,
+                address=job.hospital_address or "",
+                installation_type=installation_type,
+                host_header=self.cfg.site_host_header,
+            )
+        except SiteAPIError as exc:
+            duration = time.monotonic() - start
+            await self._step_done(db, job, Step.SITE_REGISTER, success=False, duration=duration)
+            raise WorkflowError(Step.SITE_REGISTER, str(exc)) from exc
+
+        duration = time.monotonic() - start
+        msg = "이미 등록됨 (멱등)" if result == "already_exists" else "신규 등록"
+        await repo.add_event(db, job.id, Step.SITE_REGISTER.value, "info", msg)
+        await self._step_done(db, job, Step.SITE_REGISTER, success=True, duration=duration)
 
     async def _step_start(self, db, job: Job, step: Step) -> None:
         await repo.update_current_step(db, job.id, step)

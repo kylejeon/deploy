@@ -727,7 +727,191 @@ async def test_notifier_emits_step_events_for_each_phase(temp_db):
     step_starts = [e[1]["step"] for e in notifier.events if e[0] == "step_started"]
     step_finishes = [e[1]["step"] for e in notifier.events if e[0] == "step_finished"]
     # ssh_connect는 step_done만 emit (start 안 함; 즉시 완료)
+    # hybrid 케이스에선 site_register 단계가 skip되므로 4단계
     assert step_starts == ["git_pull", "infra_install", "app_install", "healthcheck"]
     assert "ssh_connect" in step_finishes
     assert "healthcheck" in step_finishes
+    assert "site_register" not in step_finishes  # skipped for hybrid
     assert all(e[1]["success"] for e in notifier.events if e[0] == "step_finished")
+
+
+# ---------- site_register 단계 ----------
+
+def _cfg_with_site_creds(**overrides) -> WorkflowConfig:
+    base = dict(
+        bitbucket_user="u", bitbucket_app_password="x",
+        repo_host_path="bitbucket.org/x.git", repo_branch="dev",
+        work_dir="~/x",
+        healthcheck_poll_interval=0.001, healthcheck_timeout=0.5,
+        site_admin_email="admin@x.com",
+        site_admin_password="pw",
+    )
+    base.update(overrides)
+    return WorkflowConfig(**base)
+
+
+def _make_wf_with_cfg(fake: FakeSSHClient, temp_db, cfg: WorkflowConfig) -> Workflow:
+    return Workflow(
+        ssh_factory=lambda h: fake,
+        db_path=temp_db,
+        deployment_types=load_deployment_types(CONFIG_PATH),
+        notifier=RecordingNotifier(),
+        cfg=cfg,
+    )
+
+
+def _enqueue_onpremise_happy_path(fake: FakeSSHClient, frontend_port: str = "31435") -> None:
+    _enqueue_preflight_ok(fake)
+    fake.enqueue("test -d", [], exit_code=0)
+    fake.enqueue("git remote set-url origin", [])
+    fake.enqueue("git rev-parse HEAD", [StreamLine("stdout", "sha1")])
+    fake.enqueue(
+        "setup-onpremise.sh",
+        [
+            StreamLine("stdout", f"[INFO] Frontend URL: http://172.17.0.1:{frontend_port}"),
+        ],
+    )
+    fake.enqueue("deploy-applications-onpremise.sh", [])
+    fake.enqueue("kubectl get pods", [])
+
+
+@pytest.mark.asyncio
+async def test_site_register_skipped_for_hybrid_deployment(temp_db, mocker):
+    fake = FakeSSHClient()
+    _enqueue_happy_path_hybrid(fake)
+    cfg = _cfg_with_site_creds()
+    wf = _make_wf_with_cfg(fake, temp_db, cfg)
+    # register_hospital이 호출되면 안 됨
+    spy = mocker.patch("autodeploy.workflow.site_registration.register_hospital")
+
+    result = await wf.run(_job(deployment_type="hybrid-with-ai"))
+    assert result.status == JobStatus.SUCCEEDED
+    spy.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_site_register_skipped_when_credentials_empty(temp_db, mocker):
+    fake = FakeSSHClient()
+    _enqueue_onpremise_happy_path(fake)
+    cfg = _cfg_with_site_creds(site_admin_email="", site_admin_password="")
+    wf = _make_wf_with_cfg(fake, temp_db, cfg)
+    spy = mocker.patch("autodeploy.workflow.site_registration.register_hospital")
+
+    result = await wf.run(_job(deployment_type="on-premise"))
+    assert result.status == JobStatus.SUCCEEDED
+    spy.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_site_register_runs_for_onpremise_with_creds(temp_db, mocker):
+    fake = FakeSSHClient()
+    _enqueue_onpremise_happy_path(fake, frontend_port="31435")
+    cfg = _cfg_with_site_creds()
+    notifier = RecordingNotifier()
+    wf = Workflow(
+        ssh_factory=lambda h: fake,
+        db_path=temp_db,
+        deployment_types=load_deployment_types(CONFIG_PATH),
+        notifier=notifier,
+        cfg=cfg,
+    )
+    spy = mocker.patch(
+        "autodeploy.workflow.site_registration.register_hospital",
+        return_value="created",
+    )
+
+    job = _job(deployment_type="on-premise", ip="192.168.1.50")
+    job.hospital_name = "은평성모병원"
+    job.hospital_address = "서울"
+    result = await wf.run(job)
+
+    assert result.status == JobStatus.SUCCEEDED
+    spy.assert_called_once()
+    args, kwargs = spy.call_args
+    assert args[0] == "http://192.168.1.50:31435"  # base_url = target_ip + frontend port
+    assert kwargs["email"] == "admin@x.com"
+    assert kwargs["password"] == "pw"
+    assert kwargs["code"] == "HOSP01"
+    assert kwargs["display_name"] == "은평성모병원"
+    assert kwargs["address"] == "서울"
+    assert kwargs["installation_type"] == "ON_PREMISE"
+    assert kwargs["host_header"] == "localhost"
+
+    # notifier에 site_register step 이벤트 발행됨
+    step_starts = [e[1]["step"] for e in notifier.events if e[0] == "step_started"]
+    assert "site_register" in step_starts
+
+
+@pytest.mark.asyncio
+async def test_site_register_uses_hospital_code_when_name_missing(temp_db, mocker):
+    fake = FakeSSHClient()
+    _enqueue_onpremise_happy_path(fake)
+    cfg = _cfg_with_site_creds()
+    wf = _make_wf_with_cfg(fake, temp_db, cfg)
+    spy = mocker.patch(
+        "autodeploy.workflow.site_registration.register_hospital",
+        return_value="created",
+    )
+
+    job = _job(deployment_type="on-premise")  # hospital_name None
+    await wf.run(job)
+
+    _, kwargs = spy.call_args
+    assert kwargs["display_name"] == "HOSP01"  # code로 fallback
+    assert kwargs["address"] == ""  # None → ""
+
+
+@pytest.mark.asyncio
+async def test_site_register_fails_when_frontend_url_not_captured(temp_db, mocker):
+    """on-premise + 자격증명 있는데 Frontend URL이 안 잡히면 site_register 단계 실패."""
+    fake = FakeSSHClient()
+    _enqueue_preflight_ok(fake)
+    fake.enqueue("test -d", [], exit_code=0)
+    fake.enqueue("git remote set-url origin", [])
+    fake.enqueue("git rev-parse HEAD", [StreamLine("stdout", "sha1")])
+    fake.enqueue("setup-onpremise.sh", [])  # Frontend URL 안 찍힘
+    fake.enqueue("deploy-applications-onpremise.sh", [])
+    fake.enqueue("kubectl get pods", [])
+    cfg = _cfg_with_site_creds()
+    wf = _make_wf_with_cfg(fake, temp_db, cfg)
+    spy = mocker.patch("autodeploy.workflow.site_registration.register_hospital")
+
+    result = await wf.run(_job(deployment_type="on-premise"))
+    assert result.status == JobStatus.FAILED
+    assert "Frontend URL" in result.error_message
+    spy.assert_not_called()  # API 호출 시도 자체를 안 함
+
+
+@pytest.mark.asyncio
+async def test_site_register_api_failure_marks_workflow_failed(temp_db, mocker):
+    from autodeploy.site_registration import SiteAPIError as _SiteErr
+
+    fake = FakeSSHClient()
+    _enqueue_onpremise_happy_path(fake)
+    cfg = _cfg_with_site_creds()
+    wf = _make_wf_with_cfg(fake, temp_db, cfg)
+    mocker.patch(
+        "autodeploy.workflow.site_registration.register_hospital",
+        side_effect=_SiteErr("sign-in 실패 (HTTP 401): bad credentials"),
+    )
+
+    result = await wf.run(_job(deployment_type="on-premise"))
+    assert result.status == JobStatus.FAILED
+    assert "sign-in 실패" in result.error_message
+    assert result.current_step == Step.SITE_REGISTER
+
+
+@pytest.mark.asyncio
+async def test_site_register_already_exists_still_succeeds(temp_db, mocker):
+    """API가 already_exists를 반환해도 작업은 성공으로 마무리."""
+    fake = FakeSSHClient()
+    _enqueue_onpremise_happy_path(fake)
+    cfg = _cfg_with_site_creds()
+    wf = _make_wf_with_cfg(fake, temp_db, cfg)
+    mocker.patch(
+        "autodeploy.workflow.site_registration.register_hospital",
+        return_value="already_exists",
+    )
+
+    result = await wf.run(_job(deployment_type="on-premise"))
+    assert result.status == JobStatus.SUCCEEDED

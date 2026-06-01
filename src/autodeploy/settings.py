@@ -41,6 +41,11 @@ class Settings:
     repo_branch: str
     work_dir: str
     log_level: str
+    # 설치 완료 후 자동 병원 등록용 마스터 계정 (on-premise 전용).
+    # 비어있으면 site_register 단계는 조용히 skip — 운영자가 env를 안 채웠어도
+    # 기존 워크플로(SSH/스크립트)에는 영향 없음.
+    site_admin_email: str
+    site_admin_password: str
 
 
 def load_settings(env: Mapping[str, str] | None = None) -> Settings:
@@ -80,4 +85,6 @@ def load_settings(env: Mapping[str, str] | None = None) -> Settings:
         repo_branch=e.get("AUTODEPLOY_REPO_BRANCH", "dev"),
         work_dir=work_dir,
         log_level=e.get("LOG_LEVEL", "INFO"),
+        site_admin_email=e.get("SITE_ADMIN_EMAIL", "").strip(),
+        site_admin_password=e.get("SITE_ADMIN_PASSWORD", ""),
     )

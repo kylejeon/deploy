@@ -3,13 +3,14 @@ from __future__ import annotations
 from autodeploy.models import STEPS_IN_ORDER, Job, JobStatus, Step
 
 
-def test_steps_in_order_has_five_phases():
+def test_steps_in_order_has_six_phases():
     assert STEPS_IN_ORDER == (
         Step.SSH_CONNECT,
         Step.GIT_PULL,
         Step.INFRA_INSTALL,
         Step.APP_INSTALL,
         Step.HEALTHCHECK,
+        Step.SITE_REGISTER,
     )
 
 

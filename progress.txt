@@ -415,3 +415,72 @@ stderr 마지막 줄:
 - 채팅에 SSH 패스워드(`connecteve` 계정) 평문 노출됨 → 로테이션 권장
 - 채팅에 Bitbucket App Password (`ATBB...`) 평문 노출됨 → **즉시 폐기 + 신규 발급 필요**
 - 운영 시 SSH 키 인증 + 비밀번호 로그인 disable 검토
+
+---
+
+## 2026-06-01 — 설치 직후 자동 병원 등록 (site_register 단계 추가)
+
+### 무엇을 했나 (216/216 통과)
+설치 5단계 (ssh_connect → git_pull → infra_install → app_install → healthcheck)
+끝에 6번째 단계 **site_register**를 추가. on-premise + 자격증명 환경에서만
+실행되고, 그 외엔 단계 자체를 조용히 skip.
+
+### 흐름
+1. healthcheck 통과
+2. job.deployment_type == "on-premise" + site_admin_email/password 둘 다 채워졌으면
+   `_step_site_register` 진입 (아니면 그냥 return — 단계 시작 알림조차 안 보냄)
+3. `job.extra_urls["Frontend"]`에서 포트 추출 → base_url = `http://<target_ip>:<port>`
+   - Frontend URL 안 잡혀있으면 명확한 WorkflowError로 작업 실패
+4. `site_registration.register_hospital(base_url, ...)`:
+   - POST /api/v1/auth/sign-in (form data: email, password)
+   - 응답에서 토큰 추출: 헤더 `x-auth-token` 우선, 없으면 JSON body
+     (`token` / `accessToken` / `data.token` / `data.accessToken`)
+   - POST /api/v1/sites (JSON body: name=hospital_code, displayName=hospital_name||code,
+     address, adminName/contactPhone/adminEmail="", installationType, comment="")
+   - 멱등 처리: 409 또는 'duplicate'/'already' 키워드 포함 400은 already_exists로 정상 처리
+5. 두 호출 모두 `Host: localhost` 헤더 강제 — Postman 캡쳐와 동일.
+   Traefik이 Host 기반 라우팅하는 환경에서 IP 직접 접속 시 404 방지.
+
+### installationType 매핑 (workflow에서 사용)
+- `on-premise` → `ON_PREMISE`
+- `hybrid-with-ai` → `Hybrid On-Premise AI`
+- `hybrid-without-ai` → `Hybrid Cloud AI`
+(현재는 on-premise만 자동 등록. hybrid는 클라우드 등록 정책 별도라 보류)
+
+### 변경 파일
+- `src/autodeploy/models.py` — Step.SITE_REGISTER 추가, STEPS_IN_ORDER 6개로 확장
+- `src/autodeploy/settings.py` — site_admin_email/password 필드 + env 로딩
+  (둘 다 비어있으면 site_register 자동 skip — 옵션-인)
+- `src/autodeploy/site_registration.py` — 신규. login_to_site / register_site /
+  register_hospital(원샷 헬퍼) + INSTALLATION_TYPE_MAP + SiteAPIError
+- `src/autodeploy/workflow.py` — WorkflowConfig에 site_admin_*, site_host_header 추가,
+  `_step_site_register` 메서드 + healthcheck 직후 호출
+- `src/autodeploy/messages.py` — Step.SITE_REGISTER용 아이콘(🏥)/라벨/순서 등록,
+  success_summary의 "다음 단계: 병원 등록" 문구를 on-premise일 땐 "✓ 병원 자동 등록 완료"로
+- `src/autodeploy/__main__.py` — settings → WorkflowConfig 전달
+- `.env.example` — SITE_ADMIN_EMAIL / SITE_ADMIN_PASSWORD 항목 추가
+- 테스트:
+  - `tests/test_site_registration.py` 신규 (FakeSession으로 login/register 단위 테스트)
+  - `tests/test_workflow.py` — site_register 통합 테스트 7개 추가
+    (skip 케이스 2개, 성공 케이스, 실패 케이스, 멱등 케이스 등)
+  - `tests/test_models.py` — STEPS_IN_ORDER 6개 단언
+  - `tests/test_messages.py` — "단계 3/6" 단언
+  - `tests/test_slack_app.py` — _settings 헬퍼에 site_admin_* 추가
+  - `tests/test_settings.py` — site_admin_* 로딩 테스트 2개
+
+### 비고
+- `Step.SITE_REGISTER`가 STEPS_IN_ORDER에 들어가서 "단계 N/6"이 모든 메시지에 표시됨.
+  hybrid 케이스에선 5/6에서 끝나는 표시 — deployment_type을 messages._step_position에
+  넣으면 분기 가능하지만 현재는 단순성 우선. 운영 중 혼란스러우면 분기 추가.
+- site_registration.register_hospital이 단일 진입점이라 테스트는 이 함수만 patch.
+- 채팅으로 노출된 마스터 자격증명(admin@connecteve.com / Connevohub12#$)은
+  `.env`에만 적고 디스크에 평문으로 쓰지 않음. 운영자가 직접 .env 채워야 함.
+
+### 다음에 해야 할 것
+1. **운영 환경 .env 채우기**: SITE_ADMIN_EMAIL / SITE_ADMIN_PASSWORD
+2. **실제 on-premise 설치로 종단 테스트**: 자동 등록까지 됐는지 확인 (Slack 메시지에
+   "✓ 병원 자동 등록 완료" 표시되는지 + dev-gateway 서버에서 sites 조회로 검증)
+3. **응답 토큰 위치 확인**: login 응답이 헤더 x-auth-token인지 body 필드인지 — 첫
+   실제 호출에서 헤더 케이스부터 매칭되도록 짰지만 만약 응답 형태가 달라서 실패하면
+   로그 확인 후 _extract_token 우선순위 조정 필요
+4. **보류 중**: 실시간 로그 필터+카운터 (사용자가 보류 요청)

@@ -15,6 +15,7 @@ _STEP_ICONS: dict[Step, str] = {
     Step.INFRA_INSTALL: "⚙️",
     Step.APP_INSTALL: "📦",
     Step.HEALTHCHECK: "🩺",
+    Step.SITE_REGISTER: "🏥",
     Step.DONE: "✅",
 }
 
@@ -24,6 +25,7 @@ _STEP_LABELS_KR: dict[Step, str] = {
     Step.INFRA_INSTALL: "인프라 설치",
     Step.APP_INSTALL: "어플리케이션 설치",
     Step.HEALTHCHECK: "헬스체크",
+    Step.SITE_REGISTER: "병원 등록",
     Step.DONE: "완료",
 }
 
@@ -33,6 +35,7 @@ _STEP_ORDER: tuple[Step, ...] = (
     Step.INFRA_INSTALL,
     Step.APP_INSTALL,
     Step.HEALTHCHECK,
+    Step.SITE_REGISTER,
 )
 
 
@@ -172,9 +175,15 @@ def success_summary(job: Job, *, total_duration_s: float) -> dict:
         })
     hospital = _hospital_lines(job)
     if hospital:
+        # on-premise는 site_register 단계에서 자동 등록 완료. hybrid는 클라우드 등록
+        # 정책이 별도라 현재는 자동 등록 안 됨 — 라벨을 deployment_type으로 분기.
+        if job.deployment_type == "on-premise":
+            header = "✓ 병원 자동 등록 완료"
+        else:
+            header = "다음 단계: Admin Web에서 병원 등록"
         blocks.append({
             "type": "context",
-            "elements": [{"type": "mrkdwn", "text": f"다음 단계: Admin Web에서 병원 등록\n{hospital}"}],
+            "elements": [{"type": "mrkdwn", "text": f"{header}\n{hospital}"}],
         })
     return {"text": text, "blocks": blocks, "attachment_color": "good"}
 
