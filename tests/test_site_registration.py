@@ -181,7 +181,7 @@ async def test_register_site_omits_host_header_when_none():
     await register_site(
         session, "https://dev-gateway.connecteve.com", "TOK",
         code="HOSP01", display_name="병원", address="",
-        installation_type="Hybrid On-Premise AI",
+        installation_type="HYBRID_ONPREM_AI",
     )
     assert "Host" not in session.calls[0][1]["headers"]
 
@@ -235,5 +235,5 @@ async def test_register_site_raises_on_5xx():
 
 def test_installation_type_map_covers_all_deployment_types():
     assert INSTALLATION_TYPE_MAP["on-premise"] == "ON_PREMISE"
-    assert INSTALLATION_TYPE_MAP["hybrid-with-ai"] == "Hybrid On-Premise AI"
-    assert INSTALLATION_TYPE_MAP["hybrid-without-ai"] == "Hybrid Cloud AI"
+    assert INSTALLATION_TYPE_MAP["hybrid-with-ai"] == "HYBRID_ONPREM_AI"
+    assert INSTALLATION_TYPE_MAP["hybrid-without-ai"] == "HYBRID_CLOUD_AI"

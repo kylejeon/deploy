@@ -793,7 +793,7 @@ async def test_site_register_runs_for_hybrid_with_cloud_base_url(temp_db, mocker
     args, kwargs = spy.call_args
     assert args[0] == "https://dev-gateway.connecteve.com"  # default cloud URL
     assert kwargs["host_header"] is None  # hybrid는 URL에서 자동
-    assert kwargs["installation_type"] == "Hybrid On-Premise AI"
+    assert kwargs["installation_type"] == "HYBRID_ONPREM_AI"
     assert kwargs["api_env"] == "dev"
 
 
@@ -816,7 +816,7 @@ async def test_site_register_uses_hybrid_without_ai_installation_type(temp_db, m
 
     await wf.run(_job(deployment_type="hybrid-without-ai"))
     _, kwargs = spy.call_args
-    assert kwargs["installation_type"] == "Hybrid Cloud AI"
+    assert kwargs["installation_type"] == "HYBRID_CLOUD_AI"
 
 
 @pytest.mark.asyncio
@@ -994,7 +994,7 @@ async def test_register_existing_job_hybrid_uses_cloud_url(temp_db, mocker):
     args, kwargs = spy.call_args
     assert args[0] == "https://dev-gateway.connecteve.com"
     assert kwargs["host_header"] is None
-    assert kwargs["installation_type"] == "Hybrid On-Premise AI"
+    assert kwargs["installation_type"] == "HYBRID_ONPREM_AI"
     assert kwargs["code"] == "HOSP01"
     assert kwargs["display_name"] == "부평힘찬병원"
 

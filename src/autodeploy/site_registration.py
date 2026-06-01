@@ -28,8 +28,8 @@ class SiteAPIError(RuntimeError):
 # 시리얼라이저가 자유 문자열을 받으므로 백엔드 enum과 정확히 일치해야 함.
 INSTALLATION_TYPE_MAP: dict[str, str] = {
     "on-premise": "ON_PREMISE",
-    "hybrid-with-ai": "Hybrid On-Premise AI",
-    "hybrid-without-ai": "Hybrid Cloud AI",
+    "hybrid-with-ai": "HYBRID_ONPREM_AI",
+    "hybrid-without-ai": "HYBRID_CLOUD_AI",
 }
 
 
