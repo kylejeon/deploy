@@ -3,7 +3,7 @@ from __future__ import annotations
 from autodeploy.models import STEPS_IN_ORDER, Job, JobStatus, Step
 
 
-def test_steps_in_order_has_seven_phases():
+def test_steps_in_order_has_eight_phases():
     assert STEPS_IN_ORDER == (
         Step.SSH_CONNECT,
         Step.GIT_PULL,
@@ -12,6 +12,7 @@ def test_steps_in_order_has_seven_phases():
         Step.HEALTHCHECK,
         Step.SITE_REGISTER,
         Step.DICOM_GATEWAY_RESTART,
+        Step.PRODUCT_REGISTER,
     )
 
 

@@ -600,3 +600,83 @@ site_register(6단계) 직후 7번째 단계로 `dicom_gateway_restart` 추가.
   실행되어 7/7까지 표시됨.
 - 라벨 셀렉터 `app=dicom-gateway`가 실제 deployment의 라벨과 다르면 매칭 0개로
   종료(rc=0이지만 효과 없음). 운영 중 확인 필요 — 다르면 셀렉터 조정 PR.
+
+---
+
+## 2026-06-01 (야간) — 단계 8 product_register 개발지시서 작성 (@planner)
+
+### 무엇을 했나
+- `docs/specs/dev-spec-product-register-20260601.md` 작성 (초안 v1.0)
+- 기존 7단계 워크플로에 8번째 단계(product_register) 추가 기획
+
+### 주요 결정 사항
+- 모든 deployment_type 대상 (on-premise / hybrid 구분 없음)
+- Product POST는 항상 `site_cloud_base_url` 사용 (확인 필요 — D8-2)
+- JIRA_EMAIL/TOKEN 또는 site_admin 자격증명 없으면 조용히 skip
+- 부분 성공 허용: N개 이슈 중 일부 실패해도 job 전체는 SUCCEEDED
+- site_register 토큰 재사용 방식 미결정 (D8-1 — 핵심 설계 결정)
+
+### 어디까지 됐는가
+- 개발지시서 완료, 구현 전 용혁 컨펌 대기 중
+- 결정 필요 항목 8건 (D8-1~D8-8) 명시
+
+### 다음에 해야 할 것
+1. **용혁 컨펌**: 결정 필요 항목 D8-1(토큰 재사용 방식), D8-2(Product POST endpoint) 최우선 확인
+2. D8-1 확정 후 @developer 호출하여 구현 시작
+3. 신규 모듈 4개 구현: jira_client.py, jira_description_parser.py, gs1_parser.py, product_registration.py
+4. 기존 파일 수정: models.py, settings.py, workflow.py, messages.py, __main__.py, .env.example
+
+---
+
+## 2026-06-01 (심야) — 단계 8 product_register 구현 (@developer)
+
+### 무엇을 했나 (295/295 통과, 기존 235 → 295: +60건)
+
+사전 확정된 결정(D8-1~D8-8) 기반으로 단계 8을 완전 구현.
+
+**신규 파일 4개**
+- `src/autodeploy/gs1_parser.py` — GS1 `(AI)value` segment 파싱
+- `src/autodeploy/jira_description_parser.py` — ADF JSON → ProductInfo (strike 처리, 날짜/N수/GS1 파싱)
+- `src/autodeploy/jira_client.py` — Jira REST API v3 Basic auth 클라이언트
+- `src/autodeploy/product_registration.py` — Lookup API 캐싱 + Product POST
+
+**기존 파일 변경 7개**
+- `src/autodeploy/models.py` — Step.PRODUCT_REGISTER 추가, STEPS_IN_ORDER 8개로 확장
+- `src/autodeploy/settings.py` — jira_base_url/jira_email/jira_api_token/jira_key 필드 추가
+- `src/autodeploy/site_registration.py` — register_hospital 반환 타입을 (result, token) 튜플로 변경 (D8-1)
+- `src/autodeploy/workflow.py` — _site_token 캐싱, _step_product_register + _run_product_register_inner 추가, WorkflowConfig Jira 필드 추가
+- `src/autodeploy/messages.py` — Step.PRODUCT_REGISTER 아이콘(📋)/라벨/순서 등록, "단계 N/8" 표기
+- `src/autodeploy/__main__.py` — Jira 설정 WorkflowConfig 전달
+- `.env.example` — Jira env vars 4개 추가
+
+**테스트 신규 4개 파일 + 기존 갱신**
+- `tests/test_gs1_parser.py` — 7건
+- `tests/test_jira_description_parser.py` — 19건
+- `tests/test_jira_client.py` — 7건
+- `tests/test_product_registration.py` — 14건
+- `tests/test_workflow.py` — T-WF-8-1~8-7 (7건 추가)
+- `tests/test_models.py` — STEPS_IN_ORDER 8개 단언 갱신
+- `tests/test_messages.py` — "단계 3/8" 단언 갱신
+- `tests/test_slack_app.py` — _settings() 헬퍼에 Jira 필드 추가
+- `tests/test_settings.py` — Jira env 로딩 2건 추가
+
+### 주요 결정 반영
+- D8-1: register_hospital → (result, token) 튜플 반환. workflow._site_token에 캐싱
+- D8-2: on-premise는 localhost:port, hybrid는 site_cloud_base_url — _resolve_site_api_endpoint 재사용
+- D8-3: Jira 첫 페이지만 (50건). 인터페이스는 start_at 파라미터로 순회 확장 가능
+- D8-4: 단일 단위만 (만/억/천). 복합 단위는 N수 없음으로 처리 (licenseLimit=0 + warn)
+- D8-5: 활성 GS1 2개+ → 첫 번째 사용 + warn
+- D8-6: tuple(int(p)) 비교. packaging 의존성 없음
+- D8-7: asyncio.wait_for 5분 타임아웃
+- D8-8: site_registration._is_duplicate_error 로직 product_registration에도 복사
+
+### 어디까지 됐는가
+- 8단계 워크플로 완전 구현. 295/295 테스트 통과
+- product_register가 dicom_gateway_restart 이후에 실행됨 확인
+- JIRA 자격증명 없으면 조용히 skip, 이슈 전체 실패해도 job은 SUCCEEDED 유지
+
+### 다음에 해야 할 것
+1. **운영 환경 .env 채우기**: JIRA_EMAIL / JIRA_API_TOKEN / JIRA_KEY
+2. **맥미니 배포**: git pull + launchctl kickstart -k gui/$(id -u)/com.connecteve.autodeploy
+3. **실제 on-premise/hybrid 설치로 종단 테스트**: Jira 이슈 자동 파싱 + Product API 등록 확인
+4. **응답 검증 필요**: Lookup API 응답 형태(data.content[] vs data[])가 dev-spec과 다를 경우 product_registration.py lookup_site_id 수정 필요 (data가 배열 직접인 경우 처리 코드 이미 포함)

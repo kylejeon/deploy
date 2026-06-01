@@ -17,6 +17,7 @@ _STEP_ICONS: dict[Step, str] = {
     Step.HEALTHCHECK: "🩺",
     Step.SITE_REGISTER: "🏥",
     Step.DICOM_GATEWAY_RESTART: "🔄",
+    Step.PRODUCT_REGISTER: "📋",
     Step.DONE: "✅",
 }
 
@@ -28,6 +29,7 @@ _STEP_LABELS_KR: dict[Step, str] = {
     Step.HEALTHCHECK: "헬스체크",
     Step.SITE_REGISTER: "병원 등록",
     Step.DICOM_GATEWAY_RESTART: "dicom-gateway 재시작",
+    Step.PRODUCT_REGISTER: "제품 등록",
     Step.DONE: "완료",
 }
 
@@ -39,6 +41,7 @@ _STEP_ORDER: tuple[Step, ...] = (
     Step.HEALTHCHECK,
     Step.SITE_REGISTER,
     Step.DICOM_GATEWAY_RESTART,
+    Step.PRODUCT_REGISTER,
 )
 
 

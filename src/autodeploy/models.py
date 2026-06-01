@@ -22,6 +22,7 @@ class Step(StrEnum):
     HEALTHCHECK = "healthcheck"
     SITE_REGISTER = "site_register"
     DICOM_GATEWAY_RESTART = "dicom_gateway_restart"
+    PRODUCT_REGISTER = "product_register"
     DONE = "done"
 
 
@@ -33,6 +34,7 @@ STEPS_IN_ORDER: tuple[Step, ...] = (
     Step.HEALTHCHECK,
     Step.SITE_REGISTER,
     Step.DICOM_GATEWAY_RESTART,
+    Step.PRODUCT_REGISTER,
 )
 
 

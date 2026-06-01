@@ -36,6 +36,10 @@ def _settings(db_path: Path, *, allowed: set[str] | None = None, channel: str = 
         site_admin_password="",
         site_cloud_base_url="https://dev-gateway.connecteve.com",
         site_api_env="dev",
+        jira_base_url="https://connecteve.atlassian.net",
+        jira_email="",
+        jira_api_token="",
+        jira_key="PMFM",
     )
 
 

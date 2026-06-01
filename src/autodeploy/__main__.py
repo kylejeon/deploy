@@ -90,6 +90,10 @@ async def _run() -> int:
             site_admin_password=settings.site_admin_password,
             site_cloud_base_url=settings.site_cloud_base_url,
             site_api_env=settings.site_api_env,
+            jira_base_url=settings.jira_base_url,
+            jira_email=settings.jira_email,
+            jira_api_token=settings.jira_api_token,
+            jira_key=settings.jira_key,
         ),
     )
 

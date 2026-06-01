@@ -801,7 +801,7 @@ async def test_site_register_runs_for_hybrid_with_cloud_base_url(temp_db, mocker
     wf = _make_wf_with_cfg(fake, temp_db, cfg)
     spy = mocker.patch(
         "autodeploy.workflow.site_registration.register_hospital",
-        return_value="created",
+        return_value=("created", "FAKE_TOKEN"),
     )
 
     result = await wf.run(_job(deployment_type="hybrid-with-ai"))
@@ -829,7 +829,7 @@ async def test_site_register_uses_hybrid_without_ai_installation_type(temp_db, m
     wf = _make_wf_with_cfg(fake, temp_db, cfg)
     spy = mocker.patch(
         "autodeploy.workflow.site_registration.register_hospital",
-        return_value="created",
+        return_value=("created", "FAKE_TOKEN"),
     )
 
     await wf.run(_job(deployment_type="hybrid-without-ai"))
@@ -848,7 +848,7 @@ async def test_site_register_respects_custom_cloud_base_url(temp_db, mocker):
     wf = _make_wf_with_cfg(fake, temp_db, cfg)
     spy = mocker.patch(
         "autodeploy.workflow.site_registration.register_hospital",
-        return_value="created",
+        return_value=("created", "FAKE_TOKEN"),
     )
 
     await wf.run(_job(deployment_type="hybrid-with-ai"))
@@ -885,7 +885,7 @@ async def test_site_register_runs_for_onpremise_with_creds(temp_db, mocker):
     )
     spy = mocker.patch(
         "autodeploy.workflow.site_registration.register_hospital",
-        return_value="created",
+        return_value=("created", "FAKE_TOKEN"),
     )
 
     job = _job(deployment_type="on-premise", ip="192.168.1.50")
@@ -918,7 +918,7 @@ async def test_site_register_uses_hospital_code_when_name_missing(temp_db, mocke
     wf = _make_wf_with_cfg(fake, temp_db, cfg)
     spy = mocker.patch(
         "autodeploy.workflow.site_registration.register_hospital",
-        return_value="created",
+        return_value=("created", "FAKE_TOKEN"),
     )
 
     job = _job(deployment_type="on-premise")  # hospital_name None
@@ -979,7 +979,7 @@ async def test_site_register_already_exists_still_succeeds(temp_db, mocker):
     wf = _make_wf_with_cfg(fake, temp_db, cfg)
     mocker.patch(
         "autodeploy.workflow.site_registration.register_hospital",
-        return_value="already_exists",
+        return_value=("already_exists", "FAKE_TOKEN"),
     )
 
     result = await wf.run(_job(deployment_type="on-premise"))
@@ -1000,7 +1000,7 @@ async def test_register_existing_job_hybrid_uses_cloud_url(temp_db, mocker):
     )
     spy = mocker.patch(
         "autodeploy.workflow.site_registration.register_hospital",
-        return_value="created",
+        return_value=("created", "FAKE_TOKEN"),
     )
 
     async with connect(temp_db) as db:
@@ -1031,7 +1031,7 @@ async def test_register_existing_job_onpremise_uses_admin_web_url_fallback(temp_
     )
     spy = mocker.patch(
         "autodeploy.workflow.site_registration.register_hospital",
-        return_value="created",
+        return_value=("created", "FAKE_TOKEN"),
     )
 
     async with connect(temp_db) as db:
@@ -1082,7 +1082,7 @@ async def test_register_existing_job_records_db_event(temp_db, mocker):
     )
     mocker.patch(
         "autodeploy.workflow.site_registration.register_hospital",
-        return_value="already_exists",
+        return_value=("already_exists", "FAKE_TOKEN"),
     )
 
     async with connect(temp_db) as db:
@@ -1197,7 +1197,7 @@ async def test_dicom_gateway_restart_runs_after_site_register(temp_db, mocker):
     )
     mocker.patch(
         "autodeploy.workflow.site_registration.register_hospital",
-        return_value="created",
+        return_value=("created", "FAKE_TOKEN"),
     )
 
     await wf.run(_job(deployment_type="on-premise"))
@@ -1225,3 +1225,245 @@ async def test_register_existing_job_onpremise_admin_url_without_port_raises(tem
     from autodeploy.workflow import WorkflowError as _WfErr
     with pytest.raises(_WfErr, match="포트"):
         await wf.register_existing_job(job)
+
+
+# ---------- 단계 8: product_register ----------
+
+def _cfg_with_jira(**overrides) -> WorkflowConfig:
+    base = dict(
+        bitbucket_user="u", bitbucket_app_password="x",
+        repo_host_path="bitbucket.org/x.git", repo_branch="dev",
+        work_dir="~/x",
+        healthcheck_poll_interval=0.001, healthcheck_timeout=0.5,
+        site_admin_email="admin@x.com",
+        site_admin_password="pw",
+        jira_email="jira@x.com",
+        jira_api_token="JIRA_TOKEN",
+        jira_key="PMFM",
+    )
+    base.update(overrides)
+    return WorkflowConfig(**base)
+
+
+def _enqueue_full_happy_path(fake: FakeSSHClient) -> None:
+    """8단계 전체 성공 시나리오 (hybrid-with-ai, site_register + product_register 포함)."""
+    _enqueue_happy_path_hybrid(fake)
+
+
+@pytest.mark.asyncio
+async def test_product_register_skipped_when_jira_email_missing(temp_db, mocker):
+    """T-WF-8-1: JIRA_EMAIL 없음 → product_register step_started 이벤트 없음, job SUCCEEDED."""
+    fake = FakeSSHClient()
+    _enqueue_happy_path_hybrid(fake)
+    cfg = _cfg_with_jira(jira_email="")
+    wf = _make_wf_with_cfg(fake, temp_db, cfg)
+    mocker.patch(
+        "autodeploy.workflow.site_registration.register_hospital",
+        return_value=("created", "FAKE_TOKEN"),
+    )
+
+    result = await wf.run(_job(deployment_type="hybrid-with-ai"))
+    assert result.status == JobStatus.SUCCEEDED
+
+    async with connect(temp_db) as db:
+        async with db.execute(
+            "SELECT * FROM job_events WHERE job_id=? AND step='product_register'",
+            (result.id,),
+        ) as cur:
+            rows = await cur.fetchall()
+    assert rows == []
+
+
+@pytest.mark.asyncio
+async def test_product_register_skipped_when_site_admin_creds_missing(temp_db, mocker):
+    """T-WF-8-2: site_admin 자격증명 없음 → skip, job SUCCEEDED."""
+    fake = FakeSSHClient()
+    _enqueue_happy_path_hybrid(fake)
+    cfg = _cfg_with_jira(site_admin_email="", site_admin_password="")
+    wf = _make_wf_with_cfg(fake, temp_db, cfg)
+
+    result = await wf.run(_job(deployment_type="hybrid-with-ai"))
+    assert result.status == JobStatus.SUCCEEDED
+
+    async with connect(temp_db) as db:
+        async with db.execute(
+            "SELECT * FROM job_events WHERE job_id=? AND step='product_register'",
+            (result.id,),
+        ) as cur:
+            rows = await cur.fetchall()
+    assert rows == []
+
+
+@pytest.mark.asyncio
+async def test_product_register_success_two_issues(temp_db, mocker):
+    """T-WF-8-3: 2개 이슈 → 2개 등록 성공 → step success."""
+    fake = FakeSSHClient()
+    _enqueue_happy_path_hybrid(fake)
+    cfg = _cfg_with_jira()
+    notifier = RecordingNotifier()
+    wf = Workflow(
+        ssh_factory=lambda h: fake,
+        db_path=temp_db,
+        deployment_types=load_deployment_types(CONFIG_PATH),
+        notifier=notifier,
+        cfg=cfg,
+    )
+    mocker.patch(
+        "autodeploy.workflow.site_registration.register_hospital",
+        return_value=("created", "FAKE_TOKEN"),
+    )
+
+    # Jira + ProductRegistrationClient mock
+    mock_issues = [
+        {"fields": {"summary": "[병원] CONNEVO KOA 1.0", "description": None}},
+        {"fields": {"summary": "[병원] CONNEVO Spin 2.0", "description": None}},
+    ]
+    mocker.patch(
+        "autodeploy.workflow.JiraClient.search_issues",
+        return_value=mock_issues,
+    )
+    mocker.patch(
+        "autodeploy.workflow.ProductRegistrationClient.register_products",
+        return_value=(2, 0),
+    )
+
+    result = await wf.run(_job(deployment_type="hybrid-with-ai"))
+    assert result.status == JobStatus.SUCCEEDED
+
+    step_events = [e[1]["step"] for e in notifier.events if e[0] == "step_finished"]
+    assert "product_register" in step_events
+    finished = next(
+        e for e in notifier.events
+        if e[0] == "step_finished" and e[1]["step"] == "product_register"
+    )
+    assert finished[1]["success"] is True
+
+
+@pytest.mark.asyncio
+async def test_product_register_partial_failure_step_success(temp_db, mocker):
+    """T-WF-8-4: 이슈 2개 중 1개 POST 실패 → step success (1개는 성공했으므로)."""
+    fake = FakeSSHClient()
+    _enqueue_happy_path_hybrid(fake)
+    cfg = _cfg_with_jira()
+    wf = _make_wf_with_cfg(fake, temp_db, cfg)
+    mocker.patch(
+        "autodeploy.workflow.site_registration.register_hospital",
+        return_value=("created", "FAKE_TOKEN"),
+    )
+    mocker.patch(
+        "autodeploy.workflow.JiraClient.search_issues",
+        return_value=[{"fields": {"summary": "[병원] CONNEVO KOA 1.0", "description": None}}],
+    )
+    mocker.patch(
+        "autodeploy.workflow.ProductRegistrationClient.register_products",
+        return_value=(1, 1),
+    )
+
+    result = await wf.run(_job(deployment_type="hybrid-with-ai"))
+    assert result.status == JobStatus.SUCCEEDED
+
+
+@pytest.mark.asyncio
+async def test_product_register_all_fail_step_failure_job_succeeded(temp_db, mocker):
+    """T-WF-8-5: 이슈 2개 전부 실패 → step failure, job SUCCEEDED."""
+    fake = FakeSSHClient()
+    _enqueue_happy_path_hybrid(fake)
+    cfg = _cfg_with_jira()
+    notifier = RecordingNotifier()
+    wf = Workflow(
+        ssh_factory=lambda h: fake,
+        db_path=temp_db,
+        deployment_types=load_deployment_types(CONFIG_PATH),
+        notifier=notifier,
+        cfg=cfg,
+    )
+    mocker.patch(
+        "autodeploy.workflow.site_registration.register_hospital",
+        return_value=("created", "FAKE_TOKEN"),
+    )
+    mocker.patch(
+        "autodeploy.workflow.JiraClient.search_issues",
+        return_value=[{"fields": {"summary": "[병원] CONNEVO KOA 1.0", "description": None}}],
+    )
+    mocker.patch(
+        "autodeploy.workflow.ProductRegistrationClient.register_products",
+        return_value=(0, 2),
+    )
+
+    result = await wf.run(_job(deployment_type="hybrid-with-ai"))
+    assert result.status == JobStatus.SUCCEEDED
+
+    finished = next(
+        e for e in notifier.events
+        if e[0] == "step_finished" and e[1]["step"] == "product_register"
+    )
+    assert finished[1]["success"] is False
+
+
+@pytest.mark.asyncio
+async def test_product_register_jira_zero_issues_step_failure_job_succeeded(temp_db, mocker):
+    """T-WF-8-6: Jira 검색 0건 → step failure, job SUCCEEDED."""
+    fake = FakeSSHClient()
+    _enqueue_happy_path_hybrid(fake)
+    cfg = _cfg_with_jira()
+    notifier = RecordingNotifier()
+    wf = Workflow(
+        ssh_factory=lambda h: fake,
+        db_path=temp_db,
+        deployment_types=load_deployment_types(CONFIG_PATH),
+        notifier=notifier,
+        cfg=cfg,
+    )
+    mocker.patch(
+        "autodeploy.workflow.site_registration.register_hospital",
+        return_value=("created", "FAKE_TOKEN"),
+    )
+    mocker.patch(
+        "autodeploy.workflow.JiraClient.search_issues",
+        return_value=[],
+    )
+
+    result = await wf.run(_job(deployment_type="hybrid-with-ai"))
+    assert result.status == JobStatus.SUCCEEDED
+
+    async with connect(temp_db) as db:
+        async with db.execute(
+            "SELECT level, message FROM job_events "
+            "WHERE job_id=? AND step='product_register'",
+            (result.id,),
+        ) as cur:
+            rows = await cur.fetchall()
+    assert any("찾지 못함" in r["message"] or "0건" in r["message"] for r in rows)
+
+
+@pytest.mark.asyncio
+async def test_product_register_runs_after_dicom_gateway_restart(temp_db, mocker):
+    """T-WF-8-7: dicom_gateway_restart 다음에 product_register가 실행됨을 순서로 검증."""
+    fake = FakeSSHClient()
+    _enqueue_happy_path_hybrid(fake)
+    cfg = _cfg_with_jira()
+    notifier = RecordingNotifier()
+    wf = Workflow(
+        ssh_factory=lambda h: fake,
+        db_path=temp_db,
+        deployment_types=load_deployment_types(CONFIG_PATH),
+        notifier=notifier,
+        cfg=cfg,
+    )
+    mocker.patch(
+        "autodeploy.workflow.site_registration.register_hospital",
+        return_value=("created", "FAKE_TOKEN"),
+    )
+    mocker.patch(
+        "autodeploy.workflow.JiraClient.search_issues",
+        return_value=[],  # 0건 → step failure (순서 검증만 목적)
+    )
+
+    await wf.run(_job(deployment_type="hybrid-with-ai"))
+
+    step_starts = [e[1]["step"] for e in notifier.events if e[0] == "step_started"]
+    assert "dicom_gateway_restart" in step_starts
+    assert "product_register" in step_starts
+    dicom_idx = step_starts.index("dicom_gateway_restart")
+    product_idx = step_starts.index("product_register")
+    assert dicom_idx < product_idx

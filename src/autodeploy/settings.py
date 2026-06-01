@@ -51,6 +51,12 @@ class Settings:
     site_cloud_base_url: str
     # site API 호출에 박는 x-api-env 헤더. Postman 캡쳐 기준 'dev'가 디폴트.
     site_api_env: str
+    # Jira (생산관리 프로젝트) — product_register 단계용.
+    # 비워두면 product_register 단계를 skip.
+    jira_base_url: str
+    jira_email: str
+    jira_api_token: str
+    jira_key: str
 
 
 def load_settings(env: Mapping[str, str] | None = None) -> Settings:
@@ -96,4 +102,10 @@ def load_settings(env: Mapping[str, str] | None = None) -> Settings:
             "SITE_CLOUD_BASE_URL", "https://dev-gateway.connecteve.com"
         ).strip().rstrip("/"),
         site_api_env=e.get("SITE_API_ENV", "dev").strip() or "dev",
+        jira_base_url=e.get(
+            "JIRA_BASE_URL", "https://connecteve.atlassian.net"
+        ).strip().rstrip("/"),
+        jira_email=e.get("JIRA_EMAIL", "").strip(),
+        jira_api_token=e.get("JIRA_API_TOKEN", ""),
+        jira_key=e.get("JIRA_KEY", "PMFM").strip() or "PMFM",
     )

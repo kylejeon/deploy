@@ -173,10 +173,11 @@ async def register_hospital(
     host_header: str | None = None,
     api_env: str = "dev",
     timeout_s: float = 15.0,
-) -> str:
+) -> tuple[str, str]:
     """원샷 헬퍼: 세션 생성 → 로그인 → 등록. workflow가 직접 호출하는 진입점.
 
-    workflow가 이 함수만 알면 되도록 캡슐화 — 테스트도 이 함수만 monkeypatch.
+    반환: (result, token) — result는 'created' | 'already_exists'.
+    token은 로그인에서 받은 x-auth-token. product_register가 재사용 (D8-1).
     host_header None이면 aiohttp가 URL에서 자동 (hybrid).
     """
     timeout = aiohttp.ClientTimeout(total=timeout_s)
@@ -185,9 +186,10 @@ async def register_hospital(
             session, base_url, email, password,
             host_header=host_header, api_env=api_env,
         )
-        return await register_site(
+        result = await register_site(
             session, base_url, token,
             code=code, display_name=display_name, address=address,
             installation_type=installation_type,
             host_header=host_header, api_env=api_env,
         )
+        return result, token

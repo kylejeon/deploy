@@ -109,3 +109,25 @@ def test_site_admin_credentials_load_from_env():
     s = load_settings(env)
     assert s.site_admin_email == "admin@x.com"
     assert s.site_admin_password == "secret#$"
+
+
+def test_jira_settings_default_values():
+    """Jira env 미설정 시 기본값 확인."""
+    s = load_settings(_full_env())
+    assert s.jira_base_url == "https://connecteve.atlassian.net"
+    assert s.jira_email == ""
+    assert s.jira_api_token == ""
+    assert s.jira_key == "PMFM"
+
+
+def test_jira_settings_loaded_from_env():
+    env = _full_env()
+    env["JIRA_BASE_URL"] = "https://custom.atlassian.net"
+    env["JIRA_EMAIL"] = "jira@x.com"
+    env["JIRA_API_TOKEN"] = "MYTOKEN"
+    env["JIRA_KEY"] = "MYPROJECT"
+    s = load_settings(env)
+    assert s.jira_base_url == "https://custom.atlassian.net"
+    assert s.jira_email == "jira@x.com"
+    assert s.jira_api_token == "MYTOKEN"
+    assert s.jira_key == "MYPROJECT"

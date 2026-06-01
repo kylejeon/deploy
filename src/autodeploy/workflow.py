@@ -26,6 +26,8 @@ from autodeploy.scripts import run_script
 from autodeploy import site_registration
 from autodeploy.site_registration import INSTALLATION_TYPE_MAP, SiteAPIError
 from autodeploy.ssh import LineCallback, SSHClient, SSHError, StreamLine
+from autodeploy.jira_client import JiraAPIError, JiraClient
+from autodeploy.product_registration import ProductRegistrationClient
 
 
 SSHFactory = Callable[[str], AbstractAsyncContextManager[SSHClient]]
@@ -166,6 +168,14 @@ class WorkflowConfig:
     site_cloud_base_url: str = "https://dev-gateway.connecteve.com"
     # site API 요청에 박는 x-api-env 헤더 (Postman 캡쳐 기준 'dev').
     site_api_env: str = "dev"
+    # Jira (생산관리 프로젝트) — product_register 단계용.
+    # 비워두면 product_register 단계를 skip.
+    jira_base_url: str = "https://connecteve.atlassian.net"
+    jira_email: str = ""
+    jira_api_token: str = ""
+    jira_key: str = "PMFM"
+    # product_register 전체 타임아웃 (초). D8-7.
+    product_register_timeout: float = 300.0
 
 
 class WorkflowError(RuntimeError):
@@ -190,6 +200,8 @@ class Workflow:
         self.deployment_types = deployment_types
         self.notifier = notifier
         self.cfg = cfg
+        # site_register 단계에서 받은 토큰 캐시. product_register에서 재사용 (D8-1).
+        self._site_token: str | None = None
 
     async def run(self, job: Job) -> Job:
         async with connect(self.db_path) as db:
@@ -243,6 +255,8 @@ class Workflow:
                 await self._step_dicom_gateway_restart(db, job, ssh)
         except SSHError as exc:
             raise WorkflowError(Step.SSH_CONNECT, str(exc)) from exc
+
+        await self._step_product_register(db, job)
 
     async def _step_git_pull(self, db, job: Job, ssh: SSHClient) -> str:
         await self._step_start(db, job, Step.GIT_PULL)
@@ -386,7 +400,7 @@ class Workflow:
         display_name = job.hospital_name or job.hospital_code
 
         try:
-            result = await site_registration.register_hospital(
+            result, token = await site_registration.register_hospital(
                 base_url,
                 email=self.cfg.site_admin_email,
                 password=self.cfg.site_admin_password,
@@ -397,6 +411,8 @@ class Workflow:
                 host_header=host_header,
                 api_env=self.cfg.site_api_env,
             )
+            # D8-1: 로그인 토큰을 인스턴스 변수에 캐싱 → product_register가 재사용
+            self._site_token = token
         except SiteAPIError as exc:
             duration = time.monotonic() - start
             await self._step_done(db, job, Step.SITE_REGISTER, success=False, duration=duration)
@@ -430,6 +446,115 @@ class Workflow:
                 f"kubectl delete pod 실패 (exit {rc}). 수동 재시작: "
                 f"`ssh connecteve@{job.target_ip} 'kubectl -n hub delete pod -l app=dicom-gateway'`",
             )
+
+    async def _step_product_register(self, db, job: Job) -> None:
+        """Jira 이슈 검색 → Lookup ID 조회 → Product POST. 부분 실패 허용.
+
+        skip 조건 (조용히 단계 자체를 건너뜀, Slack 알림 없음):
+        - JIRA_EMAIL 또는 JIRA_API_TOKEN 비어있음
+        - site_admin 자격증명 비어있음 (토큰 없어서 Lookup API 호출 불가)
+
+        실패해도 job 전체는 SUCCEEDED 유지 (dicom_gateway_restart 패턴).
+        """
+        if not self.cfg.jira_email or not self.cfg.jira_api_token:
+            return
+        if not self.cfg.site_admin_email or not self.cfg.site_admin_password:
+            return
+
+        await self._step_start(db, job, Step.PRODUCT_REGISTER)
+        start = time.monotonic()
+
+        async def _event(level: str, message: str) -> None:
+            await repo.add_event(db, job.id, Step.PRODUCT_REGISTER.value, level, message)
+
+        hospital_display_name = job.hospital_name or job.hospital_code
+        jira = JiraClient(
+            base_url=self.cfg.jira_base_url,
+            email=self.cfg.jira_email,
+            api_token=self.cfg.jira_api_token,
+            project_key=self.cfg.jira_key,
+        )
+
+        try:
+            inner_result = await asyncio.wait_for(
+                self._run_product_register_inner(
+                    job, jira, hospital_display_name, _event
+                ),
+                timeout=self.cfg.product_register_timeout,
+            )
+        except asyncio.TimeoutError:
+            duration = time.monotonic() - start
+            await _event(
+                "error",
+                f"product_register 단계 타임아웃 ({self.cfg.product_register_timeout:.0f}s 초과)",
+            )
+            await self._step_done(
+                db, job, Step.PRODUCT_REGISTER, success=False, duration=duration
+            )
+            return
+
+        duration = time.monotonic() - start
+        if inner_result is None:
+            # Jira 검색 실패 / 이슈 0건 / 토큰 없음 등 → step failure
+            await self._step_done(
+                db, job, Step.PRODUCT_REGISTER, success=False, duration=duration
+            )
+            return
+
+        success_count, fail_count = inner_result
+        success = success_count > 0 or fail_count == 0
+        await self._step_done(
+            db, job, Step.PRODUCT_REGISTER, success=success, duration=duration
+        )
+        if fail_count > 0 and success_count == 0:
+            await _event(
+                "warn",
+                f"제품 등록 전부 실패 ({success_count + fail_count}건 중 {fail_count}건 실패)",
+            )
+
+    async def _run_product_register_inner(
+        self,
+        job: Job,
+        jira: JiraClient,
+        hospital_display_name: str,
+        _event,
+    ) -> tuple[int, int] | None:
+        """product_register 실제 로직. asyncio.wait_for로 감싸기 위해 분리.
+
+        step failure 원인을 _event로 기록하고 None 반환.
+        성공(부분 포함) 시 (success_count, fail_count) 반환.
+        _step_done은 호출하지 않음 — caller가 처리.
+        """
+        try:
+            issues = await jira.search_issues(hospital_display_name)
+        except JiraAPIError as exc:
+            await _event("error", f"Jira 검색 실패: {exc}")
+            return None
+
+        if not issues:
+            await _event(
+                "warn",
+                f"Jira 이슈를 찾지 못함 (병원: {hospital_display_name})",
+            )
+            return None
+
+        token = self._site_token
+        if not token:
+            await _event("error", "site_token 없음 — site_register 단계 토큰 캐싱 실패")
+            return None
+
+        base_url, host_header = self._resolve_site_api_endpoint(job)
+        client = ProductRegistrationClient(
+            base_url=base_url,
+            token=token,
+            api_env=self.cfg.site_api_env,
+            host_header=host_header,
+        )
+
+        success_count, fail_count = await client.register_products(
+            job, issues, on_event=_event
+        )
+        return success_count, fail_count
 
     def _resolve_site_api_endpoint(self, job: Job) -> tuple[str, str | None]:
         """(base_url, host_header_override) — deployment_type별 분기.
@@ -478,7 +603,7 @@ class Workflow:
         )
         display_name = job.hospital_name or job.hospital_code
 
-        result = await site_registration.register_hospital(
+        result, _token = await site_registration.register_hospital(
             base_url,
             email=self.cfg.site_admin_email,
             password=self.cfg.site_admin_password,
