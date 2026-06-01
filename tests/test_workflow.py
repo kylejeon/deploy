@@ -73,6 +73,7 @@ def _enqueue_happy_path_hybrid(fake: FakeSSHClient) -> None:
     fake.enqueue("setup-site.sh", [StreamLine("stdout", "infra ok")])
     fake.enqueue("deploy-applications.sh", [StreamLine("stdout", "app ok")])
     fake.enqueue("kubectl get pods", [])
+    fake.enqueue("kubectl -n hub delete pod", [])
 
 
 @pytest.mark.asyncio
@@ -117,6 +118,7 @@ async def test_on_premise_uses_correct_scripts(temp_db):
     fake.enqueue("setup-onpremise.sh", [])
     fake.enqueue("deploy-applications-onpremise.sh", [])
     fake.enqueue("kubectl get pods", [])
+    fake.enqueue("kubectl -n hub delete pod", [])
 
     wf = _make_workflow(fake, temp_db)
     result = await wf.run(_job(deployment_type="on-premise"))
@@ -139,6 +141,7 @@ async def test_hybrid_without_ai_passes_wo_ai_arg(temp_db):
     fake.enqueue("setup-site.sh", [])
     fake.enqueue("deploy-applications.sh", [])
     fake.enqueue("kubectl get pods", [])
+    fake.enqueue("kubectl -n hub delete pod", [])
 
     wf = _make_workflow(fake, temp_db)
     await wf.run(_job(deployment_type="hybrid-without-ai"))
@@ -240,6 +243,7 @@ async def test_preflight_auto_installs_missing_git_and_proceeds(temp_db):
     fake.enqueue("setup-site.sh", [])
     fake.enqueue("deploy-applications.sh", [])
     fake.enqueue("kubectl get pods", [])
+    fake.enqueue("kubectl -n hub delete pod", [])
     wf = _make_workflow(fake, temp_db)
 
     result = await wf.run(_job())
@@ -330,6 +334,7 @@ async def test_auto_install_injects_sudo_password_when_set(temp_db):
     fake.enqueue("setup-site.sh", [])
     fake.enqueue("deploy-applications.sh", [])
     fake.enqueue("kubectl get pods", [])
+    fake.enqueue("kubectl -n hub delete pod", [])
 
     cfg = WorkflowConfig(
         bitbucket_user="u", bitbucket_app_password="x",
@@ -374,6 +379,7 @@ async def test_auto_install_uses_plain_sudo_when_no_password(temp_db):
     fake.enqueue("setup-site.sh", [])
     fake.enqueue("deploy-applications.sh", [])
     fake.enqueue("kubectl get pods", [])
+    fake.enqueue("kubectl -n hub delete pod", [])
 
     wf = _make_workflow(fake, temp_db)  # default cfg: sudo_password=""
     await wf.run(_job())
@@ -495,6 +501,7 @@ async def test_workflow_captures_app_urls_and_uses_frontend_as_admin(temp_db):
         ],
     )
     fake.enqueue("kubectl get pods", [])
+    fake.enqueue("kubectl -n hub delete pod", [])
     wf = _make_workflow(fake, temp_db)
 
     result = await wf.run(_job(ip="192.168.1.50"))
@@ -525,6 +532,7 @@ async def test_workflow_captures_urls_from_infra_step_too(temp_db):
     )
     fake.enqueue("deploy-applications.sh", [])
     fake.enqueue("kubectl get pods", [])
+    fake.enqueue("kubectl -n hub delete pod", [])
     wf = _make_workflow(fake, temp_db)
 
     result = await wf.run(_job(ip="192.168.100.213"))
@@ -552,6 +560,7 @@ async def test_workflow_captures_urls_from_stderr(temp_db):
         ],
     )
     fake.enqueue("kubectl get pods", [])
+    fake.enqueue("kubectl -n hub delete pod", [])
     wf = _make_workflow(fake, temp_db)
 
     result = await wf.run(_job(ip="192.168.100.213"))
@@ -583,6 +592,7 @@ async def test_workflow_merges_urls_across_infra_and_app(temp_db):
         ],
     )
     fake.enqueue("kubectl get pods", [])
+    fake.enqueue("kubectl -n hub delete pod", [])
     wf = _make_workflow(fake, temp_db)
 
     result = await wf.run(_job(ip="10.0.0.1"))
@@ -605,6 +615,7 @@ async def test_workflow_admin_url_falls_back_to_template_when_no_frontend(temp_d
         [StreamLine("stdout", "nothing useful")],
     )
     fake.enqueue("kubectl get pods", [])
+    fake.enqueue("kubectl -n hub delete pod", [])
     wf = _make_workflow(fake, temp_db)
 
     result = await wf.run(_job(ip="10.0.0.1"))
@@ -649,6 +660,7 @@ async def test_workflow_masks_token_in_script_logs(temp_db):
     fake.enqueue("setup-site.sh", [])
     fake.enqueue("deploy-applications.sh", [])
     fake.enqueue("kubectl get pods", [])
+    fake.enqueue("kubectl -n hub delete pod", [])
     wf = _make_workflow(fake, temp_db)
 
     result = await wf.run(_job())
@@ -728,10 +740,14 @@ async def test_notifier_emits_step_events_for_each_phase(temp_db):
     step_finishes = [e[1]["step"] for e in notifier.events if e[0] == "step_finished"]
     # ssh_connect는 step_done만 emit (start 안 함; 즉시 완료)
     # hybrid 케이스에선 site_register 단계가 skip되므로 4단계
-    assert step_starts == ["git_pull", "infra_install", "app_install", "healthcheck"]
+    # hybrid에선 site_register는 자격증명 없으면 skip. dicom_gateway_restart는 항상 실행.
+    assert step_starts == [
+        "git_pull", "infra_install", "app_install", "healthcheck",
+        "dicom_gateway_restart",
+    ]
     assert "ssh_connect" in step_finishes
     assert "healthcheck" in step_finishes
-    assert "site_register" not in step_finishes  # skipped for hybrid
+    assert "site_register" not in step_finishes  # skipped (no creds in default cfg)
     assert all(e[1]["success"] for e in notifier.events if e[0] == "step_finished")
 
 
@@ -773,6 +789,7 @@ def _enqueue_onpremise_happy_path(fake: FakeSSHClient, frontend_port: str = "314
     )
     fake.enqueue("deploy-applications-onpremise.sh", [])
     fake.enqueue("kubectl get pods", [])
+    fake.enqueue("kubectl -n hub delete pod", [])
 
 
 @pytest.mark.asyncio
@@ -807,6 +824,7 @@ async def test_site_register_uses_hybrid_without_ai_installation_type(temp_db, m
     fake.enqueue("setup-site.sh", [])
     fake.enqueue("deploy-applications.sh", [])
     fake.enqueue("kubectl get pods", [])
+    fake.enqueue("kubectl -n hub delete pod", [])
     cfg = _cfg_with_site_creds()
     wf = _make_wf_with_cfg(fake, temp_db, cfg)
     spy = mocker.patch(
@@ -922,6 +940,7 @@ async def test_site_register_fails_when_frontend_url_not_captured(temp_db, mocke
     fake.enqueue("setup-onpremise.sh", [])  # Frontend URL 안 찍힘
     fake.enqueue("deploy-applications-onpremise.sh", [])
     fake.enqueue("kubectl get pods", [])
+    fake.enqueue("kubectl -n hub delete pod", [])
     cfg = _cfg_with_site_creds()
     wf = _make_wf_with_cfg(fake, temp_db, cfg)
     spy = mocker.patch("autodeploy.workflow.site_registration.register_hospital")
@@ -1099,6 +1118,93 @@ async def test_register_existing_job_onpremise_without_admin_url_raises(temp_db)
     from autodeploy.workflow import WorkflowError as _WfErr
     with pytest.raises(_WfErr):
         await wf.register_existing_job(job)
+
+
+@pytest.mark.asyncio
+async def test_dicom_gateway_restart_runs_for_all_deployment_types(temp_db):
+    """on-premise / hybrid-with-ai / hybrid-without-ai 모두 마지막 단계로 실행."""
+    for dtype in ("on-premise", "hybrid-with-ai", "hybrid-without-ai"):
+        fake = FakeSSHClient()
+        _enqueue_preflight_ok(fake)
+        fake.enqueue("test -d", [], exit_code=0)
+        fake.enqueue("git remote set-url origin", [])
+        fake.enqueue("git rev-parse HEAD", [StreamLine("stdout", "sha")])
+        if dtype == "on-premise":
+            fake.enqueue("setup-onpremise.sh", [])
+            fake.enqueue("deploy-applications-onpremise.sh", [])
+        else:
+            fake.enqueue("setup-site.sh", [])
+            fake.enqueue("deploy-applications.sh", [])
+        fake.enqueue("kubectl get pods", [])
+        fake.enqueue("kubectl -n hub delete pod", [])
+        wf = _make_workflow(fake, temp_db)
+
+        result = await wf.run(_job(deployment_type=dtype, ip=f"10.0.0.{hash(dtype) % 100}"))
+        assert result.status == JobStatus.SUCCEEDED, f"{dtype} failed"
+        # 마지막 명령이 kubectl delete pod (dicom-gateway 재시작)
+        delete_cmds = [c for c in fake.executed if "kubectl -n hub delete pod" in c]
+        assert len(delete_cmds) == 1
+        assert "app=dicom-gateway" in delete_cmds[0]
+
+
+@pytest.mark.asyncio
+async def test_dicom_gateway_restart_failure_does_not_fail_workflow(temp_db):
+    """delete pod가 non-zero exit해도 작업 전체는 SUCCEEDED — 운영자가 수동 처리."""
+    fake = FakeSSHClient()
+    _enqueue_preflight_ok(fake)
+    fake.enqueue("test -d", [], exit_code=0)
+    fake.enqueue("git remote set-url origin", [])
+    fake.enqueue("git rev-parse HEAD", [StreamLine("stdout", "sha")])
+    fake.enqueue("setup-site.sh", [])
+    fake.enqueue("deploy-applications.sh", [])
+    fake.enqueue("kubectl get pods", [])
+    fake.enqueue(
+        "kubectl -n hub delete pod",
+        [StreamLine("stderr", "Error from server (Forbidden)")],
+        exit_code=1,
+    )
+    wf = _make_workflow(fake, temp_db)
+
+    result = await wf.run(_job(deployment_type="hybrid-with-ai"))
+    assert result.status == JobStatus.SUCCEEDED  # 단계 실패해도 작업은 성공
+    # DB 이벤트에 경고 흔적
+    async with connect(temp_db) as db:
+        async with db.execute(
+            "SELECT level, message FROM job_events "
+            "WHERE job_id=? AND step='dicom_gateway_restart' AND level='warn'",
+            (result.id,),
+        ) as cur:
+            warns = await cur.fetchall()
+    assert len(warns) == 1
+    assert "kubectl delete pod 실패" in warns[0]["message"]
+    assert "수동 재시작" in warns[0]["message"]
+
+
+@pytest.mark.asyncio
+async def test_dicom_gateway_restart_runs_after_site_register(temp_db, mocker):
+    """순서: healthcheck → site_register → dicom_gateway_restart."""
+    fake = FakeSSHClient()
+    _enqueue_onpremise_happy_path(fake)
+    fake.enqueue("kubectl -n hub delete pod", [])  # _enqueue_onpremise_happy_path엔 없음
+    cfg = _cfg_with_site_creds()
+    notifier = RecordingNotifier()
+    wf = Workflow(
+        ssh_factory=lambda h: fake,
+        db_path=temp_db,
+        deployment_types=load_deployment_types(CONFIG_PATH),
+        notifier=notifier,
+        cfg=cfg,
+    )
+    mocker.patch(
+        "autodeploy.workflow.site_registration.register_hospital",
+        return_value="created",
+    )
+
+    await wf.run(_job(deployment_type="on-premise"))
+
+    step_order = [e[1]["step"] for e in notifier.events if e[0] == "step_started"]
+    # site_register가 dicom_gateway_restart보다 먼저
+    assert step_order.index("site_register") < step_order.index("dicom_gateway_restart")
 
 
 @pytest.mark.asyncio

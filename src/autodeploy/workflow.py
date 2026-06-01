@@ -240,6 +240,7 @@ class Workflow:
                 await self._step_script(db, job, ssh, Step.APP_INSTALL, deployment.app)
                 await self._step_healthcheck(db, job, ssh)
                 await self._step_site_register(db, job)
+                await self._step_dicom_gateway_restart(db, job, ssh)
         except SSHError as exc:
             raise WorkflowError(Step.SSH_CONNECT, str(exc)) from exc
 
@@ -405,6 +406,30 @@ class Workflow:
         msg = "이미 등록됨 (멱등)" if result == "already_exists" else "신규 등록"
         await repo.add_event(db, job.id, Step.SITE_REGISTER.value, "info", msg)
         await self._step_done(db, job, Step.SITE_REGISTER, success=True, duration=duration)
+
+    async def _step_dicom_gateway_restart(self, db, job: Job, ssh: SSHClient) -> None:
+        """dicom-gateway pod 강제 재시작. 실패해도 작업 전체는 SUCCEEDED.
+
+        설치 직후 dicom-gateway가 Consul KV/Vault 시크릿 최신값을 못 잡고 있는
+        케이스가 흔해서 한 번 강제 재기동. delete pod 방식 — deployment 컨트롤러가
+        새 pod를 즉시 생성. 실패는 운영자가 수동으로 처리할 수 있으므로 raise하지
+        않고 경고만 남김 (작업 자체는 SUCCEEDED 유지).
+        """
+        await self._step_start(db, job, Step.DICOM_GATEWAY_RESTART)
+        start = time.monotonic()
+        rc = await ssh.exec(
+            "kubectl -n hub delete pod -l app=dicom-gateway",
+            on_line=self._make_log_collector(db, job, Step.DICOM_GATEWAY_RESTART),
+        )
+        duration = time.monotonic() - start
+        success = rc == 0
+        await self._step_done(db, job, Step.DICOM_GATEWAY_RESTART, success=success, duration=duration)
+        if not success:
+            await repo.add_event(
+                db, job.id, Step.DICOM_GATEWAY_RESTART.value, "warn",
+                f"kubectl delete pod 실패 (exit {rc}). 수동 재시작: "
+                f"`ssh connecteve@{job.target_ip} 'kubectl -n hub delete pod -l app=dicom-gateway'`",
+            )
 
     def _resolve_site_api_endpoint(self, job: Job) -> tuple[str, str | None]:
         """(base_url, host_header_override) — deployment_type별 분기.

@@ -568,3 +568,35 @@ site_register API만 다시 호출. SSH/스크립트/healthcheck 같은 무거�
 ### 즉시 효과
 - 작업 #23 (hybrid-with-ai, hch-bp, 자동 등록 빠짐): 맥미니에서 git pull + launchctl kickstart -k
   하고 슬랙에서 `@autodeploy register 23` 보내면 cloud에 등록됨.
+
+---
+
+## 2026-06-01 (밤) — 단계 7 dicom_gateway_restart 추가
+
+### 무엇을 했나 (235/235 통과)
+site_register(6단계) 직후 7번째 단계로 `dicom_gateway_restart` 추가.
+설치 직후 dicom-gateway pod를 한 번 강제 재기동.
+
+### 동작
+- 명령: `kubectl -n hub delete pod -l app=dicom-gateway`
+- 모든 deployment_type (on-premise / hybrid-with-ai / hybrid-without-ai)에서 실행
+- delete pod 방식 — deployment 컨트롤러가 새 pod 생성 (rollout restart보다 직접적)
+- **실패해도 작업 전체는 SUCCEEDED 유지** — 단계만 실패 표시 + DB warn 이벤트에 수동 재시작 안내
+- 실행은 SSH 세션 안 (healthcheck/site_register 끝난 직후)
+
+### 변경 파일
+- src/autodeploy/models.py — Step.DICOM_GATEWAY_RESTART 추가, STEPS_IN_ORDER 7개로
+- src/autodeploy/workflow.py — _step_dicom_gateway_restart 메서드,
+  _execute에서 site_register 다음에 호출
+- src/autodeploy/messages.py — 아이콘(🔄)/라벨/순서 등록
+- tests/test_models.py — STEPS_IN_ORDER 7개 단언
+- tests/test_messages.py — "단계 3/7"
+- tests/test_workflow.py — 헬퍼에 kubectl delete pod enqueue 추가 (sed로 일괄),
+  신규 테스트 3건 (모든 deployment_type / 실패 시 SUCCEEDED 유지 / site_register 다음 순서)
+
+### 비고
+- "단계 N/7" 표기가 모든 메시지에 적용됨. hybrid에서 site_register skip되면
+  5/7→6/7로 점프하는 듯한 표시가 될 수 있지만, dicom_gateway_restart는 무조건
+  실행되어 7/7까지 표시됨.
+- 라벨 셀렉터 `app=dicom-gateway`가 실제 deployment의 라벨과 다르면 매칭 0개로
+  종료(rc=0이지만 효과 없음). 운영 중 확인 필요 — 다르면 셀렉터 조정 PR.

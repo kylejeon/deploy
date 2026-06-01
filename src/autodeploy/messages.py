@@ -16,6 +16,7 @@ _STEP_ICONS: dict[Step, str] = {
     Step.APP_INSTALL: "📦",
     Step.HEALTHCHECK: "🩺",
     Step.SITE_REGISTER: "🏥",
+    Step.DICOM_GATEWAY_RESTART: "🔄",
     Step.DONE: "✅",
 }
 
@@ -26,6 +27,7 @@ _STEP_LABELS_KR: dict[Step, str] = {
     Step.APP_INSTALL: "어플리케이션 설치",
     Step.HEALTHCHECK: "헬스체크",
     Step.SITE_REGISTER: "병원 등록",
+    Step.DICOM_GATEWAY_RESTART: "dicom-gateway 재시작",
     Step.DONE: "완료",
 }
 
@@ -36,6 +38,7 @@ _STEP_ORDER: tuple[Step, ...] = (
     Step.APP_INSTALL,
     Step.HEALTHCHECK,
     Step.SITE_REGISTER,
+    Step.DICOM_GATEWAY_RESTART,
 )
 
 
