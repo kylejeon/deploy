@@ -1,0 +1,7 @@
+# Created by venv; see https://docs.python.org/3/library/venv.html
+# 이 폴더가 실수로 venv 생성 대상이 되어 *로 모두 무시 — 그러나 launchd/는
+# 실제 배포 산출물이므로 명시적으로 추적한다.
+*
+!launchd/
+!launchd/**
+!.gitignore
