@@ -34,6 +34,8 @@ def _settings(db_path: Path, *, allowed: set[str] | None = None, channel: str = 
         log_level="INFO",
         site_admin_email="",
         site_admin_password="",
+        site_cloud_base_url="https://dev-gateway.connecteve.com",
+        site_api_env="dev",
     )
 
 

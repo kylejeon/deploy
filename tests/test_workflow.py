@@ -776,17 +776,67 @@ def _enqueue_onpremise_happy_path(fake: FakeSSHClient, frontend_port: str = "314
 
 
 @pytest.mark.asyncio
-async def test_site_register_skipped_for_hybrid_deployment(temp_db, mocker):
+async def test_site_register_runs_for_hybrid_with_cloud_base_url(temp_db, mocker):
+    """hybrid는 클라우드 base URL로 자동 등록 — Frontend URL 캡쳐 불필요."""
     fake = FakeSSHClient()
-    _enqueue_happy_path_hybrid(fake)
+    _enqueue_happy_path_hybrid(fake)  # Frontend URL 안 찍힘
     cfg = _cfg_with_site_creds()
     wf = _make_wf_with_cfg(fake, temp_db, cfg)
-    # register_hospital이 호출되면 안 됨
-    spy = mocker.patch("autodeploy.workflow.site_registration.register_hospital")
+    spy = mocker.patch(
+        "autodeploy.workflow.site_registration.register_hospital",
+        return_value="created",
+    )
 
     result = await wf.run(_job(deployment_type="hybrid-with-ai"))
     assert result.status == JobStatus.SUCCEEDED
-    spy.assert_not_called()
+    spy.assert_called_once()
+    args, kwargs = spy.call_args
+    assert args[0] == "https://dev-gateway.connecteve.com"  # default cloud URL
+    assert kwargs["host_header"] is None  # hybrid는 URL에서 자동
+    assert kwargs["installation_type"] == "Hybrid On-Premise AI"
+    assert kwargs["api_env"] == "dev"
+
+
+@pytest.mark.asyncio
+async def test_site_register_uses_hybrid_without_ai_installation_type(temp_db, mocker):
+    fake = FakeSSHClient()
+    _enqueue_preflight_ok(fake)
+    fake.enqueue("test -d", [], exit_code=0)
+    fake.enqueue("git remote set-url origin", [])
+    fake.enqueue("git rev-parse HEAD", [StreamLine("stdout", "sha1")])
+    fake.enqueue("setup-site.sh", [])
+    fake.enqueue("deploy-applications.sh", [])
+    fake.enqueue("kubectl get pods", [])
+    cfg = _cfg_with_site_creds()
+    wf = _make_wf_with_cfg(fake, temp_db, cfg)
+    spy = mocker.patch(
+        "autodeploy.workflow.site_registration.register_hospital",
+        return_value="created",
+    )
+
+    await wf.run(_job(deployment_type="hybrid-without-ai"))
+    _, kwargs = spy.call_args
+    assert kwargs["installation_type"] == "Hybrid Cloud AI"
+
+
+@pytest.mark.asyncio
+async def test_site_register_respects_custom_cloud_base_url(temp_db, mocker):
+    fake = FakeSSHClient()
+    _enqueue_happy_path_hybrid(fake)
+    cfg = _cfg_with_site_creds(
+        site_cloud_base_url="https://prod-gateway.connecteve.com",
+        site_api_env="prod",
+    )
+    wf = _make_wf_with_cfg(fake, temp_db, cfg)
+    spy = mocker.patch(
+        "autodeploy.workflow.site_registration.register_hospital",
+        return_value="created",
+    )
+
+    await wf.run(_job(deployment_type="hybrid-with-ai"))
+    args, kwargs = spy.call_args
+    assert args[0] == "https://prod-gateway.connecteve.com"
+    assert kwargs["api_env"] == "prod"
 
 
 @pytest.mark.asyncio

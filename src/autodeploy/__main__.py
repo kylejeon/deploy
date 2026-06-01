@@ -88,6 +88,8 @@ async def _run() -> int:
             sudo_password=settings.ssh_password,
             site_admin_email=settings.site_admin_email,
             site_admin_password=settings.site_admin_password,
+            site_cloud_base_url=settings.site_cloud_base_url,
+            site_api_env=settings.site_api_env,
         ),
     )
 

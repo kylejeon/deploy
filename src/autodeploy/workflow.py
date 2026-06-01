@@ -158,9 +158,14 @@ class WorkflowConfig:
     # 설치 직후 자동 병원 등록용 마스터 계정. 비어있으면 site_register 단계 skip.
     site_admin_email: str = ""
     site_admin_password: str = ""
-    # 사이트 API 요청에 강제로 박는 Host 헤더. Traefik이 Host로 라우팅하므로
-    # IP로 직접 쳐도 'localhost'로 보내야 매칭되는 환경이 있음.
-    site_host_header: str = "localhost"
+    # on-premise일 때 강제할 Host 헤더. Traefik이 Host로 라우팅하므로 target IP로
+    # 직접 쳐도 'localhost'로 보내야 매칭되는 환경. hybrid는 None으로 두면
+    # aiohttp가 URL의 dev-gateway.connecteve.com을 그대로 Host로 씀.
+    site_host_header_onpremise: str = "localhost"
+    # hybrid 케이스의 base URL. 운영 환경 분리 시 env로 오버라이드.
+    site_cloud_base_url: str = "https://dev-gateway.connecteve.com"
+    # site API 요청에 박는 x-api-env 헤더 (Postman 캡쳐 기준 'dev').
+    site_api_env: str = "dev"
 
 
 class WorkflowError(RuntimeError):
@@ -350,43 +355,30 @@ class Workflow:
     async def _step_site_register(self, db, job: Job) -> None:
         """설치 직후 frontend(site-management) API로 자동 병원 등록.
 
+        on-premise와 hybrid(with-ai/without-ai) 모두 자동 등록. 차이는 base URL과
+        Host 헤더 처리뿐.
+
         skip 조건 (조용히 단계 자체를 건너뜀, 부분 실행 흔적 없음):
-        - on-premise 외 deployment_type — hybrid는 클라우드 등록 정책이 별도
         - site_admin_email/password가 비어있음 — 운영자 옵션-인 (.env 안 채움)
 
         실패 조건 (WorkflowError로 작업 전체 실패):
-        - Frontend URL이 캡쳐되지 않아 base URL 결정 불가
+        - on-premise인데 Frontend URL 미캡쳐로 base URL 결정 불가
         - sign-in 실패 (계정 오류, 네트워크 등)
         - sites 등록 실패 (멱등 케이스인 409/duplicate는 성공으로 간주)
         """
-        if job.deployment_type != "on-premise":
-            return
         if not self.cfg.site_admin_email or not self.cfg.site_admin_password:
             return
 
         await self._step_start(db, job, Step.SITE_REGISTER)
         start = time.monotonic()
 
-        frontend_url = (job.extra_urls or {}).get("Frontend")
-        if not frontend_url:
+        try:
+            base_url, host_header = self._resolve_site_api_endpoint(job)
+        except WorkflowError:
             duration = time.monotonic() - start
             await self._step_done(db, job, Step.SITE_REGISTER, success=False, duration=duration)
-            raise WorkflowError(
-                Step.SITE_REGISTER,
-                "Frontend URL이 캡쳐되지 않아 site API base URL을 결정할 수 없음. "
-                "install 스크립트에서 `[INFO] Frontend URL: http://IP:PORT` 출력 확인 필요.",
-            )
-        m = re.match(r"https?://[^:/\s]+:(\d+)", frontend_url)
-        if not m:
-            duration = time.monotonic() - start
-            await self._step_done(db, job, Step.SITE_REGISTER, success=False, duration=duration)
-            raise WorkflowError(
-                Step.SITE_REGISTER,
-                f"Frontend URL에서 포트를 파싱할 수 없음: {frontend_url}",
-            )
-        port = m.group(1)
-        # Postman 캡쳐와 동일하게 target IP로 직접 접속하되 Host 헤더로 라우팅.
-        base_url = f"http://{job.target_ip}:{port}"
+            raise
+
         installation_type = INSTALLATION_TYPE_MAP.get(
             job.deployment_type, job.deployment_type
         )
@@ -401,7 +393,8 @@ class Workflow:
                 display_name=display_name,
                 address=job.hospital_address or "",
                 installation_type=installation_type,
-                host_header=self.cfg.site_host_header,
+                host_header=host_header,
+                api_env=self.cfg.site_api_env,
             )
         except SiteAPIError as exc:
             duration = time.monotonic() - start
@@ -412,6 +405,27 @@ class Workflow:
         msg = "이미 등록됨 (멱등)" if result == "already_exists" else "신규 등록"
         await repo.add_event(db, job.id, Step.SITE_REGISTER.value, "info", msg)
         await self._step_done(db, job, Step.SITE_REGISTER, success=True, duration=duration)
+
+    def _resolve_site_api_endpoint(self, job: Job) -> tuple[str, str | None]:
+        """(base_url, host_header_override) — deployment_type별 분기."""
+        if job.deployment_type == "on-premise":
+            frontend_url = (job.extra_urls or {}).get("Frontend")
+            if not frontend_url:
+                raise WorkflowError(
+                    Step.SITE_REGISTER,
+                    "Frontend URL이 캡쳐되지 않아 site API base URL을 결정할 수 없음. "
+                    "install 스크립트에서 `[INFO] Frontend URL: http://IP:PORT` 출력 확인 필요.",
+                )
+            m = re.match(r"https?://[^:/\s]+:(\d+)", frontend_url)
+            if not m:
+                raise WorkflowError(
+                    Step.SITE_REGISTER,
+                    f"Frontend URL에서 포트를 파싱할 수 없음: {frontend_url}",
+                )
+            # target_ip로 직접 접속하되 Host: localhost로 Traefik 라우팅
+            return f"http://{job.target_ip}:{m.group(1)}", self.cfg.site_host_header_onpremise
+        # hybrid-with-ai / hybrid-without-ai — 클라우드 직접. Host 헤더는 URL에서 자동.
+        return self.cfg.site_cloud_base_url, None
 
     async def _step_start(self, db, job: Job, step: Step) -> None:
         await repo.update_current_step(db, job.id, step)

@@ -175,15 +175,10 @@ def success_summary(job: Job, *, total_duration_s: float) -> dict:
         })
     hospital = _hospital_lines(job)
     if hospital:
-        # on-premise는 site_register 단계에서 자동 등록 완료. hybrid는 클라우드 등록
-        # 정책이 별도라 현재는 자동 등록 안 됨 — 라벨을 deployment_type으로 분기.
-        if job.deployment_type == "on-premise":
-            header = "✓ 병원 자동 등록 완료"
-        else:
-            header = "다음 단계: Admin Web에서 병원 등록"
+        # on-premise와 hybrid 모두 site_register 단계에서 자동 등록되므로 통일 문구.
         blocks.append({
             "type": "context",
-            "elements": [{"type": "mrkdwn", "text": f"{header}\n{hospital}"}],
+            "elements": [{"type": "mrkdwn", "text": f"✓ 병원 자동 등록 완료\n{hospital}"}],
         })
     return {"text": text, "blocks": blocks, "attachment_color": "good"}
 

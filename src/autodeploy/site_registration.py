@@ -73,19 +73,25 @@ async def login_to_site(
     email: str,
     password: str,
     *,
-    host_header: str = "localhost",
+    host_header: str | None = None,
+    api_env: str = "dev",
 ) -> str:
     """sign-in 호출 → x-auth-token 반환. 실패 시 SiteAPIError.
 
-    base_url: 'http://<target_ip>:<frontend_port>' 형태. trailing slash 무관.
-    host_header: Traefik 라우팅용. on-premise Postman 캡쳐와 동일하게 'localhost' 기본.
+    base_url: 'http://<target_ip>:<frontend_port>' (on-premise) 또는
+              'https://dev-gateway.connecteve.com' (hybrid). trailing slash 무관.
+    host_header: 명시되면 Host 헤더 강제 (on-premise Traefik 라우팅용 'localhost' 등).
+                 None이면 aiohttp가 URL에서 자동 설정 (hybrid 케이스).
+    api_env: x-api-env 헤더 값. Postman 캡쳐 기준 'dev'가 기본.
     """
     url = f"{base_url.rstrip('/')}/api/v1/auth/sign-in"
     headers = {
         "Content-Type": "application/x-www-form-urlencoded",
         "Accept": "application/json",
-        "Host": host_header,
+        "x-api-env": api_env,
     }
+    if host_header:
+        headers["Host"] = host_header
     data = {"email": email, "password": password}
     try:
         async with session.post(url, data=data, headers=headers) as resp:
@@ -114,7 +120,8 @@ async def register_site(
     display_name: str,
     address: str,
     installation_type: str,
-    host_header: str = "localhost",
+    host_header: str | None = None,
+    api_env: str = "dev",
 ) -> str:
     """POST /api/v1/sites. 'created' | 'already_exists' 반환. 실패 시 SiteAPIError.
 
@@ -126,8 +133,10 @@ async def register_site(
         "Content-Type": "application/json",
         "Accept": "application/json",
         "x-auth-token": token,
-        "Host": host_header,
+        "x-api-env": api_env,
     }
+    if host_header:
+        headers["Host"] = host_header
     body = {
         "name": code,
         "displayName": display_name,
@@ -161,20 +170,24 @@ async def register_hospital(
     display_name: str,
     address: str,
     installation_type: str,
-    host_header: str = "localhost",
+    host_header: str | None = None,
+    api_env: str = "dev",
     timeout_s: float = 15.0,
 ) -> str:
     """원샷 헬퍼: 세션 생성 → 로그인 → 등록. workflow가 직접 호출하는 진입점.
 
     workflow가 이 함수만 알면 되도록 캡슐화 — 테스트도 이 함수만 monkeypatch.
+    host_header None이면 aiohttp가 URL에서 자동 (hybrid).
     """
     timeout = aiohttp.ClientTimeout(total=timeout_s)
     async with aiohttp.ClientSession(timeout=timeout) as session:
         token = await login_to_site(
-            session, base_url, email, password, host_header=host_header,
+            session, base_url, email, password,
+            host_header=host_header, api_env=api_env,
         )
         return await register_site(
             session, base_url, token,
             code=code, display_name=display_name, address=address,
-            installation_type=installation_type, host_header=host_header,
+            installation_type=installation_type,
+            host_header=host_header, api_env=api_env,
         )

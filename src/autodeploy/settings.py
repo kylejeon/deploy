@@ -41,11 +41,16 @@ class Settings:
     repo_branch: str
     work_dir: str
     log_level: str
-    # 설치 완료 후 자동 병원 등록용 마스터 계정 (on-premise 전용).
+    # 설치 완료 후 자동 병원 등록용 마스터 계정 (on-premise + hybrid 공용).
     # 비어있으면 site_register 단계는 조용히 skip — 운영자가 env를 안 채웠어도
     # 기존 워크플로(SSH/스크립트)에는 영향 없음.
     site_admin_email: str
     site_admin_password: str
+    # hybrid (with-ai/without-ai)에서 사용할 클라우드 site API base URL.
+    # 운영 환경 분리가 필요하면 .env에서 prod로 오버라이드.
+    site_cloud_base_url: str
+    # site API 호출에 박는 x-api-env 헤더. Postman 캡쳐 기준 'dev'가 디폴트.
+    site_api_env: str
 
 
 def load_settings(env: Mapping[str, str] | None = None) -> Settings:
@@ -87,4 +92,8 @@ def load_settings(env: Mapping[str, str] | None = None) -> Settings:
         log_level=e.get("LOG_LEVEL", "INFO"),
         site_admin_email=e.get("SITE_ADMIN_EMAIL", "").strip(),
         site_admin_password=e.get("SITE_ADMIN_PASSWORD", ""),
+        site_cloud_base_url=e.get(
+            "SITE_CLOUD_BASE_URL", "https://dev-gateway.connecteve.com"
+        ).strip().rstrip("/"),
+        site_api_env=e.get("SITE_API_ENV", "dev").strip() or "dev",
     )

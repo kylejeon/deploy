@@ -484,3 +484,48 @@ stderr 마지막 줄:
    실제 호출에서 헤더 케이스부터 매칭되도록 짰지만 만약 응답 형태가 달라서 실패하면
    로그 확인 후 _extract_token 우선순위 조정 필요
 4. **보류 중**: 실시간 로그 필터+카운터 (사용자가 보류 요청)
+
+---
+
+## 2026-06-01 (오후) — site_register 단계 확장: hybrid도 자동 등록
+
+### 무엇을 했나 (221/221 통과)
+직전 커밋(c5a005b)에서 on-premise만 자동 등록하도록 짰는데, 운영자가
+"hybrid도 자동 등록" 의도였음을 확인. 두 타입의 차이는 base URL과
+Host 헤더뿐이라 분기 로직만 추가.
+
+### 동작 매트릭스
+| deployment_type | base URL | Host 헤더 | 비고 |
+|---|---|---|---|
+| on-premise | `http://<target_ip>:<frontend_port>` | `localhost` 강제 | Frontend URL 캡쳐 필요 |
+| hybrid-with-ai | `https://dev-gateway.connecteve.com` (env override 가능) | URL에서 자동 (None) | Frontend URL 불필요 |
+| hybrid-without-ai | 위와 동일 | 위와 동일 | installationType 다름 |
+
+`x-api-env: dev` 헤더는 두 케이스 모두 박음. .env로 `SITE_API_ENV=prod`
+오버라이드 가능. `SITE_CLOUD_BASE_URL`도 운영 환경 분리 시 .env로 override.
+
+### 변경 파일
+- `src/autodeploy/settings.py` — site_cloud_base_url / site_api_env 필드 추가
+- `src/autodeploy/site_registration.py` — host_header를 Optional로
+  (None이면 URL의 host 그대로), x-api-env 헤더 모든 API 호출에 추가
+- `src/autodeploy/workflow.py` — WorkflowConfig 확장,
+  `_resolve_site_api_endpoint(job) -> (base_url, host_header)` 헬퍼 추출,
+  `_step_site_register`의 on-premise 한정 가드 제거
+- `src/autodeploy/__main__.py` — settings → WorkflowConfig 전달
+- `src/autodeploy/messages.py` — success_summary 헤더를 deployment_type 분기 없이
+  "✓ 병원 자동 등록 완료"로 통일
+- `.env.example` — SITE_CLOUD_BASE_URL / SITE_API_ENV 항목 추가
+- 테스트: hybrid 자동 등록 케이스 3개 추가, on-premise 테스트는 host_header
+  파라미터 명시, x-api-env 단언 추가, site_admin host 미설정 케이스 추가
+
+### 운영 적용
+1. 맥미니에서: `cd ~/deploy && git pull origin claude`
+2. `launchctl kickstart -k gui/$(id -u)/com.connecteve.autodeploy`
+3. 다음 hybrid install부터 자동 등록 동작
+
+### 비고
+- 직전 작업 #23이 hybrid-with-ai였는데 자동 등록 안 됨 → 이제 됨
+- 직전 작업 #23의 Admin Web URL이 포트 없이 표시됐던 건 별개 이슈
+  (gateway-infra-next의 deploy-applications.sh가 [INFO] Frontend URL 출력
+  안 한 케이스). hybrid는 site_register 자동 등록과는 무관하지만,
+  화면에 Admin Web URL이 정확하게 뜨려면 스크립트 측 보완 필요.

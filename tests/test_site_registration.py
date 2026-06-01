@@ -58,6 +58,7 @@ async def test_login_extracts_token_from_response_header():
     ])
     token = await login_to_site(
         session, "http://10.0.0.1:31435", "admin@x.com", "pw",
+        host_header="localhost",
     )
     assert token == "TOK-HEADER"
     url, kwargs = session.calls[0]
@@ -65,6 +66,24 @@ async def test_login_extracts_token_from_response_header():
     assert kwargs["data"] == {"email": "admin@x.com", "password": "pw"}
     assert kwargs["headers"]["Host"] == "localhost"
     assert kwargs["headers"]["Content-Type"] == "application/x-www-form-urlencoded"
+    assert kwargs["headers"]["x-api-env"] == "dev"
+
+
+@pytest.mark.asyncio
+async def test_login_omits_host_header_when_none():
+    """hybrid 케이스: host_header=None이면 Host 헤더를 강제하지 않음 (aiohttp 자동)."""
+    session = FakeSession([
+        FakeResp(status=200, body="", headers={"x-auth-token": "T"}),
+    ])
+    await login_to_site(session, "https://dev-gateway.connecteve.com", "e", "p")
+    assert "Host" not in session.calls[0][1]["headers"]
+
+
+@pytest.mark.asyncio
+async def test_login_custom_api_env_header():
+    session = FakeSession([FakeResp(status=200, body="", headers={"x-auth-token": "T"})])
+    await login_to_site(session, "http://x", "e", "p", api_env="prod")
+    assert session.calls[0][1]["headers"]["x-api-env"] == "prod"
 
 
 @pytest.mark.asyncio
@@ -116,7 +135,7 @@ async def test_login_strips_trailing_slash_from_base_url():
 
 
 @pytest.mark.asyncio
-async def test_login_custom_host_header_overrides_localhost():
+async def test_login_custom_host_header_overrides():
     session = FakeSession([
         FakeResp(status=200, body="", headers={"x-auth-token": "T"}),
     ])
@@ -135,12 +154,14 @@ async def test_register_site_sends_correct_body_and_headers():
         display_name="은평성모병원",
         address="서울시 은평구",
         installation_type="ON_PREMISE",
+        host_header="localhost",
     )
     assert result == "created"
     url, kwargs = session.calls[0]
     assert url == "http://x:31435/api/v1/sites"
     assert kwargs["headers"]["x-auth-token"] == "TOK"
     assert kwargs["headers"]["Host"] == "localhost"
+    assert kwargs["headers"]["x-api-env"] == "dev"
     assert kwargs["json"] == {
         "name": "cmc-ep",
         "displayName": "은평성모병원",
@@ -151,6 +172,18 @@ async def test_register_site_sends_correct_body_and_headers():
         "installationType": "ON_PREMISE",
         "comment": "",
     }
+
+
+@pytest.mark.asyncio
+async def test_register_site_omits_host_header_when_none():
+    """hybrid 케이스: Host 헤더 미지정 — URL의 호스트가 그대로 쓰임."""
+    session = FakeSession([FakeResp(status=201, body="{}")])
+    await register_site(
+        session, "https://dev-gateway.connecteve.com", "TOK",
+        code="HOSP01", display_name="병원", address="",
+        installation_type="Hybrid On-Premise AI",
+    )
+    assert "Host" not in session.calls[0][1]["headers"]
 
 
 @pytest.mark.asyncio
