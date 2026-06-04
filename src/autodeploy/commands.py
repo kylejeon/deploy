@@ -9,15 +9,39 @@ from dataclasses import dataclass
 
 # Slack은 URL/IP를 <http://X|X> 또는 <http://X> 형태로 자동 링크화할 수 있다.
 _SLACK_LINK_RE = re.compile(r"^<(?:[a-z][a-z0-9+.-]*://)?([^|>]+)(?:\|[^>]*)?>$")
-# 한글 IME가 '.'을 자주 잘못 변환하는 문자들 → ASCII 점으로 통일.
-_DOT_VARIANTS = str.maketrans({"·": ".", "ㆍ": ".", "．": "."})
+# IME/복붙으로 '.' 자리에 들어오는 비ASCII 점 변형들 → ASCII 점으로 통일.
+# 그리고 점 주변에 자주 끼는 zero-width 문자는 제거.
+_IP_TOKEN_NORMALIZE = str.maketrans({
+    "·": ".",   # U+00B7 MIDDLE DOT
+    "ㆍ": ".",  # U+318D HANGUL LETTER ARAEA
+    "．": ".",  # U+FF0E FULLWIDTH FULL STOP
+    "․": ".",   # U+2024 ONE DOT LEADER
+    "‧": ".",   # U+2027 HYPHENATION POINT
+    "⋅": ".",   # U+22C5 DOT OPERATOR
+    "・": ".",  # U+30FB KATAKANA MIDDLE DOT
+    "･": ".",   # U+FF65 HALFWIDTH KATAKANA MIDDLE DOT
+    "∙": ".",   # U+2219 BULLET OPERATOR
+    "•": ".",   # U+2022 BULLET
+    "​": "",  # ZERO WIDTH SPACE
+    "‌": "",  # ZWNJ
+    "‍": "",  # ZWJ
+    "﻿": "",  # BOM
+})
 
 
 def _normalize_ip_token(token: str) -> str:
     m = _SLACK_LINK_RE.match(token)
     if m:
         token = m.group(1)
-    return token.translate(_DOT_VARIANTS)
+    return token.translate(_IP_TOKEN_NORMALIZE)
+
+
+def _describe_ip_token(token: str) -> str:
+    """invalid IP 진단용. repr + 비ASCII 코드포인트 노출."""
+    non_ascii = [f"U+{ord(c):04X}" for c in token if ord(c) > 127]
+    if non_ascii:
+        return f"{token!r} (비ASCII: {' '.join(non_ascii)})"
+    return repr(token)
 
 
 @dataclass(frozen=True, slots=True)
@@ -113,7 +137,7 @@ def _parse_install(rest: str, valid_types: frozenset[str] | set[str]) -> Command
 
     target_ip = _normalize_ip_token(tokens[0])
     if not _is_valid_ip(target_ip):
-        return ParseError(f"invalid IP: {tokens[0]!r}")
+        return ParseError(f"invalid IP: {_describe_ip_token(tokens[0])}")
 
     flags: dict[str, str] = {}
     for tok in tokens[1:]:

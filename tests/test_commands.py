@@ -98,6 +98,30 @@ def test_install_invalid_ip_error_includes_raw_repr():
     assert "'192,168,100,213'" in cmd.message
 
 
+def test_install_normalizes_katakana_middle_dot():
+    # U+30FB. 일본어 입력기/일부 복붙 경로에서 들어옴.
+    cmd = parse_command("install 192・168・100・213 --type=on-premise --code=H", TYPES)
+    assert isinstance(cmd, InstallCommand)
+    assert cmd.target_ip == "192.168.100.213"
+
+
+def test_install_strips_zero_width_chars():
+    # 점 주변에 ZWSP가 끼는 경우 (메신저 자동완성/특정 복붙 출처).
+    cmd = parse_command(
+        "install 192.168.​100.213 --type=on-premise --code=H", TYPES
+    )
+    assert isinstance(cmd, InstallCommand)
+    assert cmd.target_ip == "192.168.100.213"
+
+
+def test_install_invalid_ip_shows_non_ascii_codepoints():
+    # 정규화 맵에 없는 비ASCII가 섞이면 코드포인트로 알려준다.
+    bad = "192‥168.100.213"  # U+2025 TWO DOT LEADER (변환 안 함)
+    cmd = parse_command(f"install {bad} --type=on-premise --code=H", TYPES)
+    assert isinstance(cmd, ParseError)
+    assert "U+2025" in cmd.message
+
+
 def test_install_unknown_flag_returns_parse_error():
     cmd = parse_command("install 1.2.3.4 --type=on-premise --code=H --bogus=x", TYPES)
     assert isinstance(cmd, ParseError)
