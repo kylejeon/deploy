@@ -118,6 +118,7 @@ async def test_on_premise_uses_correct_scripts(temp_db):
     fake.enqueue("git rev-parse HEAD", [StreamLine("stdout", "sha1")])
     fake.enqueue("setup-onpremise.sh", [])
     fake.enqueue("deploy-applications-onpremise.sh", [])
+    fake.enqueue("freeze-offline.sh", [])  # on-premise post_app
     fake.enqueue("kubectl get pods", [])
     fake.enqueue("kubectl -n hub delete pod", [])
 
@@ -128,6 +129,7 @@ async def test_on_premise_uses_correct_scripts(temp_db):
     # on-premise 스크립트 호출
     assert any("setup-onpremise.sh" in c for c in fake.executed)
     assert any("deploy-applications-onpremise.sh" in c for c in fake.executed)
+    assert any("freeze-offline.sh" in c for c in fake.executed)
     # hybrid 스크립트는 호출 안 됨
     assert not any("setup-site.sh" in c for c in fake.executed)
 
@@ -404,7 +406,8 @@ async def test_infra_script_failure_stops_pipeline(temp_db):
     result = await wf.run(_job())
 
     assert result.status == JobStatus.FAILED
-    assert "script exited with 1" in result.error_message
+    assert "exited with 1" in result.error_message
+    assert "setup-site.sh" in result.error_message
     # app/healthcheck 실행 안 됨
     assert not any("deploy-applications.sh" in c for c in fake.executed)
     assert not any("kubectl get pods" in c for c in fake.executed)
@@ -794,6 +797,7 @@ def _enqueue_onpremise_happy_path(fake: FakeSSHClient, frontend_port: str = "314
         ],
     )
     fake.enqueue("deploy-applications-onpremise.sh", [])
+    fake.enqueue("freeze-offline.sh", [])  # on-premise post_app
     fake.enqueue("kubectl get pods", [])
     fake.enqueue("kubectl -n hub delete pod", [])
 
@@ -946,6 +950,7 @@ async def test_site_register_proceeds_even_without_frontend_log_line(temp_db, mo
     fake.enqueue("git rev-parse HEAD", [StreamLine("stdout", "sha1")])
     fake.enqueue("setup-onpremise.sh", [])  # Frontend URL 안 찍힘
     fake.enqueue("deploy-applications-onpremise.sh", [])
+    fake.enqueue("freeze-offline.sh", [])  # on-premise post_app
     fake.enqueue("kubectl get pods", [])
     fake.enqueue("kubectl -n hub delete pod", [])
     cfg = _cfg_with_site_creds()
@@ -1108,6 +1113,61 @@ async def test_register_existing_job_records_db_event(temp_db, mocker):
 
 
 @pytest.mark.asyncio
+async def test_onpremise_runs_freeze_offline_after_app_in_same_step(temp_db):
+    """on-premise는 deploy-applications-onpremise.sh 직후 freeze-offline.sh를
+    동일한 APP_INSTALL 단계 안에서 실행. step_started/step_finished는 1쌍만."""
+    fake = FakeSSHClient()
+    _enqueue_onpremise_happy_path(fake)
+    notifier = RecordingNotifier()
+    wf = _make_workflow(fake, temp_db, notifier)
+
+    await wf.run(_job(deployment_type="on-premise"))
+
+    # 두 스크립트가 모두 실행됐고 freeze가 app 뒤
+    app_idx = next(i for i, c in enumerate(fake.executed) if "deploy-applications-onpremise.sh" in c)
+    freeze_idx = next(i for i, c in enumerate(fake.executed) if "freeze-offline.sh" in c)
+    assert app_idx < freeze_idx
+
+    # APP_INSTALL step_started/step_finished는 각각 1번씩만 (한 단계로 묶임)
+    app_starts = sum(1 for e in notifier.events if e[0] == "step_started" and e[1]["step"] == "app_install")
+    app_finishes = sum(1 for e in notifier.events if e[0] == "step_finished" and e[1]["step"] == "app_install")
+    assert app_starts == 1
+    assert app_finishes == 1
+
+
+@pytest.mark.asyncio
+async def test_onpremise_freeze_offline_failure_fails_app_step(temp_db):
+    """freeze-offline.sh이 실패하면 APP_INSTALL 단계 자체가 실패."""
+    fake = FakeSSHClient()
+    _enqueue_preflight_ok(fake)
+    fake.enqueue("test -d", [], exit_code=0)
+    fake.enqueue("git remote set-url origin", [])
+    fake.enqueue("git rev-parse HEAD", [StreamLine("stdout", "sha")])
+    fake.enqueue("setup-onpremise.sh", [])
+    fake.enqueue("deploy-applications-onpremise.sh", [])  # 성공
+    fake.enqueue("freeze-offline.sh", [StreamLine("stderr", "freeze err")], exit_code=2)
+    wf = _make_workflow(fake, temp_db)
+
+    result = await wf.run(_job(deployment_type="on-premise"))
+    assert result.status == JobStatus.FAILED
+    assert "freeze-offline.sh" in result.error_message
+    assert "exited with 2" in result.error_message
+    # 후속 healthcheck/dicom_restart는 실행 안 됨
+    assert not any("kubectl get pods" in c for c in fake.executed)
+
+
+@pytest.mark.asyncio
+async def test_hybrid_skips_freeze_offline(temp_db):
+    """hybrid는 post_app이 비어있어 freeze-offline.sh가 실행되지 않음."""
+    fake = FakeSSHClient()
+    _enqueue_happy_path_hybrid(fake)
+    wf = _make_workflow(fake, temp_db)
+
+    await wf.run(_job(deployment_type="hybrid-with-ai"))
+    assert not any("freeze-offline.sh" in c for c in fake.executed)
+
+
+@pytest.mark.asyncio
 async def test_dicom_gateway_restart_runs_for_all_deployment_types(temp_db):
     """on-premise / hybrid-with-ai / hybrid-without-ai 모두 마지막 단계로 실행."""
     for dtype in ("on-premise", "hybrid-with-ai", "hybrid-without-ai"):
@@ -1119,6 +1179,7 @@ async def test_dicom_gateway_restart_runs_for_all_deployment_types(temp_db):
         if dtype == "on-premise":
             fake.enqueue("setup-onpremise.sh", [])
             fake.enqueue("deploy-applications-onpremise.sh", [])
+            fake.enqueue("freeze-offline.sh", [])  # on-premise post_app
         else:
             fake.enqueue("setup-site.sh", [])
             fake.enqueue("deploy-applications.sh", [])

@@ -730,3 +730,36 @@ gateway-infra-next에서 NodePort를 고정한 변경에 맞춰, install 스크�
 ### 비고
 - install 스크립트가 다른 포트로 변경되면 .env로 override만 하면 됨
 - 추후 포트 차이가 deployment_type별로 생기면 WorkflowConfig를 dict로 확장 필요
+
+---
+
+## 2026-06-04 (저녁) — on-premise APP_INSTALL 후속 스크립트 (freeze-offline.sh)
+
+### 무엇을 했나 (297/297 통과)
+on-premise만 어플리케이션 설치 직후 freeze-offline.sh를 추가 실행 — 동일한
+APP_INSTALL 단계 안에서 deploy-applications-onpremise.sh → freeze-offline.sh
+순차 실행. Slack 단계 카운트(N/8)는 변하지 않음.
+
+### 구조 변화
+- `config.DeploymentType`에 `post_app: tuple[ScriptSpec, ...]` 필드 추가 (기본 빈 튜플)
+- `config/deployment_types.yaml`의 on-premise 항목에 `post_app: [freeze-offline.sh]`
+- hybrid-with-ai / hybrid-without-ai는 post_app 미정의 → 빈 튜플 → 기존 동작 유지
+- `_step_script`가 `(spec, *extra_specs)` 받아 한 단계에서 N개 스크립트 순차 실행
+- 어느 스크립트라도 non-zero exit → WorkflowError(step) raise, 후속 스크립트/단계 안 함
+- 에러 메시지에 실패한 스크립트 이름 포함: "script freeze-offline.sh exited with 2"
+
+### 변경 파일
+- src/autodeploy/config.py — DeploymentType.post_app 필드 + 파시 로직
+- src/autodeploy/workflow.py — _step_script 다중 스크립트 지원, _execute에서
+  `*deployment.post_app` unpack 호출
+- config/deployment_types.yaml — on-premise.post_app
+- tests/test_config.py — on-premise.post_app / hybrid 비어있음 단언
+- tests/test_workflow.py — freeze-offline enqueue를 기존 on-premise 테스트에 추가,
+  신규 테스트 3건 (단계 합쳐짐 / freeze 실패 시 step 실패 / hybrid는 skip)
+
+### 운영 적용
+1. 맥미니: `cd ~/deploy && git pull origin claude`
+2. `launchctl kickstart -k gui/$(id -u)/com.connecteve.autodeploy`
+3. **gateway-infra-next에 freeze-offline.sh이 실제로 있어야 함** — 없으면
+   on-premise install이 APP_INSTALL 단계에서 실패. 본 봇은 config가 가리키는
+   스크립트가 타깃에 존재한다고 가정함.

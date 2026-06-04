@@ -20,6 +20,12 @@ on-premise:
     script: deploy-applications-onpremise.sh
     sudo: false
     args: ["{code}"]
+  # app 직후 동일 단계 안에서 추가 실행. on-premise는 freeze-offline.sh로
+  # 오프라인 모드 고정.
+  post_app:
+    - script: freeze-offline.sh
+      sudo: false
+      args: ["{code}"]
 
 hybrid-with-ai:
   description: "Hybrid + inference 컨테이너 포함"

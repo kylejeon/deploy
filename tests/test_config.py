@@ -27,6 +27,17 @@ def test_on_premise_scripts():
     assert t.app.script == "deploy-applications-onpremise.sh"
     assert t.app.sudo is False
     assert t.app.args == ("{code}",)
+    # on-premise는 freeze-offline.sh post_app 보유
+    assert len(t.post_app) == 1
+    assert t.post_app[0].script == "freeze-offline.sh"
+    assert t.post_app[0].args == ("{code}",)
+
+
+def test_hybrid_has_no_post_app():
+    """hybrid는 post_app이 비어있음 (on-premise만의 후속 스크립트)."""
+    types = load_deployment_types(CONFIG_PATH)
+    assert types["hybrid-with-ai"].post_app == ()
+    assert types["hybrid-without-ai"].post_app == ()
 
 
 def test_hybrid_with_ai_app_takes_w_ai_arg():
