@@ -58,7 +58,8 @@ def _make_workflow(fake: FakeSSHClient, temp_db, notifier=None) -> Workflow:
 
 
 def _enqueue_preflight_ok(fake: FakeSSHClient) -> None:
-    """preflight: universe 활성화 OK + `command -v git`가 0을 반환하는 상태."""
+    """preflight: sleep mask + universe 활성화 OK + `command -v git`가 0을 반환."""
+    fake.enqueue("systemctl mask", [])  # 절전 타겟 mask (첫 .sh 전)
     fake.enqueue("add-apt-repository", [])  # universe enable
     fake.enqueue("command -v git", [], exit_code=0)
 
@@ -235,6 +236,7 @@ async def test_install_path_persists_slack_thread_ts_to_db(temp_db):
 async def test_preflight_auto_installs_missing_git_and_proceeds(temp_db):
     """git 누락 → sudo apt install 자동 시도 → 재검증 통과 → workflow 계속."""
     fake = FakeSSHClient()
+    fake.enqueue("systemctl mask", [])  # 절전 mask
     fake.enqueue("add-apt-repository", [])  # universe enable
     fake.enqueue("command -v git", [], exit_code=1)  # 첫 검증: 누락
     fake.enqueue("apt-get install", [StreamLine("stdout", "Setting up git")])  # 자동 설치 성공
@@ -260,6 +262,7 @@ async def test_preflight_auto_installs_missing_git_and_proceeds(temp_db):
 async def test_preflight_auto_install_failure_aborts_with_manual_hint(temp_db):
     """apt install 자체가 실패하면 분명한 에러로 종료. 수동 설치 안내 포함."""
     fake = FakeSSHClient()
+    fake.enqueue("systemctl mask", [])  # 절전 mask
     fake.enqueue("add-apt-repository", [])  # universe enable
     fake.enqueue("command -v git", [], exit_code=1)
     fake.enqueue("apt-get install", [StreamLine("stderr", "E: package not found")], exit_code=100)
@@ -276,7 +279,7 @@ async def test_preflight_auto_install_failure_aborts_with_manual_hint(temp_db):
 
 @pytest.mark.asyncio
 async def test_universe_repo_enabled_before_preflight(temp_db):
-    """git_pull 진입 시 universe 활성화가 가장 먼저 실행돼야 함 (apt 도구 확인보다 앞)."""
+    """git_pull 진입 시 universe 활성화가 apt 도구 확인보다 앞에 실행돼야 함."""
     fake = FakeSSHClient()
     _enqueue_happy_path_hybrid(fake)
     wf = _make_workflow(fake, temp_db)
@@ -295,9 +298,46 @@ async def test_universe_repo_enabled_before_preflight(temp_db):
 
 
 @pytest.mark.asyncio
+async def test_sleep_mask_runs_before_universe(temp_db):
+    """절전 타겟 mask가 universe 활성화보다 먼저 실행돼야 함 (첫 .sh 전 보장)."""
+    fake = FakeSSHClient()
+    _enqueue_happy_path_hybrid(fake)
+    wf = _make_workflow(fake, temp_db)
+
+    await wf.run(_job())
+
+    sleep_idx = next(i for i, c in enumerate(fake.executed) if "systemctl mask" in c)
+    universe_idx = next(i for i, c in enumerate(fake.executed) if "add-apt-repository" in c)
+    assert sleep_idx < universe_idx
+
+    sleep_cmd = fake.executed[sleep_idx]
+    assert "sleep.target" in sleep_cmd
+    assert "suspend.target" in sleep_cmd
+    assert "hibernate.target" in sleep_cmd
+    assert "hybrid-sleep.target" in sleep_cmd
+
+
+@pytest.mark.asyncio
+async def test_sleep_mask_failure_aborts_with_manual_hint(temp_db):
+    """절전 타겟 mask 자체가 실패하면 GIT_PULL 단계 실패로 종료. universe까지 안 감."""
+    fake = FakeSSHClient()
+    fake.enqueue("systemctl mask", [StreamLine("stderr", "Failed to mask")], exit_code=1)
+    wf = _make_workflow(fake, temp_db)
+
+    result = await wf.run(_job())
+    assert result.status == JobStatus.FAILED
+    assert result.current_step == Step.GIT_PULL
+    assert "절전" in result.error_message or "sleep" in result.error_message.lower()
+    assert "systemctl mask" in result.error_message  # 수동 안내 포함
+    # universe 활성화 단계로 가지 않음
+    assert not any("add-apt-repository" in c for c in fake.executed)
+
+
+@pytest.mark.asyncio
 async def test_universe_failure_aborts_with_manual_hint(temp_db):
     """universe 활성화 자체가 실패하면 명확한 메시지로 종료."""
     fake = FakeSSHClient()
+    fake.enqueue("systemctl mask", [])  # 절전 mask는 통과
     fake.enqueue("add-apt-repository", [StreamLine("stderr", "E: cannot add repo")], exit_code=1)
     wf = _make_workflow(fake, temp_db)
 
@@ -326,6 +366,7 @@ async def test_preflight_skips_install_when_tools_already_present(temp_db):
 async def test_auto_install_injects_sudo_password_when_set(temp_db):
     """WorkflowConfig.sudo_password가 채워져 있으면 apt-get은 printf | sudo -S로 호출."""
     fake = FakeSSHClient()
+    fake.enqueue("systemctl mask", [])  # 절전 mask
     fake.enqueue("add-apt-repository", [])  # universe enable
     fake.enqueue("command -v git", [], exit_code=1)
     fake.enqueue("apt-get install", [])
@@ -371,6 +412,7 @@ async def test_auto_install_injects_sudo_password_when_set(temp_db):
 async def test_auto_install_uses_plain_sudo_when_no_password(temp_db):
     """sudo_password가 비어있으면(NOPASSWD 가정) 기존 plain sudo 형태."""
     fake = FakeSSHClient()
+    fake.enqueue("systemctl mask", [])  # 절전 mask
     fake.enqueue("add-apt-repository", [])  # universe enable
     fake.enqueue("command -v git", [], exit_code=1)
     fake.enqueue("apt-get install", [])
@@ -707,6 +749,7 @@ async def test_workflow_cancellation_marks_db_and_notifies(temp_db):
             return await super().exec(command, on_line)
 
     fake = _HangingSSHClient(hang_on="setup-site.sh")
+    fake.enqueue("systemctl mask", [])
     fake.enqueue("add-apt-repository", [])
     fake.enqueue("command -v git", [], exit_code=0)
     fake.enqueue("test -d", [], exit_code=0)

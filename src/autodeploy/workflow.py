@@ -114,6 +114,30 @@ async def ensure_universe_enabled(
     return await ssh.exec(cmd, on_line=on_line)
 
 
+async def disable_sleep_targets(
+    ssh: SSHClient,
+    *,
+    sudo_password: str = "",
+    on_line=None,
+) -> int:
+    """systemd 절전 타겟을 mask. 멱등 (이미 mask면 no-op).
+
+    setup-*.sh / deploy-applications-*.sh가 도는 동안 서버가 절전으로 들어가
+    SSH 세션이 끊기고 워크플로우가 timeout으로 죽는 것을 막는다. 첫 .sh 실행 전에
+    호출.
+    """
+    inner = (
+        "systemctl mask sleep.target suspend.target "
+        "hibernate.target hybrid-sleep.target"
+    )
+    sudo_prefix = "sudo"
+    if sudo_password:
+        pw_q = shlex.quote(sudo_password)
+        sudo_prefix = f"printf '%s\\n' {pw_q} | sudo -S -p ''"
+    cmd = f"{sudo_prefix} bash -c {shlex.quote(inner)}"
+    return await ssh.exec(cmd, on_line=on_line)
+
+
 async def install_missing_tools(
     ssh: SSHClient,
     missing: list[str],
@@ -269,9 +293,25 @@ class Workflow:
         await self._step_start(db, job, Step.GIT_PULL)
         start = time.monotonic()
 
+        log_collector = self._make_log_collector(db, job, Step.GIT_PULL)
+
+        # 첫 .sh 실행 전에 원격 서버 절전 타겟 mask — 작업 중 SSH 끊김 방지.
+        rc = await disable_sleep_targets(
+            ssh, sudo_password=self.cfg.sudo_password, on_line=log_collector,
+        )
+        if rc != 0:
+            duration = time.monotonic() - start
+            await self._step_done(db, job, Step.GIT_PULL, success=False, duration=duration)
+            raise WorkflowError(
+                Step.GIT_PULL,
+                f"systemd 절전 타겟 mask 실패 (exit {rc}). "
+                f"`ssh connecteve@{job.target_ip}` 접속 후 "
+                "`sudo systemctl mask sleep.target suspend.target hibernate.target hybrid-sleep.target` "
+                "수동 실행 필요.",
+            )
+
         # universe 저장소를 먼저 활성화. setup-*.sh가 내부에서 awscli 같은 universe-only
         # 패키지를 설치하려다 'no installation candidate'로 실패하는 것을 선제 차단.
-        log_collector = self._make_log_collector(db, job, Step.GIT_PULL)
         rc = await ensure_universe_enabled(
             ssh, sudo_password=self.cfg.sudo_password, on_line=log_collector,
         )
