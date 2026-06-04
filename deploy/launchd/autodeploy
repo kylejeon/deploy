@@ -1,0 +1,92 @@
+#!/usr/bin/env bash
+# AutoDeploy launchd wrapper.
+# 사용: autodeploy {install|restart|stop|status|logs|uninstall}
+set -euo pipefail
+
+LABEL="com.connecteve.autodeploy"
+INSTALL_DIR="${AUTODEPLOY_DIR:-$HOME/deploy}"
+TEMPLATE="$INSTALL_DIR/deploy/launchd/$LABEL.plist"
+TARGET="$HOME/Library/LaunchAgents/$LABEL.plist"
+LOG_DIR="$HOME/Library/Logs/autodeploy"
+DOMAIN="gui/$(id -u)"
+
+cmd="${1:-help}"
+
+is_loaded() {
+  launchctl print "$DOMAIN/$LABEL" >/dev/null 2>&1
+}
+
+render_plist() {
+  # placeholder 치환해서 LaunchAgents에 실제 파일로 떨굼.
+  # 기존이 symlink든 파일이든 덮어씀.
+  [[ -f "$TEMPLATE" ]] || { echo "❌ plist 템플릿 없음: $TEMPLATE" >&2; exit 1; }
+  mkdir -p "$LOG_DIR" "$(dirname "$TARGET")"
+  rm -f "$TARGET"
+  sed -e "s|__INSTALL_DIR__|$INSTALL_DIR|g" \
+      -e "s|__USER__|$(id -un)|g" \
+      "$TEMPLATE" > "$TARGET"
+}
+
+case "$cmd" in
+  install)
+    if is_loaded; then
+      echo "→ 기존 서비스 내림"
+      launchctl bootout "$DOMAIN/$LABEL" || true
+    fi
+    render_plist
+    echo "→ 새 plist 로드: $TARGET"
+    launchctl bootstrap "$DOMAIN" "$TARGET"
+    echo "✓ 설치 완료. 'autodeploy status' 로 확인."
+    ;;
+  restart)
+    if ! is_loaded; then
+      echo "❌ 서비스 미설치. 'autodeploy install' 먼저 실행하세요." >&2
+      exit 1
+    fi
+    launchctl kickstart -k "$DOMAIN/$LABEL"
+    echo "✓ 재시작 신호 전송."
+    ;;
+  stop)
+    if is_loaded; then
+      launchctl bootout "$DOMAIN/$LABEL"
+      echo "✓ 중지."
+    else
+      echo "이미 중지 상태."
+    fi
+    ;;
+  status)
+    if is_loaded; then
+      launchctl print "$DOMAIN/$LABEL" | head -30
+    else
+      echo "❌ 서비스 미설치 또는 중지 상태."
+      exit 1
+    fi
+    ;;
+  logs)
+    mkdir -p "$LOG_DIR"
+    touch "$LOG_DIR/stdout.log" "$LOG_DIR/stderr.log"
+    echo "→ tail -f $LOG_DIR/{stdout,stderr}.log  (Ctrl-C로 종료)"
+    tail -f "$LOG_DIR/stdout.log" "$LOG_DIR/stderr.log"
+    ;;
+  uninstall)
+    if is_loaded; then
+      launchctl bootout "$DOMAIN/$LABEL" || true
+    fi
+    rm -f "$TARGET"
+    echo "✓ 제거 완료."
+    ;;
+  help|*)
+    cat <<EOF
+autodeploy <command>
+  install    plist 치환·복사 후 launchd에 등록 (재설치 안전)
+  restart    데몬 즉시 재시작
+  stop       데몬 중지
+  status     상태 출력 (launchctl print 요약)
+  logs       stdout/stderr 로그 실시간 tail
+  uninstall  서비스 내리고 plist 삭제
+
+환경변수:
+  AUTODEPLOY_DIR  설치 경로 (기본: \$HOME/deploy)
+EOF
+    ;;
+esac
