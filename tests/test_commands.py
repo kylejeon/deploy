@@ -84,6 +84,26 @@ def test_install_unwraps_slack_auto_link_no_label():
     assert cmd.target_ip == "192.168.100.213"
 
 
+def test_install_unwraps_slack_tel_auto_link():
+    # Slack은 IP의 점 제거값을 전화번호로 인식해 <tel:N|IP> 형태로 자동링크화한다.
+    cmd = parse_command(
+        "install <tel:1921681002135|192.168.100.213> --type=on-premise --code=H",
+        TYPES,
+    )
+    assert isinstance(cmd, InstallCommand)
+    assert cmd.target_ip == "192.168.100.213"
+
+
+def test_install_strips_backticks_around_ip():
+    # 사용자가 자동링크 회피용으로 IP를 `...`로 감싼 경우.
+    cmd = parse_command(
+        "install `192.168.100.213` --type=on-premise --code=H",
+        TYPES,
+    )
+    assert isinstance(cmd, InstallCommand)
+    assert cmd.target_ip == "192.168.100.213"
+
+
 def test_install_normalizes_korean_middle_dot():
     # 한글 IME가 '.'을 '·'(U+00B7)로 자동변환한 경우.
     cmd = parse_command("install 192·168·100·213 --type=on-premise --code=H", TYPES)

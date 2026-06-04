@@ -7,8 +7,11 @@ import shlex
 from dataclasses import dataclass
 
 
-# Slack은 URL/IP를 <http://X|X> 또는 <http://X> 형태로 자동 링크화할 수 있다.
-_SLACK_LINK_RE = re.compile(r"^<(?:[a-z][a-z0-9+.-]*://)?([^|>]+)(?:\|[^>]*)?>$")
+# Slack은 IP/URL을 <http://X|X>, <tel:N|X>, <mailto:X|X> 등으로 자동 링크화한다.
+# 라벨이 있으면 그게 사용자가 원래 친 원본(예: 192.168.100.213). 라벨이 없으면 본체에서
+# 스킴(scheme:// 또는 scheme:)을 제거한다.
+_SLACK_LINK_RE = re.compile(r"^<([^|>]+)(?:\|([^>]*))?>$")
+_SLACK_SCHEME_RE = re.compile(r"^[a-z][a-z0-9+.-]*:(?://)?(.+)$")
 # IME/복붙으로 '.' 자리에 들어오는 비ASCII 점 변형들 → ASCII 점으로 통일.
 # 그리고 점 주변에 자주 끼는 zero-width 문자는 제거.
 _IP_TOKEN_NORMALIZE = str.maketrans({
@@ -32,7 +35,16 @@ _IP_TOKEN_NORMALIZE = str.maketrans({
 def _normalize_ip_token(token: str) -> str:
     m = _SLACK_LINK_RE.match(token)
     if m:
-        token = m.group(1)
+        label = m.group(2)
+        if label:
+            # 라벨이 있으면 사용자가 친 원본. 예: <tel:1921681002135|192.168.100.213>
+            token = label
+        else:
+            body = m.group(1)
+            scheme_m = _SLACK_SCHEME_RE.match(body)
+            token = scheme_m.group(1) if scheme_m else body
+    # 사용자가 자동링크 회피용으로 백틱(`X`)으로 감싼 경우 양 끝 제거.
+    token = token.strip("`")
     return token.translate(_IP_TOKEN_NORMALIZE)
 
 
