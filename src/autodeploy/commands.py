@@ -2,8 +2,22 @@
 from __future__ import annotations
 
 import ipaddress
+import re
 import shlex
 from dataclasses import dataclass
+
+
+# Slack은 URL/IP를 <http://X|X> 또는 <http://X> 형태로 자동 링크화할 수 있다.
+_SLACK_LINK_RE = re.compile(r"^<(?:[a-z][a-z0-9+.-]*://)?([^|>]+)(?:\|[^>]*)?>$")
+# 한글 IME가 '.'을 자주 잘못 변환하는 문자들 → ASCII 점으로 통일.
+_DOT_VARIANTS = str.maketrans({"·": ".", "ㆍ": ".", "．": "."})
+
+
+def _normalize_ip_token(token: str) -> str:
+    m = _SLACK_LINK_RE.match(token)
+    if m:
+        token = m.group(1)
+    return token.translate(_DOT_VARIANTS)
 
 
 @dataclass(frozen=True, slots=True)
@@ -97,9 +111,9 @@ def _parse_install(rest: str, valid_types: frozenset[str] | set[str]) -> Command
             suggestion="@autodeploy help",
         )
 
-    target_ip = tokens[0]
+    target_ip = _normalize_ip_token(tokens[0])
     if not _is_valid_ip(target_ip):
-        return ParseError(f"invalid IP: {target_ip}")
+        return ParseError(f"invalid IP: {tokens[0]!r}")
 
     flags: dict[str, str] = {}
     for tok in tokens[1:]:

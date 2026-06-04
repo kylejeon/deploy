@@ -65,6 +65,39 @@ def test_install_invalid_ip_returns_parse_error():
     assert "invalid IP" in cmd.message
 
 
+def test_install_unwraps_slack_auto_link_with_label():
+    # Slack이 IP를 <http://192.168.100.213|192.168.100.213> 식으로 자동 링크화한 케이스.
+    cmd = parse_command(
+        "install <http://192.168.100.213|192.168.100.213> --type=on-premise --code=H",
+        TYPES,
+    )
+    assert isinstance(cmd, InstallCommand)
+    assert cmd.target_ip == "192.168.100.213"
+
+
+def test_install_unwraps_slack_auto_link_no_label():
+    cmd = parse_command(
+        "install <http://192.168.100.213> --type=on-premise --code=H",
+        TYPES,
+    )
+    assert isinstance(cmd, InstallCommand)
+    assert cmd.target_ip == "192.168.100.213"
+
+
+def test_install_normalizes_korean_middle_dot():
+    # 한글 IME가 '.'을 '·'(U+00B7)로 자동변환한 경우.
+    cmd = parse_command("install 192·168·100·213 --type=on-premise --code=H", TYPES)
+    assert isinstance(cmd, InstallCommand)
+    assert cmd.target_ip == "192.168.100.213"
+
+
+def test_install_invalid_ip_error_includes_raw_repr():
+    # 디버그용: 받은 원시 토큰을 repr로 노출 (보이지 않는 문자 진단).
+    cmd = parse_command("install 192,168,100,213 --type=on-premise --code=H", TYPES)
+    assert isinstance(cmd, ParseError)
+    assert "'192,168,100,213'" in cmd.message
+
+
 def test_install_unknown_flag_returns_parse_error():
     cmd = parse_command("install 1.2.3.4 --type=on-premise --code=H --bogus=x", TYPES)
     assert isinstance(cmd, ParseError)
