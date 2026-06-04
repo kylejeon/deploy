@@ -40,6 +40,9 @@ def _settings(db_path: Path, *, allowed: set[str] | None = None, channel: str = 
         jira_email="",
         jira_api_token="",
         jira_key="PMFM",
+        port_frontend=8000,
+        port_temporal=8001,
+        port_webpacs=8002,
     )
 
 

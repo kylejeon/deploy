@@ -176,6 +176,11 @@ class WorkflowConfig:
     jira_key: str = "PMFM"
     # product_register 전체 타임아웃 (초). D8-7.
     product_register_timeout: float = 300.0
+    # 표준 NodePort (gateway-infra-next에서 고정). install 스크립트의 [INFO] X URL
+    # 출력 유무와 무관하게 항상 이 포트로 URL 구성됨. 환경별 차이 생기면 .env로 override.
+    port_frontend: int = 8000
+    port_temporal: int = 8001
+    port_webpacs: int = 8002
 
 
 class WorkflowError(RuntimeError):
@@ -559,27 +564,13 @@ class Workflow:
     def _resolve_site_api_endpoint(self, job: Job) -> tuple[str, str | None]:
         """(base_url, host_header_override) — deployment_type별 분기.
 
-        on-premise는 Frontend URL이 필요. 워크플로 진행 중엔 job.extra_urls에서,
-        DB에서 다시 로드한 Job(register 재시도)이면 job.admin_web_url에서 가져옴.
+        on-premise: target_ip + 고정 frontend 포트(cfg.port_frontend, 기본 8000).
+                    Traefik Host 라우팅용으로 'localhost' 헤더 강제.
+        hybrid:    클라우드 base URL 그대로. Host 헤더는 URL에서 자동.
         """
         if job.deployment_type == "on-premise":
-            frontend_url = (job.extra_urls or {}).get("Frontend") or job.admin_web_url
-            if not frontend_url:
-                raise WorkflowError(
-                    Step.SITE_REGISTER,
-                    "Frontend URL이 없어 site API base URL을 결정할 수 없음. "
-                    "install 스크립트에서 `[INFO] Frontend URL: http://IP:PORT` 출력 확인 필요.",
-                )
-            m = re.match(r"https?://[^:/\s]+:(\d+)", frontend_url)
-            if not m:
-                raise WorkflowError(
-                    Step.SITE_REGISTER,
-                    f"Frontend URL에서 포트를 파싱할 수 없음: {frontend_url}. "
-                    "install 시 [INFO] Frontend URL 줄이 출력됐는지 확인 필요.",
-                )
-            # target_ip로 직접 접속하되 Host: localhost로 Traefik 라우팅
-            return f"http://{job.target_ip}:{m.group(1)}", self.cfg.site_host_header_onpremise
-        # hybrid-with-ai / hybrid-without-ai — 클라우드 직접. Host 헤더는 URL에서 자동.
+            base_url = f"http://{job.target_ip}:{self.cfg.port_frontend}"
+            return base_url, self.cfg.site_host_header_onpremise
         return self.cfg.site_cloud_base_url, None
 
     async def register_existing_job(self, job: Job) -> str:
@@ -658,10 +649,17 @@ class Workflow:
         return collect
 
     async def _mark_success(self, db, job: Job) -> None:
-        # Frontend URL이 잡혔으면 admin_web_url로, 아니면 template fallback (QA O-6)
-        admin_url = job.extra_urls.get("Frontend") or self.cfg.admin_web_url_template.format(
-            ip=job.target_ip
-        )
+        # 표준 3개 URL은 항상 채움 — install 스크립트가 [INFO] X URL을 안 찍어도
+        # 고정 NodePort 기준 결정적. 이미 캡쳐된 값이 있으면 그대로 둠 (운영자가
+        # 일부러 다른 라벨/포트를 추가 출력한 경우 존중).
+        defaults = {
+            "Frontend": f"http://{job.target_ip}:{self.cfg.port_frontend}/",
+            "Temporal Web": f"http://{job.target_ip}:{self.cfg.port_temporal}/",
+            "Web-PACS": f"http://{job.target_ip}:{self.cfg.port_webpacs}/",
+        }
+        merged = {**defaults, **(job.extra_urls or {})}
+        job.extra_urls = merged
+        admin_url = merged["Frontend"]
         await repo.finish_job(db, job.id, JobStatus.SUCCEEDED, admin_web_url=admin_url)
         job.status = JobStatus.SUCCEEDED
         job.admin_web_url = admin_url

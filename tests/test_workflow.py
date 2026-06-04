@@ -86,7 +86,8 @@ async def test_happy_path_hybrid_with_ai(temp_db):
     result = await wf.run(_job())
 
     assert result.status == JobStatus.SUCCEEDED
-    assert result.admin_web_url == "http://192.168.1.50/"
+    # 표준 NodePort(8000) 기준 admin_web_url 자동 구성
+    assert result.admin_web_url == "http://192.168.1.50:8000/"
     assert result.current_step == Step.DONE
     assert result.script_commit_sha == "abc123"  # success_summary 표시용으로 객체에도 반영
 
@@ -603,7 +604,8 @@ async def test_workflow_merges_urls_across_infra_and_app(temp_db):
 
 
 @pytest.mark.asyncio
-async def test_workflow_admin_url_falls_back_to_template_when_no_frontend(temp_db):
+async def test_workflow_admin_url_falls_back_to_fixed_port_when_no_frontend(temp_db):
+    """install 스크립트가 [INFO] Frontend URL을 출력 안 해도 표준 NodePort(8000)로 구성."""
     fake = FakeSSHClient()
     _enqueue_preflight_ok(fake)
     fake.enqueue("test -d", [], exit_code=0)
@@ -619,7 +621,11 @@ async def test_workflow_admin_url_falls_back_to_template_when_no_frontend(temp_d
     wf = _make_workflow(fake, temp_db)
 
     result = await wf.run(_job(ip="10.0.0.1"))
-    assert result.admin_web_url == "http://10.0.0.1/"  # template fallback
+    assert result.admin_web_url == "http://10.0.0.1:8000/"
+    # 표준 3개 URL이 모두 채워져 있어야 함
+    assert result.extra_urls["Frontend"] == "http://10.0.0.1:8000/"
+    assert result.extra_urls["Temporal Web"] == "http://10.0.0.1:8001/"
+    assert result.extra_urls["Web-PACS"] == "http://10.0.0.1:8002/"
 
 
 # ---------- D-3 토큰 마스킹 ----------
@@ -896,7 +902,8 @@ async def test_site_register_runs_for_onpremise_with_creds(temp_db, mocker):
     assert result.status == JobStatus.SUCCEEDED
     spy.assert_called_once()
     args, kwargs = spy.call_args
-    assert args[0] == "http://192.168.1.50:31435"  # base_url = target_ip + frontend port
+    # base_url은 이제 고정 port_frontend(=8000)로 구성. install 로그의 [INFO] Frontend URL과 무관.
+    assert args[0] == "http://192.168.1.50:8000"
     assert kwargs["email"] == "admin@x.com"
     assert kwargs["password"] == "pw"
     assert kwargs["code"] == "HOSP01"
@@ -930,8 +937,8 @@ async def test_site_register_uses_hospital_code_when_name_missing(temp_db, mocke
 
 
 @pytest.mark.asyncio
-async def test_site_register_fails_when_frontend_url_not_captured(temp_db, mocker):
-    """on-premise + 자격증명 있는데 Frontend URL이 안 잡히면 site_register 단계 실패."""
+async def test_site_register_proceeds_even_without_frontend_log_line(temp_db, mocker):
+    """포트가 고정(8000)이므로 install 스크립트가 [INFO] Frontend URL을 안 찍어도 단계 정상 진행."""
     fake = FakeSSHClient()
     _enqueue_preflight_ok(fake)
     fake.enqueue("test -d", [], exit_code=0)
@@ -943,12 +950,16 @@ async def test_site_register_fails_when_frontend_url_not_captured(temp_db, mocke
     fake.enqueue("kubectl -n hub delete pod", [])
     cfg = _cfg_with_site_creds()
     wf = _make_wf_with_cfg(fake, temp_db, cfg)
-    spy = mocker.patch("autodeploy.workflow.site_registration.register_hospital")
+    spy = mocker.patch(
+        "autodeploy.workflow.site_registration.register_hospital",
+        return_value=("created", "FAKE_TOKEN"),
+    )
 
-    result = await wf.run(_job(deployment_type="on-premise"))
-    assert result.status == JobStatus.FAILED
-    assert "Frontend URL" in result.error_message
-    spy.assert_not_called()  # API 호출 시도 자체를 안 함
+    result = await wf.run(_job(deployment_type="on-premise", ip="10.0.0.50"))
+    assert result.status == JobStatus.SUCCEEDED
+    spy.assert_called_once()
+    args, _ = spy.call_args
+    assert args[0] == "http://10.0.0.50:8000"
 
 
 @pytest.mark.asyncio
@@ -1019,8 +1030,8 @@ async def test_register_existing_job_hybrid_uses_cloud_url(temp_db, mocker):
 
 
 @pytest.mark.asyncio
-async def test_register_existing_job_onpremise_uses_admin_web_url_fallback(temp_db, mocker):
-    """DB에서 다시 로드한 Job은 extra_urls 비어있음 — admin_web_url에서 포트 파싱."""
+async def test_register_existing_job_onpremise_uses_fixed_port(temp_db, mocker):
+    """포트가 고정(8000)이므로 DB에서 다시 로드한 Job도 추가 정보 없이 base URL 결정됨."""
     cfg = _cfg_with_site_creds()
     wf = Workflow(
         ssh_factory=lambda h: FakeSSHClient(),
@@ -1037,17 +1048,12 @@ async def test_register_existing_job_onpremise_uses_admin_web_url_fallback(temp_
     async with connect(temp_db) as db:
         job = _job(deployment_type="on-premise", ip="192.168.1.50")
         job.id = await repo.create_job(db, job)
-        await repo.finish_job(
-            db, job.id, JobStatus.SUCCEEDED,
-            admin_web_url="http://192.168.1.50:31435/",
-        )
-        job.admin_web_url = "http://192.168.1.50:31435/"
-    # extra_urls는 빈 채
+        await repo.finish_job(db, job.id, JobStatus.SUCCEEDED)
 
     result = await wf.register_existing_job(job)
     assert result == "created"
     args, kwargs = spy.call_args
-    assert args[0] == "http://192.168.1.50:31435"
+    assert args[0] == "http://192.168.1.50:8000"
     assert kwargs["host_header"] == "localhost"
 
 
@@ -1099,25 +1105,6 @@ async def test_register_existing_job_records_db_event(temp_db, mocker):
         ) as cur:
             rows = await cur.fetchall()
     assert any("수동 재시도" in r["message"] and "이미 등록됨" in r["message"] for r in rows)
-
-
-@pytest.mark.asyncio
-async def test_register_existing_job_onpremise_without_admin_url_raises(temp_db):
-    cfg = _cfg_with_site_creds()
-    wf = Workflow(
-        ssh_factory=lambda h: FakeSSHClient(),
-        db_path=temp_db,
-        deployment_types=load_deployment_types(CONFIG_PATH),
-        notifier=RecordingNotifier(),
-        cfg=cfg,
-    )
-    job = _job(deployment_type="on-premise")
-    job.id = 42
-    # admin_web_url 미설정, extra_urls 빈 채
-
-    from autodeploy.workflow import WorkflowError as _WfErr
-    with pytest.raises(_WfErr):
-        await wf.register_existing_job(job)
 
 
 @pytest.mark.asyncio
@@ -1205,26 +1192,6 @@ async def test_dicom_gateway_restart_runs_after_site_register(temp_db, mocker):
     step_order = [e[1]["step"] for e in notifier.events if e[0] == "step_started"]
     # site_register가 dicom_gateway_restart보다 먼저
     assert step_order.index("site_register") < step_order.index("dicom_gateway_restart")
-
-
-@pytest.mark.asyncio
-async def test_register_existing_job_onpremise_admin_url_without_port_raises(temp_db):
-    """admin_web_url이 'http://IP/' (template fallback) 형태면 포트 없음 → 명확한 에러."""
-    cfg = _cfg_with_site_creds()
-    wf = Workflow(
-        ssh_factory=lambda h: FakeSSHClient(),
-        db_path=temp_db,
-        deployment_types=load_deployment_types(CONFIG_PATH),
-        notifier=RecordingNotifier(),
-        cfg=cfg,
-    )
-    job = _job(deployment_type="on-premise", ip="192.168.1.50")
-    job.id = 42
-    job.admin_web_url = "http://192.168.1.50/"  # 포트 없음 (install 시 Frontend URL 못 잡은 케이스)
-
-    from autodeploy.workflow import WorkflowError as _WfErr
-    with pytest.raises(_WfErr, match="포트"):
-        await wf.register_existing_job(job)
 
 
 # ---------- 단계 8: product_register ----------

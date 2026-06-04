@@ -57,6 +57,11 @@ class Settings:
     jira_email: str
     jira_api_token: str
     jira_key: str
+    # gateway-infra-next의 고정 NodePort. install 스크립트가 [INFO] X URL 출력을
+    # 누락해도 Slack/site_register/product_register가 이 포트로 동작.
+    port_frontend: int
+    port_temporal: int
+    port_webpacs: int
 
 
 def load_settings(env: Mapping[str, str] | None = None) -> Settings:
@@ -108,4 +113,7 @@ def load_settings(env: Mapping[str, str] | None = None) -> Settings:
         jira_email=e.get("JIRA_EMAIL", "").strip(),
         jira_api_token=e.get("JIRA_API_TOKEN", ""),
         jira_key=e.get("JIRA_KEY", "PMFM").strip() or "PMFM",
+        port_frontend=int(e.get("PORT_FRONTEND", "8000")),
+        port_temporal=int(e.get("PORT_TEMPORAL", "8001")),
+        port_webpacs=int(e.get("PORT_WEBPACS", "8002")),
     )

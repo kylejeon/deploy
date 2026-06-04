@@ -680,3 +680,53 @@ site_register(6단계) 직후 7번째 단계로 `dicom_gateway_restart` 추가.
 2. **맥미니 배포**: git pull + launchctl kickstart -k gui/$(id -u)/com.connecteve.autodeploy
 3. **실제 on-premise/hybrid 설치로 종단 테스트**: Jira 이슈 자동 파싱 + Product API 등록 확인
 4. **응답 검증 필요**: Lookup API 응답 형태(data.content[] vs data[])가 dev-spec과 다를 경우 product_registration.py lookup_site_id 수정 필요 (data가 배열 직접인 경우 처리 코드 이미 포함)
+
+---
+
+## 2026-06-04 — 표준 NodePort 고정 (Frontend=8000, Temporal=8001, Web-PACS=8002)
+
+### 무엇을 했나 (293/293 통과)
+gateway-infra-next에서 NodePort를 고정한 변경에 맞춰, install 스크립트의 [INFO] X URL
+출력 의존성을 제거하고 결정적인 URL 구성으로 전환.
+
+### 변경 동작
+- **표준 3개 URL은 항상 고정 포트로 구성**:
+  - Frontend: http://target_ip:8000/
+  - Temporal Web: http://target_ip:8001/
+  - Web-PACS: http://target_ip:8002/
+- `_mark_success`에서 위 3개를 `job.extra_urls`에 자동 채움 — install 스크립트가
+  [INFO] X URL 줄을 출력하지 않아도 Slack 메시지에 항상 표시됨
+- 단, install 스크립트가 별도 라벨/포트를 출력한 경우(스크립트가 추가로 다른 URL을
+  알려준 경우)는 그대로 존중 — 기본 fill은 누락된 라벨만 채움
+- on-premise site_register/product_register의 base URL을 `http://target_ip:port_frontend`로
+  직접 구성. 더 이상 install 로그에서 Frontend URL을 캡쳐할 필요 없음
+- admin_web_url fallback이 `http://IP/`(포트 없음)에서 `http://IP:8000/`로 변경
+
+### 변경 파일
+- src/autodeploy/settings.py — port_frontend/temporal/webpacs 필드 (기본 8000/8001/8002)
+- src/autodeploy/workflow.py — WorkflowConfig 동일 필드, `_resolve_site_api_endpoint`에서
+  Frontend URL 캡쳐 로직 제거하고 고정 포트 사용, `_mark_success`에서 표준 URL 3개 자동 채움
+- src/autodeploy/__main__.py — settings → WorkflowConfig 전달
+- .env.example — PORT_FRONTEND/TEMPORAL/WEBPACS 항목 추가
+- tests/test_slack_app.py — _settings 헬퍼에 port_* 추가
+- tests/test_workflow.py:
+  - test_happy_path_hybrid_with_ai: admin_web_url 단언 `:8000` 포함하도록
+  - test_workflow_admin_url_falls_back_to_template_when_no_frontend → test_workflow_admin_url_falls_back_to_fixed_port_when_no_frontend로 개명
+  - test_site_register_runs_for_onpremise_with_creds: base_url 단언 `:8000`
+  - test_site_register_fails_when_frontend_url_not_captured → test_site_register_proceeds_even_without_frontend_log_line으로 전환 (실패 → 정상 진행)
+  - test_register_existing_job_onpremise_uses_admin_web_url_fallback → test_register_existing_job_onpremise_uses_fixed_port로 변경
+  - obsolete 2건 삭제: ..._without_admin_url_raises / ..._admin_url_without_port_raises
+
+### 운영 적용
+1. 맥미니: `cd ~/deploy && git pull origin claude`
+2. `launchctl kickstart -k gui/$(id -u)/com.connecteve.autodeploy`
+3. .env에 추가 (기본값 사용 시 생략 가능):
+   ```
+   PORT_FRONTEND=8000
+   PORT_TEMPORAL=8001
+   PORT_WEBPACS=8002
+   ```
+
+### 비고
+- install 스크립트가 다른 포트로 변경되면 .env로 override만 하면 됨
+- 추후 포트 차이가 deployment_type별로 생기면 WorkflowConfig를 dict로 확장 필요

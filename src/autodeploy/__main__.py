@@ -94,6 +94,9 @@ async def _run() -> int:
             jira_email=settings.jira_email,
             jira_api_token=settings.jira_api_token,
             jira_key=settings.jira_key,
+            port_frontend=settings.port_frontend,
+            port_temporal=settings.port_temporal,
+            port_webpacs=settings.port_webpacs,
         ),
     )
 
