@@ -37,11 +37,9 @@ def _normalize_ip_token(token: str) -> str:
 
 
 def _describe_ip_token(token: str) -> str:
-    """invalid IP 진단용. repr + 비ASCII 코드포인트 노출."""
-    non_ascii = [f"U+{ord(c):04X}" for c in token if ord(c) > 127]
-    if non_ascii:
-        return f"{token!r} (비ASCII: {' '.join(non_ascii)})"
-    return repr(token)
+    """invalid IP 진단용. repr + 모든 코드포인트(ASCII 포함)."""
+    codes = " ".join(f"U+{ord(c):04X}" for c in token)
+    return f"{token!r} chars=[{codes}]"
 
 
 @dataclass(frozen=True, slots=True)

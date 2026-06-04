@@ -122,6 +122,15 @@ def test_install_invalid_ip_shows_non_ascii_codepoints():
     assert "U+2025" in cmd.message
 
 
+def test_install_invalid_ip_shows_all_ascii_codepoints():
+    # ASCII만 있어도 invalid면 코드포인트 전체 노출 (콤마/슬래시/공백 진단).
+    cmd = parse_command("install 192,168,100,213 --type=on-premise --code=H", TYPES)
+    assert isinstance(cmd, ParseError)
+    # 콤마 U+002C, 1 U+0031 등이 모두 표시
+    assert "U+002C" in cmd.message
+    assert "U+0031" in cmd.message
+
+
 def test_install_unknown_flag_returns_parse_error():
     cmd = parse_command("install 1.2.3.4 --type=on-premise --code=H --bogus=x", TYPES)
     assert isinstance(cmd, ParseError)
