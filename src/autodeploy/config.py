@@ -20,9 +20,6 @@ class DeploymentType:
     description: str
     infra: ScriptSpec
     app: ScriptSpec
-    # app 직후에 동일 단계(APP_INSTALL)에서 추가 실행할 스크립트 목록.
-    # 예: on-premise의 freeze-offline.sh. 비어있으면 app만 실행.
-    post_app: tuple[ScriptSpec, ...] = ()
 
 
 class ConfigError(ValueError):
@@ -42,18 +39,11 @@ def load_deployment_types(path: str | Path) -> dict[str, DeploymentType]:
 def _parse_type(name: str, body: object) -> DeploymentType:
     if not isinstance(body, dict):
         raise ConfigError(f"type '{name}' must be a mapping")
-    raw_post = body.get("post_app", []) or []
-    if not isinstance(raw_post, list):
-        raise ConfigError(f"type '{name}.post_app' must be a list")
-    post_app = tuple(
-        _parse_script(name, f"post_app[{i}]", item) for i, item in enumerate(raw_post)
-    )
     return DeploymentType(
         name=name,
         description=str(body.get("description", "")),
         infra=_parse_script(name, "infra", body.get("infra")),
         app=_parse_script(name, "app", body.get("app")),
-        post_app=post_app,
     )
 
 

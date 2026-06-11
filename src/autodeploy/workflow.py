@@ -278,9 +278,7 @@ class Workflow:
                 job.script_commit_sha = sha
 
                 await self._step_script(db, job, ssh, Step.INFRA_INSTALL, deployment.infra)
-                await self._step_script(
-                    db, job, ssh, Step.APP_INSTALL, deployment.app, *deployment.post_app,
-                )
+                await self._step_script(db, job, ssh, Step.APP_INSTALL, deployment.app)
                 await self._step_healthcheck(db, job, ssh)
                 await self._step_site_register(db, job)
                 await self._step_dicom_gateway_restart(db, job, ssh)
@@ -371,14 +369,8 @@ class Workflow:
         return sha
 
     async def _step_script(
-        self, db, job: Job, ssh: SSHClient, step: Step, spec, *extra_specs
+        self, db, job: Job, ssh: SSHClient, step: Step, spec
     ) -> None:
-        """단일 단계 안에서 1개 이상의 스크립트를 순차 실행. 하나라도 실패하면 단계 실패.
-
-        on-premise APP_INSTALL은 deploy-applications-onpremise.sh + freeze-offline.sh
-        처럼 후속 스크립트가 yaml의 post_app에 정의될 수 있다. 모두 같은 단계 안에서
-        실행되고 로그도 한 단계로 모임.
-        """
         await self._step_start(db, job, step)
         start = time.monotonic()
         # infra/app 단계 모두에서 URL 캡처 — on-premise는 인프라 스크립트가 URL을 출력하기도 함.
@@ -387,19 +379,18 @@ class Workflow:
             [] if step in (Step.INFRA_INSTALL, Step.APP_INSTALL) else None
         )
         log_collector = self._make_log_collector(db, job, step, capture=capture)
-        for s in (spec, *extra_specs):
-            rc = await run_script(
-                ssh,
-                workdir=self.cfg.work_dir,
-                spec=s,
-                code=job.hospital_code,
-                sudo_password=self.cfg.sudo_password,
-                on_line=log_collector,
-            )
-            if rc != 0:
-                duration = time.monotonic() - start
-                await self._step_done(db, job, step, success=False, duration=duration)
-                raise WorkflowError(step, f"script {s.script} exited with {rc}")
+        rc = await run_script(
+            ssh,
+            workdir=self.cfg.work_dir,
+            spec=spec,
+            code=job.hospital_code,
+            sudo_password=self.cfg.sudo_password,
+            on_line=log_collector,
+        )
+        if rc != 0:
+            duration = time.monotonic() - start
+            await self._step_done(db, job, step, success=False, duration=duration)
+            raise WorkflowError(step, f"script exited with {rc}")
         duration = time.monotonic() - start
         if capture is not None:
             new_urls = extract_urls_from_lines(job.target_ip, capture)
