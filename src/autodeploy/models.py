@@ -48,6 +48,7 @@ class Job:
     slack_channel: str
     hospital_name: str | None = None
     hospital_address: str | None = None
+    target_port: int = 22
     status: JobStatus = JobStatus.QUEUED
     current_step: Step | None = None
     slack_thread_ts: str | None = None

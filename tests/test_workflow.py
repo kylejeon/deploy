@@ -36,10 +36,15 @@ def _cfg() -> WorkflowConfig:
     )
 
 
-def _job(deployment_type: str = "hybrid-with-ai", ip: str = "192.168.1.50") -> Job:
+def _job(
+    deployment_type: str = "hybrid-with-ai",
+    ip: str = "192.168.1.50",
+    port: int = 22,
+) -> Job:
     return Job(
         id=None,
         target_ip=ip,
+        target_port=port,
         deployment_type=deployment_type,
         hospital_code="HOSP01",
         started_by="U01",
@@ -49,7 +54,7 @@ def _job(deployment_type: str = "hybrid-with-ai", ip: str = "192.168.1.50") -> J
 
 def _make_workflow(fake: FakeSSHClient, temp_db, notifier=None) -> Workflow:
     return Workflow(
-        ssh_factory=lambda host: fake,
+        ssh_factory=lambda h, p: fake,
         db_path=temp_db,
         deployment_types=load_deployment_types(CONFIG_PATH),
         notifier=notifier or RecordingNotifier(),
@@ -75,6 +80,29 @@ def _enqueue_happy_path_hybrid(fake: FakeSSHClient) -> None:
     fake.enqueue("deploy-applications.sh", [StreamLine("stdout", "app ok")])
     fake.enqueue("kubectl get pods", [])
     fake.enqueue("kubectl -n hub delete pod", [])
+
+
+@pytest.mark.asyncio
+async def test_ssh_factory_receives_target_port_from_job(temp_db):
+    """Job.target_port가 ssh_factory에 그대로 전달되는지 검증.
+    외부 포트포워딩 환경(110.15.83.84:22022 → 내부 22)에서 핵심."""
+    fake = FakeSSHClient()
+    _enqueue_happy_path_hybrid(fake)
+    seen: list[tuple[str, int]] = []
+
+    def factory(host: str, port: int):
+        seen.append((host, port))
+        return fake
+
+    wf = Workflow(
+        ssh_factory=factory,
+        db_path=temp_db,
+        deployment_types=load_deployment_types(CONFIG_PATH),
+        notifier=RecordingNotifier(),
+        cfg=_cfg(),
+    )
+    await wf.run(_job(ip="110.15.83.84", port=22022))
+    assert seen == [("110.15.83.84", 22022)]
 
 
 @pytest.mark.asyncio
@@ -386,7 +414,7 @@ async def test_auto_install_injects_sudo_password_when_set(temp_db):
         sudo_password="myPass#$",
     )
     wf = Workflow(
-        ssh_factory=lambda h: fake,
+        ssh_factory=lambda h, p: fake,
         db_path=temp_db,
         deployment_types=load_deployment_types(CONFIG_PATH),
         notifier=RecordingNotifier(),
@@ -817,7 +845,7 @@ def _cfg_with_site_creds(**overrides) -> WorkflowConfig:
 
 def _make_wf_with_cfg(fake: FakeSSHClient, temp_db, cfg: WorkflowConfig) -> Workflow:
     return Workflow(
-        ssh_factory=lambda h: fake,
+        ssh_factory=lambda h, p: fake,
         db_path=temp_db,
         deployment_types=load_deployment_types(CONFIG_PATH),
         notifier=RecordingNotifier(),
@@ -926,7 +954,7 @@ async def test_site_register_runs_for_onpremise_with_creds(temp_db, mocker):
     cfg = _cfg_with_site_creds()
     notifier = RecordingNotifier()
     wf = Workflow(
-        ssh_factory=lambda h: fake,
+        ssh_factory=lambda h, p: fake,
         db_path=temp_db,
         deployment_types=load_deployment_types(CONFIG_PATH),
         notifier=notifier,
@@ -1046,7 +1074,7 @@ async def test_site_register_already_exists_still_succeeds(temp_db, mocker):
 async def test_register_existing_job_hybrid_uses_cloud_url(temp_db, mocker):
     cfg = _cfg_with_site_creds()
     wf = Workflow(
-        ssh_factory=lambda h: FakeSSHClient(),
+        ssh_factory=lambda h, p: FakeSSHClient(),
         db_path=temp_db,
         deployment_types=load_deployment_types(CONFIG_PATH),
         notifier=RecordingNotifier(),
@@ -1077,7 +1105,7 @@ async def test_register_existing_job_onpremise_uses_fixed_port(temp_db, mocker):
     """포트가 고정(8000)이므로 DB에서 다시 로드한 Job도 추가 정보 없이 base URL 결정됨."""
     cfg = _cfg_with_site_creds()
     wf = Workflow(
-        ssh_factory=lambda h: FakeSSHClient(),
+        ssh_factory=lambda h, p: FakeSSHClient(),
         db_path=temp_db,
         deployment_types=load_deployment_types(CONFIG_PATH),
         notifier=RecordingNotifier(),
@@ -1106,7 +1134,7 @@ async def test_register_existing_job_raises_when_creds_missing(temp_db):
 
     cfg = _cfg_with_site_creds(site_admin_email="", site_admin_password="")
     wf = Workflow(
-        ssh_factory=lambda h: FakeSSHClient(),
+        ssh_factory=lambda h, p: FakeSSHClient(),
         db_path=temp_db,
         deployment_types=load_deployment_types(CONFIG_PATH),
         notifier=RecordingNotifier(),
@@ -1123,7 +1151,7 @@ async def test_register_existing_job_raises_when_creds_missing(temp_db):
 async def test_register_existing_job_records_db_event(temp_db, mocker):
     cfg = _cfg_with_site_creds()
     wf = Workflow(
-        ssh_factory=lambda h: FakeSSHClient(),
+        ssh_factory=lambda h, p: FakeSSHClient(),
         db_path=temp_db,
         deployment_types=load_deployment_types(CONFIG_PATH),
         notifier=RecordingNotifier(),
@@ -1219,7 +1247,7 @@ async def test_dicom_gateway_restart_runs_after_site_register(temp_db, mocker):
     cfg = _cfg_with_site_creds()
     notifier = RecordingNotifier()
     wf = Workflow(
-        ssh_factory=lambda h: fake,
+        ssh_factory=lambda h, p: fake,
         db_path=temp_db,
         deployment_types=load_deployment_types(CONFIG_PATH),
         notifier=notifier,
@@ -1312,7 +1340,7 @@ async def test_product_register_success_two_issues(temp_db, mocker):
     cfg = _cfg_with_jira()
     notifier = RecordingNotifier()
     wf = Workflow(
-        ssh_factory=lambda h: fake,
+        ssh_factory=lambda h, p: fake,
         db_path=temp_db,
         deployment_types=load_deployment_types(CONFIG_PATH),
         notifier=notifier,
@@ -1381,7 +1409,7 @@ async def test_product_register_all_fail_step_failure_job_succeeded(temp_db, moc
     cfg = _cfg_with_jira()
     notifier = RecordingNotifier()
     wf = Workflow(
-        ssh_factory=lambda h: fake,
+        ssh_factory=lambda h, p: fake,
         db_path=temp_db,
         deployment_types=load_deployment_types(CONFIG_PATH),
         notifier=notifier,
@@ -1418,7 +1446,7 @@ async def test_product_register_jira_zero_issues_step_failure_job_succeeded(temp
     cfg = _cfg_with_jira()
     notifier = RecordingNotifier()
     wf = Workflow(
-        ssh_factory=lambda h: fake,
+        ssh_factory=lambda h, p: fake,
         db_path=temp_db,
         deployment_types=load_deployment_types(CONFIG_PATH),
         notifier=notifier,
@@ -1454,7 +1482,7 @@ async def test_product_register_runs_after_dicom_gateway_restart(temp_db, mocker
     cfg = _cfg_with_jira()
     notifier = RecordingNotifier()
     wf = Workflow(
-        ssh_factory=lambda h: fake,
+        ssh_factory=lambda h, p: fake,
         db_path=temp_db,
         deployment_types=load_deployment_types(CONFIG_PATH),
         notifier=notifier,

@@ -9,11 +9,13 @@ from autodeploy.models import Job, JobStatus, Step
 async def create_job(db: aiosqlite.Connection, job: Job) -> int:
     cur = await db.execute(
         """INSERT INTO jobs
-           (target_ip, deployment_type, hospital_code, hospital_name, hospital_address,
+           (target_ip, target_port, deployment_type, hospital_code,
+            hospital_name, hospital_address,
             status, started_by, slack_channel, slack_thread_ts)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (
             job.target_ip,
+            job.target_port,
             job.deployment_type,
             job.hospital_code,
             job.hospital_name,
@@ -157,6 +159,7 @@ def _row_to_job(row: aiosqlite.Row) -> Job:
         slack_channel=row["slack_channel"],
         hospital_name=row["hospital_name"],
         hospital_address=row["hospital_address"],
+        target_port=row["target_port"],
         status=JobStatus(row["status"]),
         current_step=Step(row["current_step"]) if row["current_step"] else None,
         slack_thread_ts=row["slack_thread_ts"],

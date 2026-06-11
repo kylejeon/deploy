@@ -4,6 +4,7 @@
 CREATE TABLE IF NOT EXISTS jobs (
   id                INTEGER PRIMARY KEY AUTOINCREMENT,
   target_ip         TEXT NOT NULL,
+  target_port       INTEGER NOT NULL DEFAULT 22,
   deployment_type   TEXT NOT NULL,
   hospital_code     TEXT NOT NULL,
   hospital_name     TEXT,

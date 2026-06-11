@@ -191,15 +191,37 @@ async def test_install_creates_job_and_returns_workflow_job(temp_db):
     job = result.workflow_job
     assert job.id is not None
     assert job.target_ip == "192.168.1.50"
+    assert job.target_port == 22  # 기본 포트
     assert job.deployment_type == "hybrid-with-ai"
     assert job.hospital_code == "HOSP01"
     assert job.started_by == "U01"
 
-    # DB에 기록
+    # DB에 기록 — target_port도 라운드트립
     async with connect(temp_db) as db:
         loaded = await repo.get_job(db, job.id)
     assert loaded is not None
     assert loaded.status == JobStatus.QUEUED
+    assert loaded.target_port == 22
+
+
+@pytest.mark.asyncio
+async def test_install_with_host_port_persists_port(temp_db):
+    """IP:PORT 형식으로 install하면 target_port가 DB까지 라운드트립."""
+    s = _settings(temp_db)
+    ctx = CommandContext(
+        user_id="U01",
+        channel_id="C01",
+        text="install 110.15.83.84:22022 --type=on-premise --code=H",
+    )
+    result = await handle_command(ctx, settings=s, deployment_types=TYPES)
+    assert result.workflow_job is not None
+    job = result.workflow_job
+    assert job.target_ip == "110.15.83.84"
+    assert job.target_port == 22022
+
+    async with connect(temp_db) as db:
+        loaded = await repo.get_job(db, job.id)
+    assert loaded.target_port == 22022
 
 
 @pytest.mark.asyncio

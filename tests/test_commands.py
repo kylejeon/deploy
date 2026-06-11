@@ -104,6 +104,38 @@ def test_install_strips_backticks_around_ip():
     assert cmd.target_ip == "192.168.100.213"
 
 
+def test_install_default_port_is_22():
+    cmd = parse_command("install 1.2.3.4 --type=on-premise --code=H", TYPES)
+    assert isinstance(cmd, InstallCommand)
+    assert cmd.target_port == 22
+
+
+def test_install_parses_host_port_form():
+    # 외부 IP + 포트포워딩 매핑: 110.15.83.84:22022 → 내부 SSH 22
+    cmd = parse_command("install 110.15.83.84:22022 --type=on-premise --code=H", TYPES)
+    assert isinstance(cmd, InstallCommand)
+    assert cmd.target_ip == "110.15.83.84"
+    assert cmd.target_port == 22022
+
+
+def test_install_rejects_non_numeric_port():
+    cmd = parse_command("install 1.2.3.4:abc --type=on-premise --code=H", TYPES)
+    assert isinstance(cmd, ParseError)
+    assert "port" in cmd.message.lower()
+
+
+def test_install_rejects_port_out_of_range():
+    cmd = parse_command("install 1.2.3.4:70000 --type=on-premise --code=H", TYPES)
+    assert isinstance(cmd, ParseError)
+    assert "range" in cmd.message.lower()
+
+
+def test_install_rejects_port_zero():
+    cmd = parse_command("install 1.2.3.4:0 --type=on-premise --code=H", TYPES)
+    assert isinstance(cmd, ParseError)
+    assert "range" in cmd.message.lower()
+
+
 def test_install_normalizes_korean_middle_dot():
     # 한글 IME가 '.'을 '·'(U+00B7)로 자동변환한 경우.
     cmd = parse_command("install 192·168·100·213 --type=on-premise --code=H", TYPES)

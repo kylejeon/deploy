@@ -30,7 +30,7 @@ from autodeploy.jira_client import JiraAPIError, JiraClient
 from autodeploy.product_registration import ProductRegistrationClient
 
 
-SSHFactory = Callable[[str], AbstractAsyncContextManager[SSHClient]]
+SSHFactory = Callable[[str, int], AbstractAsyncContextManager[SSHClient]]
 
 
 # URL embedded credential pattern: scheme://user:TOKEN@host → scheme://user:***@host
@@ -268,7 +268,7 @@ class Workflow:
             )
 
         try:
-            async with self.ssh_factory(job.target_ip) as ssh:
+            async with self.ssh_factory(job.target_ip, job.target_port) as ssh:
                 await self._step_done(db, job, Step.SSH_CONNECT, success=True, duration=0.0)
 
                 sha = await self._step_git_pull(db, job, ssh)

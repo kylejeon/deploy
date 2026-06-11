@@ -151,6 +151,7 @@ async def handle_command(
             job = Job(
                 id=None,
                 target_ip=cmd.target_ip,
+                target_port=cmd.target_port,
                 deployment_type=cmd.deployment_type,
                 hospital_code=cmd.hospital_code,
                 hospital_name=cmd.hospital_name,
@@ -211,6 +212,7 @@ async def _handle_retry(
         new_job = Job(
             id=None,
             target_ip=original.target_ip,
+            target_port=original.target_port,
             deployment_type=original.deployment_type,
             hospital_code=original.hospital_code,
             hospital_name=original.hospital_name,

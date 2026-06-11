@@ -61,6 +61,7 @@ class InstallCommand:
     hospital_code: str
     hospital_name: str | None
     hospital_address: str | None
+    target_port: int = 22
 
 
 @dataclass(frozen=True, slots=True)
@@ -146,6 +147,17 @@ def _parse_install(rest: str, valid_types: frozenset[str] | set[str]) -> Command
         )
 
     target_ip = _normalize_ip_token(tokens[0])
+    target_port = 22
+    # `IP:PORT` 형식 허용. IPv4는 콜론을 포함 안 하므로 안전.
+    if ":" in target_ip:
+        ip_part, _, port_part = target_ip.rpartition(":")
+        if not port_part.isdigit():
+            return ParseError(f"invalid port: {port_part!r}")
+        port_int = int(port_part)
+        if not 1 <= port_int <= 65535:
+            return ParseError(f"port out of range (1-65535): {port_int}")
+        target_ip = ip_part
+        target_port = port_int
     if not _is_valid_ip(target_ip):
         return ParseError(f"invalid IP: {_describe_ip_token(tokens[0])}")
 
@@ -181,6 +193,7 @@ def _parse_install(rest: str, valid_types: frozenset[str] | set[str]) -> Command
 
     return InstallCommand(
         target_ip=target_ip,
+        target_port=target_port,
         deployment_type=dtype,
         hospital_code=code,
         hospital_name=name,

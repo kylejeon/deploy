@@ -66,11 +66,12 @@ async def _run() -> int:
     web_client = AsyncWebClient(token=settings.slack_bot_token)
     notifier = SlackNotifier(web_client, settings.slack_channel_id)
 
-    def ssh_factory(host: str):
+    def ssh_factory(host: str, port: int):
         return AsyncSSHClient(
             host,
             username=settings.ssh_user,
             password=settings.ssh_password,
+            port=port,
         )
 
     workflow = Workflow(
