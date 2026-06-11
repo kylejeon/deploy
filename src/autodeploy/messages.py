@@ -162,28 +162,6 @@ def _step_position(step: Step) -> tuple[int, int]:
     return idx, len(_STEP_ORDER)
 
 
-# ---------- M-4: stdout 라이브 미리보기 ----------
-
-def stdout_preview(step: Step, lines: Sequence[str], *, last_update_kst: str) -> dict:
-    label = _STEP_LABELS_KR.get(step, step.value)
-    tail = list(lines)[-10:]
-    body = "\n".join(_truncate(l, 80) for l in tail) or "(아직 출력 없음)"
-    text = f"실시간 로그 — {label}"
-    return {
-        "text": text,
-        "blocks": [
-            {"type": "section", "text": {"type": "mrkdwn", "text": f"📋  *{text}*"}},
-            {"type": "section", "text": {"type": "mrkdwn", "text": f"```\n{body}\n```"}},
-            {
-                "type": "context",
-                "elements": [
-                    {"type": "mrkdwn", "text": f"마지막 업데이트 `{last_update_kst}` · 5초 간격"},
-                ],
-            },
-        ],
-    }
-
-
 # ---------- M-5: 성공 요약 ----------
 
 def success_summary(job: Job, *, total_duration_s: float) -> dict:

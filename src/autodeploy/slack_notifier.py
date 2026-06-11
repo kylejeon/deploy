@@ -1,24 +1,19 @@
 """Notifier Protocol의 Slack 실 구현.
 
-스레드 관리, stdout chat.update 배치(시간 기반), 부모 메시지 헤더 갱신.
+스레드 관리 + 단계 시작/종료 메시지 + 부모 메시지 헤더 갱신 + 종료 시 전체 로그
+파일 첨부. 진행 중 stdout 미리보기는 따로 게시하지 않는다 (운영자가 보고 싶을 때
+첨부 파일로 본다).
 slack-sdk AsyncWebClient를 외부에서 주입받음 (테스트 용이성).
 """
 from __future__ import annotations
 
+import sys
 import time
-from datetime import datetime
 from typing import Any
-from zoneinfo import ZoneInfo
 
 from autodeploy import messages
 from autodeploy.models import Job, JobStatus, Step
 from autodeploy.ssh import StreamLine
-
-_KST = ZoneInfo("Asia/Seoul")
-
-
-def _now_kst_str() -> str:
-    return datetime.now(_KST).strftime("%H:%M:%S")
 
 
 class SlackNotifier:
@@ -27,16 +22,9 @@ class SlackNotifier:
     Notifier Protocol 호환 — workflow가 직접 의존.
     """
 
-    def __init__(
-        self,
-        web_client: Any,
-        channel_id: str,
-        *,
-        stdout_flush_interval: float = 5.0,
-    ) -> None:
+    def __init__(self, web_client: Any, channel_id: str) -> None:
         self._client = web_client
         self._channel = channel_id
-        self._flush_interval = stdout_flush_interval
 
         # job별 상태
         # _parent_ts: chat.update 대상 (헤더). install이면 부모 메시지 ts, retry면 스레드 안 sub-header ts
@@ -44,11 +32,8 @@ class SlackNotifier:
         self._parent_ts: dict[int, str] = {}
         self._thread_ts: dict[int, str] = {}
         self._start_times: dict[int, float] = {}  # monotonic
-        # (job_id, step)별 상태
-        self._stdout_buf: dict[tuple[int, Step], list[str]] = {}
+        # (job_id, step)별 stderr 누적 — 실패 요약에 tail로 노출.
         self._stderr_buf: dict[tuple[int, Step], list[str]] = {}
-        self._preview_ts: dict[tuple[int, Step], str] = {}
-        self._last_flush: dict[tuple[int, Step], float] = {}
 
     # ---------- Notifier protocol ----------
 
@@ -94,10 +79,7 @@ class SlackNotifier:
         thread_ts = self._thread_ts.get(job.id)
         if thread_ts is None:
             return
-        key = (job.id, step)
-        self._stdout_buf[key] = []
-        self._stderr_buf[key] = []
-        self._last_flush[key] = time.monotonic()  # interval 기준점 reset
+        self._stderr_buf[(job.id, step)] = []
         msg = messages.step_started(step)
         await self._client.chat_postMessage(
             channel=self._channel,
@@ -107,17 +89,12 @@ class SlackNotifier:
         )
 
     async def step_log(self, job: Job, step: Step, line: StreamLine) -> None:
+        # stdout은 슬랙에 게시하지 않는다 (작업 종료 시 첨부 파일에 통째로 들어감).
+        # stderr만 누적해두고 실패 요약에 tail로 사용.
         if self._thread_ts.get(job.id) is None:
             return
-        key = (job.id, step)
-        buf = self._stderr_buf if line.stream == "stderr" else self._stdout_buf
-        buf.setdefault(key, []).append(line.line)
-
-        now = time.monotonic()
-        last = self._last_flush.get(key, 0.0)
-        if now - last >= self._flush_interval:
-            await self._flush_preview(job, step)
-            self._last_flush[key] = now
+        if line.stream == "stderr":
+            self._stderr_buf.setdefault((job.id, step), []).append(line.line)
 
     async def step_finished(
         self,
@@ -130,10 +107,6 @@ class SlackNotifier:
         thread_ts = self._thread_ts.get(job.id)
         if thread_ts is None:
             return
-        # stdout이 한 줄이라도 있었으면 마지막 상태 강제 flush (없으면 미리보기 메시지 자체 생략)
-        if self._stdout_buf.get((job.id, step)):
-            await self._flush_preview(job, step)
-
         msg = messages.step_finished(step, success=success, duration_s=duration_s)
         await self._client.chat_postMessage(
             channel=self._channel,
@@ -170,6 +143,28 @@ class SlackNotifier:
 
         self._cleanup(job.id)
 
+    async def upload_log_file(self, job: Job, log_text: str) -> None:
+        """전체 스크립트 로그를 텍스트 파일로 같은 스레드에 첨부.
+
+        thread_ts는 job.slack_thread_ts에서 직접 읽는다 — job_finished 이후 _cleanup이
+        내부 dict를 비우기 때문. 업로드 실패는 작업 결과를 망치지 않도록 stderr만 찍고
+        삼킨다 (네트워크 일시 장애·권한 누락 등).
+        """
+        if not job.slack_thread_ts or not log_text:
+            return
+        filename = f"install-{job.id}-{job.hospital_code}-{job.status.value}.log"
+        try:
+            await self._client.files_upload_v2(
+                channel=self._channel,
+                thread_ts=job.slack_thread_ts,
+                content=log_text,
+                filename=filename,
+                title=filename,
+                initial_comment="📄 전체 스크립트 로그",
+            )
+        except Exception as exc:  # noqa: BLE001
+            sys.stderr.write(f"[SlackNotifier] upload_log_file failed: {exc}\n")
+
     # ---------- helpers ----------
 
     def _build_summary(self, job: Job, total: float) -> dict | None:
@@ -193,40 +188,13 @@ class SlackNotifier:
             )
         return None
 
-    async def _flush_preview(self, job: Job, step: Step) -> None:
-        thread_ts = self._thread_ts.get(job.id)
-        if thread_ts is None:
-            return
-        key = (job.id, step)
-        lines = self._stdout_buf.get(key, [])
-        msg = messages.stdout_preview(step, lines, last_update_kst=_now_kst_str())
-        preview_ts = self._preview_ts.get(key)
-        if preview_ts is None:
-            resp = await self._client.chat_postMessage(
-                channel=self._channel,
-                thread_ts=thread_ts,
-                text=msg["text"],
-                blocks=msg["blocks"],
-            )
-            self._preview_ts[key] = resp["ts"]
-        else:
-            await self._client.chat_update(
-                channel=self._channel,
-                ts=preview_ts,
-                text=msg["text"],
-                blocks=msg["blocks"],
-            )
-
     def _cleanup(self, job_id: int) -> None:
         self._parent_ts.pop(job_id, None)
         self._thread_ts.pop(job_id, None)
         self._start_times.pop(job_id, None)
-        for key in list(self._stdout_buf):
+        for key in list(self._stderr_buf):
             if key[0] == job_id:
-                self._stdout_buf.pop(key, None)
                 self._stderr_buf.pop(key, None)
-                self._preview_ts.pop(key, None)
-                self._last_flush.pop(key, None)
 
 
 def _color_attachments(summary: dict) -> list[dict] | None:

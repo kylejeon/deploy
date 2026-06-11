@@ -97,25 +97,6 @@ def test_step_finished_success_vs_fail():
     assert "실패" in bad["text"]
 
 
-# ---------- stdout preview ----------
-
-def test_stdout_preview_truncates_to_last_10_lines():
-    lines = [f"line{i}" for i in range(25)]
-    out = messages.stdout_preview(Step.INFRA_INSTALL, lines, last_update_kst="16:24:55")
-    body = str(out["blocks"])
-    assert "line24" in body
-    assert "line15" in body
-    assert "line14" not in body  # 15-24만 (마지막 10)
-    assert "16:24:55" in body
-
-
-def test_stdout_preview_handles_long_lines():
-    out = messages.stdout_preview(Step.APP_INSTALL, ["x" * 200], last_update_kst="00:00:00")
-    body = str(out["blocks"])
-    # 80자 + ellipsis로 잘려야 함
-    assert "x" * 200 not in body
-
-
 # ---------- success ----------
 
 def test_success_summary_includes_admin_url():

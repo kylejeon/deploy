@@ -692,6 +692,44 @@ class Workflow:
             await self.notifier.step_log(job, step, masked)
         return collect
 
+    async def _build_log_text(self, db, job: Job) -> str:
+        """script_logs를 통째로 텍스트로 직렬화. 작업 메타 헤더 + 단계별 라인.
+
+        라인 형식: `[created_at] [stream] line` — 시간순 정렬은 row id ASC로 보장.
+        """
+        cur = await db.execute(
+            "SELECT step, stream, line, created_at FROM script_logs "
+            "WHERE job_id=? ORDER BY id ASC",
+            (job.id,),
+        )
+        rows = await cur.fetchall()
+
+        header = [
+            f"=== AutoDeploy Install Log: Job #{job.id} ===",
+            f"Target: {job.target_ip}:{job.target_port}",
+            f"Type: {job.deployment_type}",
+            f"Code: {job.hospital_code}",
+        ]
+        if job.hospital_name:
+            header.append(f"Name: {job.hospital_name}")
+        header.append(f"Status: {job.status.value}")
+        if job.error_message:
+            header.append(f"Error: {job.error_message}")
+        header.append(f"Commit SHA: {job.script_commit_sha or '-'}")
+        header.append("=" * 60)
+
+        body: list[str] = []
+        last_step: str | None = None
+        for r in rows:
+            step = r["step"]
+            if step != last_step:
+                body.append("")
+                body.append(f"--- [{step}] ---")
+                last_step = step
+            body.append(f"[{r['created_at']}] [{r['stream']}] {r['line']}")
+
+        return "\n".join(header + body) + "\n"
+
     async def _mark_success(self, db, job: Job) -> None:
         # 표준 3개 URL은 항상 채움 — install 스크립트가 [INFO] X URL을 안 찍어도
         # 고정 NodePort 기준 결정적. 이미 캡쳐된 값이 있으면 그대로 둠 (운영자가
@@ -709,12 +747,14 @@ class Workflow:
         job.admin_web_url = admin_url
         job.current_step = Step.DONE
         await self.notifier.job_finished(job, error=None)
+        await self.notifier.upload_log_file(job, await self._build_log_text(db, job))
 
     async def _mark_failure(self, db, job: Job, err: WorkflowError) -> None:
         await repo.finish_job(db, job.id, JobStatus.FAILED, error_message=err.message)
         job.status = JobStatus.FAILED
         job.error_message = err.message
         await self.notifier.job_finished(job, error=err)
+        await self.notifier.upload_log_file(job, await self._build_log_text(db, job))
 
     async def _mark_cancelled(self, db, job: Job) -> None:
         """사용자 요청으로 작업이 취소됐을 때 정리. DB·이벤트·Slack 알림."""
@@ -723,3 +763,4 @@ class Workflow:
         await repo.finish_job(db, job.id, JobStatus.CANCELLED)
         job.status = JobStatus.CANCELLED
         await self.notifier.job_finished(job, error=None)
+        await self.notifier.upload_log_file(job, await self._build_log_text(db, job))

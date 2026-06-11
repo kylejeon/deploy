@@ -83,6 +83,69 @@ def _enqueue_happy_path_hybrid(fake: FakeSSHClient) -> None:
 
 
 @pytest.mark.asyncio
+async def test_build_log_text_contains_header_and_step_sections(temp_db):
+    """종료 시 첨부되는 로그 파일이 헤더 + 단계별 stdout/stderr 라인을 포함."""
+    fake = FakeSSHClient()
+    _enqueue_preflight_ok(fake)
+    fake.enqueue("test -d", [], exit_code=1)
+    fake.enqueue("git clone", [StreamLine("stdout", "Cloning into…")])
+    fake.enqueue("git fetch --all && git checkout", [])
+    fake.enqueue("git rev-parse HEAD", [StreamLine("stdout", "abc123")])
+    fake.enqueue("setup-site.sh", [StreamLine("stdout", "infra ok")])
+    fake.enqueue("deploy-applications.sh", [StreamLine("stderr", "warn from app")])
+    fake.enqueue("kubectl get pods", [])
+    fake.enqueue("kubectl -n hub delete pod", [])
+
+    wf = _make_workflow(fake, temp_db)
+    job = await wf.run(_job())
+
+    async with connect(temp_db) as db:
+        log_text = await wf._build_log_text(db, job)
+
+    # 헤더
+    assert f"Job #{job.id}" in log_text
+    assert "192.168.1.50:22" in log_text
+    assert "Type: hybrid-with-ai" in log_text
+    assert "Status: succeeded" in log_text
+    assert "Commit SHA: abc123" in log_text
+    # 단계 섹션 헤더
+    assert "--- [infra_install] ---" in log_text
+    assert "--- [app_install] ---" in log_text
+    # stream prefix
+    assert "[stdout]" in log_text
+    assert "[stderr]" in log_text
+    # 실제 라인 내용
+    assert "infra ok" in log_text
+    assert "warn from app" in log_text
+
+
+@pytest.mark.asyncio
+async def test_build_log_text_includes_error_on_failure(temp_db):
+    """실패 시에도 헤더의 Error 필드 + 그때까지의 모든 단계 로그 포함."""
+    fake = FakeSSHClient()
+    _enqueue_preflight_ok(fake)
+    fake.enqueue("test -d", [], exit_code=0)
+    fake.enqueue("git remote set-url origin", [])
+    fake.enqueue("git rev-parse HEAD", [StreamLine("stdout", "sha")])
+    fake.enqueue(
+        "setup-site.sh",
+        [StreamLine("stderr", "fatal: disk full")],
+        exit_code=1,
+    )
+
+    wf = _make_workflow(fake, temp_db)
+    job = await wf.run(_job())
+    assert job.status == JobStatus.FAILED
+
+    async with connect(temp_db) as db:
+        log_text = await wf._build_log_text(db, job)
+
+    assert "Status: failed" in log_text
+    assert "Error:" in log_text
+    assert "fatal: disk full" in log_text
+
+
+@pytest.mark.asyncio
 async def test_ssh_factory_receives_target_port_from_job(temp_db):
     """Job.target_port가 ssh_factory에 그대로 전달되는지 검증.
     외부 포트포워딩 환경(110.15.83.84:22022 → 내부 22)에서 핵심."""
@@ -131,10 +194,12 @@ async def test_happy_path_hybrid_with_ai(temp_db):
     app_cmd = next(c for c in fake.executed if "deploy-applications.sh" in c)
     assert "w-ai" in app_cmd  # hybrid-with-ai의 분기 인자
 
-    # Notifier 이벤트
+    # Notifier 이벤트: job_started 시작 → job_finished + upload_log_file(마지막)
     names = [e[0] for e in notifier.events]
     assert names[0] == "job_started"
-    assert names[-1] == "job_finished"
+    assert names[-1] == "upload_log_file"
+    assert names[-2] == "job_finished"
+    assert notifier.events[-2][1]["status"] == "succeeded"
     assert notifier.events[-1][1]["status"] == "succeeded"
 
 
@@ -203,9 +268,10 @@ async def test_ssh_connect_failure(temp_db):
     assert result.status == JobStatus.FAILED
     assert "simulated connect failure" in result.error_message
     # SSH connect 실패 시점에 종료 — git/script 명령은 등록 안 됐어도 실행 시도 없음
-    last = notifier.events[-1]
-    assert last[0] == "job_finished"
-    assert last[1]["status"] == "failed"
+    # 마지막은 upload_log_file, 그 직전이 job_finished
+    assert notifier.events[-1][0] == "upload_log_file"
+    assert notifier.events[-2][0] == "job_finished"
+    assert notifier.events[-2][1]["status"] == "failed"
 
 
 @pytest.mark.asyncio
@@ -238,6 +304,7 @@ async def test_install_path_persists_slack_thread_ts_to_db(temp_db):
         async def step_log(self, job, step, line): pass
         async def step_finished(self, job, step, *, success, duration_s): pass
         async def job_finished(self, job, *, error): pass
+        async def upload_log_file(self, job, log_text): pass
 
     fake = FakeSSHClient()
     _enqueue_happy_path_hybrid(fake)

@@ -8,11 +8,12 @@ from autodeploy.ssh import StreamLine
 
 
 class MockSlackClient:
-    """slack-sdk AsyncWebClient 대용. 모든 chat.* 호출을 기록."""
+    """slack-sdk AsyncWebClient 대용. 모든 chat.*/files_upload_v2 호출을 기록."""
 
     def __init__(self) -> None:
         self.posted: list[dict] = []
         self.updated: list[dict] = []
+        self.uploaded: list[dict] = []
         self._counter = 0
 
     def _next_ts(self) -> str:
@@ -26,6 +27,10 @@ class MockSlackClient:
 
     async def chat_update(self, **kwargs) -> dict:
         self.updated.append(kwargs)
+        return {"ok": True}
+
+    async def files_upload_v2(self, **kwargs) -> dict:
+        self.uploaded.append(kwargs)
         return {"ok": True}
 
 
@@ -79,49 +84,42 @@ async def test_step_started_posts_to_thread():
 
 
 @pytest.mark.asyncio
-async def test_step_log_does_not_post_until_flush_interval():
+async def test_step_log_stdout_does_not_post():
+    """stdout은 스레드에 게시 안 됨 (전체 로그는 종료 시 파일로)."""
     client = MockSlackClient()
-    n = SlackNotifier(client, "C99", stdout_flush_interval=60.0)  # 사실상 안 됨
+    n = SlackNotifier(client, "C99")
     job = _job()
 
     await n.job_started(job)
     await n.step_started(job, Step.INFRA_INSTALL)
     posted_before = len(client.posted)
 
-    for i in range(20):
+    for i in range(50):
         await n.step_log(job, Step.INFRA_INSTALL, StreamLine("stdout", f"line {i}"))
 
-    # 60초 안 지났으니 preview 게시 안 됨
-    assert len(client.posted) == posted_before
-    # 라인은 내부 버퍼에 누적
-    assert len(n._stdout_buf[(42, Step.INFRA_INSTALL)]) == 20
+    assert len(client.posted) == posted_before  # stdout은 게시 안 됨
+    assert client.updated == []  # 미리보기 갱신도 없음
 
 
 @pytest.mark.asyncio
-async def test_step_log_flushes_when_interval_zero():
+async def test_step_log_stderr_buffered_for_failure_tail():
+    """stderr는 누적 — 실패 시 요약에 tail로 노출."""
     client = MockSlackClient()
-    n = SlackNotifier(client, "C99", stdout_flush_interval=0.0)  # 매번 flush
-    job = _job()
+    n = SlackNotifier(client, "C99")
+    job = _job(status=JobStatus.RUNNING)
 
     await n.job_started(job)
-    await n.step_started(job, Step.INFRA_INSTALL)
+    await n.step_started(job, Step.APP_INSTALL)
+    await n.step_log(job, Step.APP_INSTALL, StreamLine("stderr", "container died"))
+    await n.step_log(job, Step.APP_INSTALL, StreamLine("stdout", "ignored"))
 
-    await n.step_log(job, Step.INFRA_INSTALL, StreamLine("stdout", "first"))
-    posted_after_first = len(client.posted)
-
-    await n.step_log(job, Step.INFRA_INSTALL, StreamLine("stdout", "second"))
-
-    # 첫 라인: chat_postMessage로 preview 생성
-    # 두 번째: chat_update로 갱신
-    assert posted_after_first == len(client.posted) - 0  # 추가 post 없음
-    assert any("실시간 로그" in str(u.get("blocks", "")) for u in client.updated) or \
-        any("실시간 로그" in p.get("text", "") for p in client.posted)
+    assert n._stderr_buf[(42, Step.APP_INSTALL)] == ["container died"]
 
 
 @pytest.mark.asyncio
-async def test_step_finished_force_flushes_then_posts_summary():
+async def test_step_finished_posts_summary_message():
     client = MockSlackClient()
-    n = SlackNotifier(client, "C99", stdout_flush_interval=60.0)
+    n = SlackNotifier(client, "C99")
     job = _job()
 
     await n.job_started(job)
@@ -131,11 +129,10 @@ async def test_step_finished_force_flushes_then_posts_summary():
     posted_before = len(client.posted)
     await n.step_finished(job, Step.INFRA_INSTALL, success=True, duration_s=98)
 
-    # 강제 flush + step_finished 메시지 = 최소 2건 추가
+    # 5초 미리보기 제거 후엔 step_finished 메시지 한 건만 추가
     new_msgs = client.posted[posted_before:]
-    assert len(new_msgs) >= 2
-    finish_msg = new_msgs[-1]
-    assert "완료" in finish_msg["text"]
+    assert len(new_msgs) == 1
+    assert "완료" in new_msgs[0]["text"]
 
 
 @pytest.mark.asyncio
@@ -194,14 +191,71 @@ async def test_state_cleaned_up_after_job_finished():
 
     await n.job_started(job)
     await n.step_started(job, Step.GIT_PULL)
-    await n.step_log(job, Step.GIT_PULL, StreamLine("stdout", "x"))
+    await n.step_log(job, Step.GIT_PULL, StreamLine("stderr", "warn"))
 
     job.status = JobStatus.SUCCEEDED
     await n.job_finished(job, error=None)
 
     assert job.id not in n._parent_ts
     assert job.id not in n._thread_ts
-    assert not any(k[0] == job.id for k in n._stdout_buf)
+    assert not any(k[0] == job.id for k in n._stderr_buf)
+
+
+# ---------- upload_log_file ----------
+
+@pytest.mark.asyncio
+async def test_upload_log_file_uses_job_thread_and_status_filename():
+    """종료 후 _cleanup으로 내부 dict가 비어도 job.slack_thread_ts로 첨부 가능해야 함."""
+    client = MockSlackClient()
+    n = SlackNotifier(client, "C99")
+    job = _job(status=JobStatus.SUCCEEDED, slack_thread_ts="1700000000.999999")
+
+    await n.upload_log_file(job, "full log body")
+
+    assert len(client.uploaded) == 1
+    up = client.uploaded[0]
+    assert up["channel"] == "C99"
+    assert up["thread_ts"] == "1700000000.999999"
+    assert up["content"] == "full log body"
+    assert "install-42" in up["filename"]
+    assert "HOSP01" in up["filename"]
+    assert "succeeded" in up["filename"]
+
+
+@pytest.mark.asyncio
+async def test_upload_log_file_failed_status_in_filename():
+    client = MockSlackClient()
+    n = SlackNotifier(client, "C99")
+    job = _job(status=JobStatus.FAILED, slack_thread_ts="ts")
+    await n.upload_log_file(job, "errors here")
+    assert "failed" in client.uploaded[0]["filename"]
+
+
+@pytest.mark.asyncio
+async def test_upload_log_file_noop_without_thread_or_text():
+    client = MockSlackClient()
+    n = SlackNotifier(client, "C99")
+    job_no_thread = _job(status=JobStatus.SUCCEEDED, slack_thread_ts=None)
+    await n.upload_log_file(job_no_thread, "body")
+    job_empty = _job(status=JobStatus.SUCCEEDED, slack_thread_ts="ts")
+    await n.upload_log_file(job_empty, "")
+    assert client.uploaded == []
+
+
+@pytest.mark.asyncio
+async def test_upload_log_file_swallows_exceptions(capsys):
+    """업로드 실패해도 작업 결과를 망치지 않음. stderr에 진단 한 줄."""
+
+    class BrokenClient(MockSlackClient):
+        async def files_upload_v2(self, **kwargs):
+            raise RuntimeError("invalid_auth")
+
+    n = SlackNotifier(BrokenClient(), "C99")
+    job = _job(status=JobStatus.FAILED, slack_thread_ts="ts")
+    await n.upload_log_file(job, "log")  # 예외 안 던짐
+    captured = capsys.readouterr()
+    assert "upload_log_file failed" in captured.err
+    assert "invalid_auth" in captured.err
 
 
 # ---------- retry: 기존 스레드 재사용 ----------

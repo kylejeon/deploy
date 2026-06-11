@@ -23,6 +23,7 @@ class Notifier(Protocol):
         duration_s: float,
     ) -> None: ...
     async def job_finished(self, job: Job, *, error: BaseException | None) -> None: ...
+    async def upload_log_file(self, job: Job, log_text: str) -> None: ...
 
 
 class NullNotifier:
@@ -33,6 +34,7 @@ class NullNotifier:
     async def step_log(self, job: Job, step: Step, line: StreamLine) -> None: pass
     async def step_finished(self, job: Job, step: Step, *, success: bool, duration_s: float) -> None: pass
     async def job_finished(self, job: Job, *, error: BaseException | None) -> None: pass
+    async def upload_log_file(self, job: Job, log_text: str) -> None: pass
 
 
 class RecordingNotifier:
@@ -57,4 +59,10 @@ class RecordingNotifier:
         self.events.append((
             "job_finished",
             {"job_id": job.id, "status": job.status.value, "error": str(error) if error else None},
+        ))
+
+    async def upload_log_file(self, job: Job, log_text: str) -> None:
+        self.events.append((
+            "upload_log_file",
+            {"job_id": job.id, "status": job.status.value, "log_len": len(log_text)},
         ))
