@@ -26,6 +26,7 @@ _JOBS_NEW_COLUMNS: tuple[tuple[str, str], ...] = (
     ("clean_mode", "TEXT"),
     ("exit_code", "INTEGER"),
     ("cancel_by", "TEXT"),
+    ("slack_permalink", "TEXT"),
     ("target_port", "INTEGER DEFAULT 22"),
 )
 
@@ -33,7 +34,7 @@ _JOBS_NEW_COLUMNS: tuple[tuple[str, str], ...] = (
 _JOBS_CARRY_COLUMNS: tuple[str, ...] = (
     "id", "kind", "status", "env", "ref", "ref_type", "clean_mode",
     "exit_code", "cancel_by", "current_step", "started_by", "slack_channel",
-    "slack_thread_ts", "admin_web_url", "script_commit_sha", "error_message",
+    "slack_thread_ts", "slack_permalink", "admin_web_url", "script_commit_sha", "error_message",
     "target_ip", "target_port", "deployment_type", "hospital_code",
     "hospital_name", "hospital_address", "created_at", "started_at", "finished_at",
 )
@@ -134,6 +135,7 @@ async def _rebuild_jobs(db: aiosqlite.Connection) -> None:
           started_by        TEXT NOT NULL,
           slack_channel     TEXT,
           slack_thread_ts   TEXT,
+          slack_permalink   TEXT,
           admin_web_url     TEXT,
           script_commit_sha TEXT,
           error_message     TEXT,

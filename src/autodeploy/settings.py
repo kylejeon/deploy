@@ -58,6 +58,7 @@ class WebConfig:
     session_ttl_days: int
     secure_cookie: bool
     trust_forwarded: bool
+    public_url: str
 
 
 def _flag(env: Mapping[str, str], key: str, default: bool = False) -> bool:
@@ -88,13 +89,21 @@ def resolve_web_config(env: Mapping[str, str] | None = None) -> WebConfig:
     if ttl < 1:
         raise SettingsError("SESSION_TTL_DAYS 는 1 이상이어야 합니다")
 
+    host = e.get("WEB_HOST", "").strip() or "127.0.0.1"
+    # Slack 메시지에 넣을 콘솔 주소. 0.0.0.0 은 주소가 아니라 "전부"라는 뜻이라
+    # 링크로 쓸 수 없다 — 그 경우엔 명시적으로 WEB_PUBLIC_URL 을 받아야 한다.
+    public = e.get("WEB_PUBLIC_URL", "").strip().rstrip("/")
+    if not public and host not in ("0.0.0.0", "::"):
+        public = f"http://{host}:{port}"
+
     return WebConfig(
         enabled=_flag(e, "WEB_ENABLED"),
-        host=e.get("WEB_HOST", "").strip() or "127.0.0.1",
+        host=host,
         port=port,
         session_ttl_days=ttl,
         secure_cookie=_flag(e, "WEB_SECURE_COOKIE"),
         trust_forwarded=_flag(e, "WEB_TRUST_FORWARDED"),
+        public_url=public,
     )
 
 
@@ -160,6 +169,7 @@ class Settings:
         session_ttl_days=14,
         secure_cookie=False,
         trust_forwarded=False,
+        public_url="http://127.0.0.1:8080",
     )
 
 

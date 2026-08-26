@@ -1,159 +1,276 @@
-# AutoDeploy 운영 가이드
+# AutoDeploy 웹 콘솔 — 운영 가이드
 
-맥미니(`192.168.100.195`)에 AutoDeploy를 설치하고 24/7로 띄우는 절차.
+맥미니(컨트롤러)에서 병원 서버를 설치·검증·초기화하는 웹 콘솔의 설치와 운영.
+설치 자체는 `~/hub-provisioning` 의 hubctl/Ansible 이 수행하고, 콘솔은 그것을
+띄우고 진행상황을 보여주는 껍데기다. **타겟 PC 에서 직접 뭔가를 실행하지 않는다.**
 
-## 1. 사전 준비
+- 개발지시서: `docs/specs/dev-spec-web-console-20260826.md`
+- 비개발자용 수동 설치 절차: `runbook.md`
 
-### 맥미니 (오케스트레이터)
-- macOS 맥미니에 인터넷 + 사내망 연결
-- Python 3.11+ 설치 (3.14 검증)
-- git 설치 (이 레포 clone용)
-- Slack 앱 발급 (Bot Token, App-Level Token, Channel ID, Allowed User IDs)
-- Bitbucket App Password (gateway-infra-next 접근용)
-- 병원용 타겟 서버 자격증명 (`connecteve` 패스워드)
+---
 
-### 타겟 서버 (Ubuntu 24.04)
+## 1. 준비
 
-**필수 사전 설치**:
-- `openssh-server` — 봇의 SSH 접속을 위함. 설치 후 `PasswordAuthentication yes` 확인
-- `connecteve` 계정 (sudo 권한 필요. NOPASSWD가 아니어도 OK — 봇이 .env의 `SSH_PASSWORD`를 stdin으로 자동 주입)
+### 1-1. 필요한 것
 
-```bash
-sudo apt update && sudo apt install -y openssh-server
-sudo systemctl enable --now ssh
+| | |
+|---|---|
+| 컨트롤러 | 맥미니 (이 저장소 + `~/hub-provisioning`) |
+| 파이썬 | 3.14 |
+| Ansible | `ansible-playbook` 이 PATH 에 있어야 함 |
+| 자격 | Vault · AWS(ECR) · Bitbucket — `hubctl preflight` 로 확인 |
+| 타겟 | Ubuntu, `openssh-server` 동작, sudo 가능한 계정 |
+
+### 1-2. `.env`
+
+`.env.example` 를 복사해 채운다. 웹 콘솔이 쓰는 항목은 아래.
+
+```
+HUBCTL_REPO_PATH=~/hub-provisioning
+BECOME_PASSWORD=            # 비우면 SSH_PASSWORD 사용 (connecteve 계정 공통)
+
+WEB_ENABLED=true
+WEB_HOST=127.0.0.1          # 사내 LAN 에 열려면 0.0.0.0
+WEB_PORT=8080
+SESSION_TTL_DAYS=14
+WEB_SECURE_COOKIE=false     # HTTPS 프록시 뒤에 둘 때만 true
+WEB_TRUST_FORWARDED=false   # 신뢰하는 프록시 뒤에 둘 때만 true
+WEB_PUBLIC_URL=             # Slack 메시지에 넣을 콘솔 주소
 ```
 
-**자동 설치되는 도구** (사전 설치 불필요, 봇이 알아서 처리):
-- **apt universe 저장소** — 매 작업 시작 시 `add-apt-repository -y universe` 실행 (멱등). awscli 등 universe-only 패키지를 setup-*.sh가 깔 수 있도록 미리 활성화
-- `git` — git_pull 단계 진입 시 누락 감지하면 `sudo apt-get install -y git` 자동 실행
-- `kubectl`, `docker`, 컨테이너 런타임 등 — 인프라 스크립트(`setup-*.sh`)가 책임
+`.env` 는 `chmod 600` 으로 두고 저장소에 커밋하지 않는다.
 
-미리 깔아두는 게 마음 편하면:
+**`WEB_HOST` 기본값이 `127.0.0.1` 인 이유** — 이 콘솔은 타겟 서버에 sudo 로
+임의 변경을 가할 수 있다. 노출 범위는 실수가 아니라 선택이어야 한다.
+
+### 1-3. 환경변수 상속 (중요)
+
+hubctl 은 `VAULT_ADDR` · `VAULT_TOKEN` · `HUB_DEPLOY_GIT_TOKEN` · AWS 자격을
+셸 환경에서 읽는다. 그런데 **launchd 로 뜨는 데몬은 `~/.zshrc` 를 읽지 않는다.**
+그래서 콘솔은 hubctl 을 `zsh -lc "<명령>"` 으로 감싸 실행한다 —
+사람이 터미널에서 실행할 때와 같은 환경이 되도록.
+
+즉 **터미널에서 `hubctl preflight` 가 통과하면 콘솔에서도 통과한다.** 반대로
+터미널에서 `vault login` 을 새로 해야 하는 상태면 콘솔도 똑같이 실패한다.
+
+---
+
+## 2. 계정
+
+웹 화면에는 계정 관리가 없다. 터미널에서만 만든다.
+
 ```bash
-sudo apt install -y git
+autodeploy adduser yonghyuk     # 비밀번호는 프롬프트로만 입력
+autodeploy passwd  yonghyuk     # 변경 시 그 사용자의 세션이 전부 끊긴다
+autodeploy deluser yonghyuk
+autodeploy users
 ```
 
-## 2. 설치
+- 비밀번호는 인자로 받지 않는다 — 셸 히스토리와 `ps` 목록에 남지 않게 하기 위함.
+- 저장은 scrypt 해시(n=2^14)뿐이다. 평문도, 복호화 가능한 형태도 남기지 않는다.
+- 로그인 실패가 (IP, 아이디) 조합으로 5회 쌓이면 60초 잠긴다.
+
+---
+
+## 3. 기동
+
+### 3-1. 손으로 띄우기 (확인용)
 
 ```bash
-# 1) 코드 동기화 (claude 브랜치)
-cd ~
-git clone https://github.com/kylejeon/deploy.git deploy
-cd deploy
-git checkout claude
-
-# 2) 가상환경 + 의존성
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -e ".[dev]"
-
-# 3) .env 작성 (시크릿은 채팅 거치지 말고 터미널에서 직접)
-cp .env.example .env
-chmod 600 .env
-nano .env   # 또는 vim/code 등
-```
-
-`.env` 채울 항목 (모두 운영 토큰; 절대 git 커밋 금지):
-- `SLACK_BOT_TOKEN=xoxb-...`
-- `SLACK_APP_TOKEN=xapp-...`
-- `SLACK_CHANNEL_ID=C...`
-- `AUTODEPLOY_ALLOWED_USERS=U01...,U02...`
-- `SSH_PASSWORD=...` (`connecteve`)
-- `BITBUCKET_APP_PASSWORD=ATBB...`
-
-```bash
-# 4) 검증 — 단위 테스트가 모두 통과해야 함
-pytest
-
-# 5) 한 번 직접 실행해서 connect 확인 (Ctrl+C로 종료)
+cd ~/deploy
 python -m autodeploy
 ```
 
-`Socket Mode 연결 시작` 로그가 뜨고 Slack 채널에 `@autodeploy help` 명령이 응답하면 OK.
+로그에 `웹 콘솔: http://127.0.0.1:8080` 이 뜨면 브라우저로 접속한다.
 
-## 3. launchd 등록 (24/7)
+### 3-2. launchd (상시)
+
+기존 `com.connecteve.autodeploy` 데몬이 웹 콘솔을 함께 띄운다.
+**별도 프로세스가 아니다** — 별도로 띄우면 같은 SQLite 파일을 두 프로세스가
+쓰게 되어 잠금이 엉킨다.
 
 ```bash
-# 1) plist 복사 + 경로 치환
-cp deploy/launchd/com.connecteve.autodeploy.plist ~/Library/LaunchAgents/
-
-# 2) __USER__, __INSTALL_DIR__를 실제 값으로 치환
-sed -i '' "s|__USER__|$USER|g; s|__INSTALL_DIR__|$HOME/deploy|g" \
-    ~/Library/LaunchAgents/com.connecteve.autodeploy.plist
-
-# 3) 로그 디렉토리 미리 생성
-mkdir -p ~/Library/Logs/autodeploy
-
-# 4) 등록 + 시작
-launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.connecteve.autodeploy.plist
-launchctl print gui/$(id -u)/com.connecteve.autodeploy
+launchctl unload ~/Library/LaunchAgents/com.connecteve.autodeploy.plist
+launchctl load   ~/Library/LaunchAgents/com.connecteve.autodeploy.plist
 ```
 
-부팅 시 자동 시작 (`RunAtLoad=true`), 실패 시 자동 재시작 (`KeepAlive=true`, 10초 백오프).
+웹 기동에 실패해도 Slack 봇은 계속 돈다. 실패 이유는 데몬 로그에 남는다.
 
-## 4. 운영 명령
+### 3-3. 사내 LAN 에 열기
 
-| 작업 | 명령 |
-|------|------|
-| 상태 확인 | `launchctl print gui/$(id -u)/com.connecteve.autodeploy` |
-| 재시작 | `launchctl kickstart -k gui/$(id -u)/com.connecteve.autodeploy` |
-| 중지 | `launchctl bootout gui/$(id -u)/com.connecteve.autodeploy` |
-| 로그 (stdout) | `tail -f ~/Library/Logs/autodeploy/stdout.log` |
-| 로그 (stderr) | `tail -f ~/Library/Logs/autodeploy/stderr.log` |
-| DB 직접 조회 | `sqlite3 "$HOME/Library/Application Support/autodeploy/state.db"` |
+`WEB_HOST=0.0.0.0` 으로 바꾸고 데몬을 다시 띄운다. 이때 `WEB_PUBLIC_URL` 에
+접속 주소(`http://<맥미니IP>:8080`)를 적어야 Slack 메시지의 링크가 맞는다.
 
-## 5. Slack 명령어 (운영자용 — `@autodeploy help`)
+### 3-4. 외부 고정 IP (아직 하지 말 것)
 
-```
-@autodeploy install <IP> --type=<TYPE> --code=<병원코드> [--name="..."] [--address="..."]
-@autodeploy status [job-id]
-@autodeploy list [N]
-@autodeploy cancel <job-id>     # v1.1 예정
-@autodeploy help
-```
+세션 쿠키가 평문으로 흐르면 계정이 그대로 털린다. 외부에 노출하려면
+**HTTPS 리버스 프록시를 반드시 앞에 둔다.** 그 다음
+`WEB_SECURE_COOKIE=true`, `WEB_TRUST_FORWARDED=true` 로 바꾼다.
 
-유효 TYPE (`config/deployment_types.yaml`):
-- `on-premise` — 병원 내부망 단독
-- `hybrid-with-ai` — Hybrid + inference 컨테이너 포함
-- `hybrid-without-ai` — Hybrid + AWS의 inference 사용
+`WEB_TRUST_FORWARDED` 는 프록시가 없을 때 켜면 안 된다 — 클라이언트가
+`X-Forwarded-For` 를 위조해 로그인 잠금을 그냥 우회한다.
 
-## 6. 문제 해결
+---
 
-### 봇이 시작 안 됨
-1. `tail -50 ~/Library/Logs/autodeploy/stderr.log`로 에러 확인
-2. `.env`의 필수 변수 누락 시 `[설정 오류] missing required env var: ...` 로그
-3. 토큰 만료/회수 시 Slack API `invalid_auth`
+## 4. 서버 등록 (설치 전 1회)
 
-### 멘션을 안 받음
-1. Slack 앱의 OAuth scopes 확인: `app_mentions:read`, `chat:write`, `chat:write.public`
-2. Event Subscriptions에 `app_mention` 구독 + Socket Mode 활성화 확인
-3. 봇을 채널에 초대했는지 확인 (`/invite @autodeploy`)
+1. **서버** 화면 → `＋ 서버 추가`
+   - 이름(`inventory_hostname`) · 주소 · 계정 · `site_name` · 프로파일
+   - 프로파일: `onprem` | `hybrid-with-ai` | `hybrid-without-ai`
+   - 저장하면 `~/hub-provisioning/inventory/sites.yml` 이 갱신되고
+     `sites.yml.bak-<타임스탬프>` 백업이 남는다 (최근 10개 유지).
+2. **SSH 키 등록** — 목록의 `키 등록` 버튼, 타겟 비밀번호 1회 입력
+   - 맥미니 공개키를 타겟 `~/.ssh/authorized_keys` 에 추가하고,
+     비밀번호를 끄고 키만으로 재접속해 확인한 뒤에야 등록으로 인정한다.
+   - 두 번 눌러도 줄이 늘지 않는다.
+   - 비밀번호는 저장하지 않는다. 3회 실패하면 60초 잠긴다.
 
-### 설치 작업이 SSH 단계에서 실패
-1. 맥미니에서 타겟 서버까지 ssh 직접 가능한지: `ssh connecteve@<IP>`
-2. `connecteve` 패스워드 변경 여부
-3. 타겟 서버 방화벽/포트 22 차단 여부
+**키를 등록하지 않으면 설치를 시작할 수 없다.** 30분 돌리고 나서 SSH 로
+죽는 것보다 시작 전에 걸러내는 편이 낫기 때문이다.
 
-### 설치 작업이 git_pull 단계에서 실패
-1. Bitbucket App Password 만료/회수 여부 → 재발급
-2. 타겟 서버에서 `bitbucket.org` 도달 가능한지
+### 주의
 
-### 설치 작업이 헬스체크에서 타임아웃
-1. 타겟 서버에서 `kubectl get pods -A` 직접 실행 — 어떤 pod이 비정상인지
-2. 이미지 풀 실패 (registry 접근) 가능성
-3. 설치 스크립트가 부분적으로 실패했을 수 있음 — DB의 `script_logs` 확인
+- **진행 중 작업이 있으면 서버 목록을 못 고친다** (409). 작업이 끝난 뒤에 한다.
+- **호스트명은 바꿀 수 없다.** 작업 이력과 키 등록 상태가 이름으로 묶여 있다.
+  바꿔야 하면 삭제 후 다시 추가한다.
+- 서버를 삭제하면 인벤토리에서만 빠진다. **서버 내용은 그대로다.**
+  내용을 지우려면 `서버 초기화` 를 먼저 실행한다.
 
-## 7. 자격증명 회전 (보안 정책)
+---
 
-`.env`의 토큰들은 정기 회전이 권장됩니다. 회전 절차:
+## 5. 작업
 
-1. 새 토큰 발급 (Slack/Bitbucket 관리 페이지)
-2. 터미널에서 `.env` 직접 편집 — **새 토큰을 채팅/이슈/메신저에 절대 붙여넣지 말 것**
-3. `launchctl kickstart -k gui/$(id -u)/com.connecteve.autodeploy`로 재시작
-4. 이전 토큰 폐기
+### 5-1. 설치
 
-## 8. 참고
+**새 설치** 화면에서 서버를 고르고(여러 대 가능) 환경·ref 를 정한 뒤 시작한다.
 
-- 명세: [docs/specs/dev-spec-autodeploy-mvp-20260521.md](specs/dev-spec-autodeploy-mvp-20260521.md), [design-spec](specs/design-spec-autodeploy-mvp-20260521.md)
-- 진행 기록: [progress.txt](../progress.txt)
-- CLAUDE.md 작업 규칙: [../CLAUDE.md](../CLAUDE.md)
+- 여러 대를 고르면 **작업 하나에 `-l a,b,c`** 로 넘어간다. ansible 이 병렬로
+  처리하며 기본 forks 는 5라, 6대 이상이면 5대씩 나눠 돈다.
+- 환경(`-e`)과 ref 는 **실행당 하나**라 고른 전부에 공통 적용된다.
+  서로 다른 환경이 필요하면 작업을 나눈다.
+- 한 대가 실패해도 나머지는 계속 간다. 끝나면 호스트별로 성공/실패가 갈려 보인다.
+
+### 5-2. 진행 보기
+
+작업 상세에서 실시간 로그가 흐른다.
+
+- **갱신 단위는 TASK 다.** 긴 TASK 중에는 수 분간 화면이 정적인 것이 정상이다.
+  그래서 "마지막 출력 N초 전" 을 함께 보여준다 — 60초부터 강조되고 120초부터
+  안내 문구가 붙는다. **멈춘 것이 아니다.**
+- 호스트 칩으로 특정 서버 줄만 볼 수 있다. 컨트롤러 공통 줄은 항상 함께 보인다.
+- 연결이 끊겨도 브라우저가 마지막 줄 번호로 다시 붙어 이어서 받는다.
+- 전체 로그는 `로그 내려받기` 로 받는다.
+
+### 5-3. 취소
+
+`작업 취소` 는 ansible 프로세스 그룹을 종료한다.
+**여러 대를 대상으로 하는 작업이면 전부 중단된다** — 프로세스가 하나라
+서버별로 나눠 멈출 수 없다. 이미 적용된 변경은 되돌아가지 않는다.
+
+### 5-4. 재시도
+
+실패한 작업 상세에 `실패한 N대만 재시도` 가 뜬다. Ansible 은 멱등해서
+이미 끝난 부분은 건너뛴다. 전체 재시도도 가능하다.
+
+### 5-5. patch
+
+patch 는 **두 단계**다.
+
+1. 번들 생성 (컨트롤러에서만 실행) → `승인 대기` 에서 멈춘다
+2. `적용 승인` 을 눌러야 타겟에 반영된다
+
+거부해도 번들은 컨트롤러에 남는다. **승인 없이 24시간이 지나면 자동 취소**되고,
+이때도 번들은 남는다.
+
+### 5-6. 초기화 (되돌릴 수 없음)
+
+| 방식 | 지움 | 남김 |
+|---|---|---|
+| `reset` | 클러스터 · 앱 · 데이터 전부 | bootstrap 산출물 → 재설치가 빠름 |
+| `reset` + `--keep-data` | 클러스터 · 앱 | `/data` · bootstrap 산출물 |
+| `uninstall` | reset 이 지우는 것 + bootstrap 산출물 전부 | OS 기본 구성만 |
+
+실행 전에 **호스트명을 직접 입력**해야 하고, 화면뿐 아니라 **서버에서도 다시
+대조**한다. 한 번에 한 대만 가능하다.
+
+### 5-7. 동시 실행
+
+**작업은 한 번에 하나만 돈다.** 두 번째부터는 `대기` 상태로 줄을 선다.
+
+서버 대수 제한이 아니다 — 여러 대 동시 설치는 "작업 하나에 `-l a,b,c`" 라
+이 제한에 걸리지 않는다. 제한되는 것은 **작업 개수**다.
+
+이유는 컨트롤러 쪽 자원이 겹치기 때문이다. `patch_apply` 가 `bundles/` 에서
+mtime 최신 번들을 자동 선택하므로 패치가 겹치면 남의 번들을 적용할 수 있고,
+`ecr_auth`·`secrets_fetch`·`gitops_publish` 등이 `delegate_to: localhost` 로 돈다.
+
+---
+
+## 6. Slack
+
+웹에서 시작한 작업도 기존 채널에 게시된다.
+
+- 시작 시 스레드 하나, 종료 시 그 스레드에 결과 한 줄 (호스트별 RECAP 포함)
+- 로그를 통째로 흘리지 않는다 — 채널이 잠기고, 어차피 웹이 실시간 로그를 보여준다
+- 작업 상세의 `Slack 스레드 열기` 는 Slack 이 알려준 정확한 링크를 쓴다
+- Slack 이 죽어도 설치는 계속된다
+
+기존 Slack 봇 명령(`install` 등)은 예전 경로 그대로 동작한다. 이번 작업에서
+건드리지 않았다.
+
+---
+
+## 7. 문제 해결
+
+| 증상 | 확인 |
+|---|---|
+| 로그인이 안 됨 | 5회 실패 후 60초 잠김. 계정은 `autodeploy users` 로 확인 |
+| `서버 목록을 바꿀 수 없습니다` | 진행 중 작업이 있다. 끝난 뒤에 수정 |
+| `다른 곳에서 sites.yml 이 수정됐습니다` | 누가 파일을 직접 고쳤다. 새로고침 후 다시 |
+| `SSH 키가 등록되지 않은 서버` | 서버 화면에서 `키 등록` 먼저 |
+| 키 등록 시 `Connection refused` | 타겟에 `openssh-server` 가 있는지, 포트가 열렸는지 |
+| preflight 빨강 | 터미널에서 `hubctl preflight` 실행 → Vault 토큰 만료면 재로그인 |
+| 로그가 멈춘 것 같음 | TASK 단위 갱신이라 정상일 수 있다. "마지막 출력 N초 전" 을 본다 |
+| 작업이 계속 `진행 중` | 데몬이 죽었을 수 있다. 재시작하면 기동 시 실패로 정리된다 |
+| `hub-provisioning 저장소를 찾을 수 없습니다` | `HUBCTL_REPO_PATH` 확인 |
+
+### 로그 위치
+
+- 데몬 로그: launchd 설정의 `StandardOutPath`
+- 작업 로그: DB(`script_logs`). 한 작업이 20만 줄을 넘으면 이후는
+  `<DB 디렉터리>/joblogs/job-<id>.log` 파일에만 쌓인다
+
+### 서버가 설치 도중 잠들면
+
+`sudo systemctl mask sleep.target suspend.target hibernate.target hybrid-sleep.target`
+을 타겟에서 한 번 실행해 둔다 (멱등). 설치 중 절전으로 들어가면 SSH 가 끊겨
+작업이 죽는다.
+
+---
+
+## 8. 백업 / 복구
+
+| 대상 | 위치 | 비고 |
+|---|---|---|
+| 작업 이력 · 계정 · 세션 | `AUTODEPLOY_DB_PATH` (기본 `~/Library/Application Support/autodeploy/state.db`) | WAL 모드라 `-wal`·`-shm` 파일도 함께 복사 |
+| 인벤토리 | `~/hub-provisioning/inventory/sites.yml` | 저장할 때마다 `.bak-*` 자동 생성 (10개 유지) |
+| 스키마 변경 | — | 파괴적 마이그레이션 직전 `state.db.bak-<타임스탬프>` 자동 생성 |
+
+DB 를 지우면 **작업 이력과 계정이 사라진다.** 서버 자체와 `sites.yml` 은 무관하다.
+계정은 `autodeploy adduser` 로 다시 만들면 되고, 키 등록 상태(`server_meta`)는
+사라지므로 서버별로 `키 등록` 을 한 번씩 다시 눌러야 한다 (타겟의
+`authorized_keys` 는 그대로라 즉시 통과한다).
+
+---
+
+## 9. 보안 요약
+
+- 세션 쿠키는 `HttpOnly` · `SameSite=Lax`. DB 에는 토큰의 sha256 만 저장한다.
+- 변경 요청(POST/PUT/DELETE)에는 CSRF 토큰이 필요하다.
+- 비밀은 `.env` 와 프로세스 환경에만 있다. `VAULT_TOKEN` · become 비밀번호 ·
+  Bitbucket 토큰은 DB 적재 **전에** 로그에서 `***` 로 지운다.
+- become 비밀번호는 0600 임시 파일로 넘기고 작업 종료 즉시 지운다.
+  (파일에 실행 권한이 있으면 ansible 이 스크립트로 실행해버리므로 0600 은
+  기밀성뿐 아니라 정확성 요건이다.)
+- 모든 작업 생성·취소·승인은 사용자명과 함께 `jobs.started_by` / `job_events` 에 남는다.
+- 이 콘솔은 타겟에 sudo 로 임의 변경을 가할 수 있다. **계정은 최소 인원에게만.**

@@ -21,6 +21,7 @@ CREATE TABLE IF NOT EXISTS jobs (
   started_by        TEXT NOT NULL, -- 'web:<username>' | 'slack:@<user>'
   slack_channel     TEXT,
   slack_thread_ts   TEXT,
+  slack_permalink   TEXT,       -- chat.getPermalink 결과. 스레드 딥링크를 추측하지 않기 위함
   admin_web_url     TEXT,
   script_commit_sha TEXT,
   error_message     TEXT,

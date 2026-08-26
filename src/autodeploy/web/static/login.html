@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AutoDeploy 로그인</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+KR:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
+<link rel="stylesheet" href="/static/console.css">
+</head>
+<body>
+<div class="login">
+  <form class="login__card stack gap-20" id="loginForm">
+    <div class="brand">
+      <div class="brand__mark" aria-hidden="true">AD</div>
+      <div><div class="brand__name">AutoDeploy</div><div class="brand__sub">설치 콘솔</div></div>
+    </div>
+    <div class="stack gap-12">
+      <div class="field"><label for="u">아이디</label>
+        <input class="input mono" id="u" autocomplete="username" autocapitalize="none" spellcheck="false" required></div>
+      <div class="field"><label for="p">비밀번호</label>
+        <input class="input mono" id="p" type="password" autocomplete="current-password" required></div>
+    </div>
+    <div class="alert" id="err" hidden><span class="alert__g" aria-hidden="true">✕</span>
+      <p class="note" style="color:var(--ink-2)" id="errText"></p></div>
+    <button class="btn btn--primary btn--block" type="submit" id="submit">로그인</button>
+    <p class="note">계정은 맥미니 터미널에서 발급합니다 — <span class="mono">autodeploy adduser &lt;아이디&gt;</span>.
+      비밀번호는 scrypt 해시로만 저장됩니다.</p>
+  </form>
+</div>
+<script>
+"use strict";
+const form = document.getElementById("loginForm");
+const errBox = document.getElementById("err");
+const errText = document.getElementById("errText");
+const submit = document.getElementById("submit");
+
+function showError(message) {
+  errText.textContent = message;
+  errBox.hidden = false;
+}
+
+form.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  errBox.hidden = true;
+  submit.disabled = true;
+  submit.textContent = "확인 중…";
+  try {
+    const response = await fetch("/api/login", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      credentials: "same-origin",
+      body: JSON.stringify({
+        username: document.getElementById("u").value,
+        password: document.getElementById("p").value,
+      }),
+    });
+    const data = await response.json().catch(() => ({}));
+    if (response.ok) {
+      location.href = "/";
+      return;
+    }
+    showError(data.error || `로그인에 실패했습니다 (${response.status})`);
+    document.getElementById("p").value = "";
+    document.getElementById("p").focus();
+  } catch (e) {
+    showError("서버에 연결할 수 없습니다. 데몬이 떠 있는지 확인하세요.");
+  } finally {
+    submit.disabled = false;
+    submit.textContent = "로그인";
+  }
+});
+document.getElementById("u").focus();
+</script>
+</body>
+</html>

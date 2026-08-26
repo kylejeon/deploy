@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from contextlib import suppress
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 
@@ -24,6 +25,7 @@ from autodeploy.web.auth import (
     SESSION_COOKIE,
     LoginThrottle,
     csrf_matches,
+    purge_expired_sessions,
     resolve_session,
 )
 
@@ -33,9 +35,15 @@ Handler = Callable[[web.Request], Awaitable[web.StreamResponse]]
 
 # 세션 없이 접근할 수 있는 경로. 그 외 전부 인증이 필요하다.
 PUBLIC_PATHS = frozenset({"/login", "/api/login", "/healthz"})
+# 로그인 화면도 스타일시트를 받아야 한다. 정적 자산에는 비밀이 없다.
+PUBLIC_PREFIX = "/static/"
 
 # 상태를 바꾸지 않는 메서드는 CSRF 검사 대상이 아니다.
 SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
+
+# 승인 없이 방치된 patch 를 정리하는 주기와 기준 (§9).
+HOUSEKEEPING_INTERVAL = 3600.0
+AWAITING_TTL_HOURS = 24
 
 
 @web.middleware
@@ -53,7 +61,11 @@ async def session_middleware(request: web.Request, handler: Handler) -> web.Stre
 @web.middleware
 async def require_auth_middleware(request: web.Request, handler: Handler) -> web.StreamResponse:
     """미인증이면 API 는 401, 페이지는 /login 리다이렉트 (§F1)."""
-    if request.path in PUBLIC_PATHS or request.get("session") is not None:
+    if (
+        request.path in PUBLIC_PATHS
+        or request.path.startswith(PUBLIC_PREFIX)
+        or request.get("session") is not None
+    ):
         return await handler(request)
     if request.path.startswith("/api/"):
         return api.json_error(401, "로그인이 필요합니다")
@@ -88,6 +100,8 @@ def create_app(
     hubctl_shell: tuple[str, ...] = ("zsh", "-lc"),
     become_password: str = "",
     log_dir: str | Path | None = None,
+    notifier=None,
+    console_url: str | None = None,
     session_ttl_days: int = 14,
     secure_cookie: bool = False,
     trust_forwarded: bool = False,
@@ -134,16 +148,60 @@ def create_app(
         hubctl_env=app[keys.HUBCTL_ENV],
         hubctl_shell=app[keys.HUBCTL_SHELL],
         log_dir=log_dir,
+        notifier=notifier,
+        console_url=console_url,
     )
 
     app.on_startup.append(_start_queue)
+    app.on_startup.append(_start_housekeeping)
+    app.on_cleanup.append(_stop_housekeeping)
     app.on_cleanup.append(_stop_queue)
     app.add_routes(api.routes)
+    static_dir = app[keys.STATIC_DIR]
+    if static_dir.is_dir():
+        app.router.add_static("/static/", static_dir, name="static")
     return app
 
 
 async def _start_queue(app: web.Application) -> None:
     await app[keys.QUEUE].start()
+
+
+async def _start_housekeeping(app: web.Application) -> None:
+    app[keys.HOUSEKEEPER] = asyncio.create_task(_housekeeping(app), name="autodeploy-housekeeping")
+
+
+async def _stop_housekeeping(app: web.Application) -> None:
+    task = app.get(keys.HOUSEKEEPER)
+    if task is None:
+        return
+    task.cancel()
+    with suppress(asyncio.CancelledError):
+        await task
+
+
+async def _housekeeping(app: web.Application) -> None:
+    """방치된 승인 대기 정리 + 만료 세션 청소 (§9).
+
+    승인 없이 남은 patch 는 큐를 차지하지 않지만 목록에서 영원히 '대기'로 보인다.
+    24시간이면 사람이 잊은 것으로 본다 — 번들은 컨트롤러에 남으므로 되살릴 수 있다.
+    """
+    service = app[keys.JOB_SERVICE]
+    while True:
+        try:
+            expired = await service.expire_awaiting(older_than_hours=AWAITING_TTL_HOURS)
+            if expired:
+                log.info("승인 없이 %d시간 지난 patch %d건 취소: %s",
+                         AWAITING_TTL_HOURS, len(expired), expired)
+            async with connect(app[keys.DB_PATH]) as db:
+                removed = await purge_expired_sessions(db)
+            if removed:
+                log.info("만료 세션 %d건 정리", removed)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            log.exception("정리 작업 중 오류 — 다음 주기에 다시 시도합니다")
+        await asyncio.sleep(HOUSEKEEPING_INTERVAL)
 
 
 async def _stop_queue(app: web.Application) -> None:

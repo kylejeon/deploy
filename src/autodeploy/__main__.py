@@ -30,7 +30,7 @@ def _setup_logging(level: str) -> None:
     )
 
 
-async def _start_web(settings):
+async def _start_web(settings, web_client, notifier_enabled: bool):
     """웹 콘솔을 데몬과 같은 루프에 올린다.
 
     별도 프로세스로 띄우면 같은 SQLite 파일을 두 프로세스가 쓰게 되어 잠금이
@@ -39,6 +39,7 @@ async def _start_web(settings):
     from autodeploy.masking import SecretMasker
     from autodeploy.settings import HUBCTL_SECRET_ENV
     from autodeploy.web import create_app, run_web
+    from autodeploy.web.slack import WebJobNotifier
 
     import os
 
@@ -51,6 +52,9 @@ async def _start_web(settings):
                 + [settings.become_password, settings.ssh_password]
             ),
             become_password=settings.become_password,
+            notifier=WebJobNotifier(web_client, settings.slack_channel_id)
+            if notifier_enabled else None,
+            console_url=settings.web.public_url or None,
             session_ttl_days=settings.web.session_ttl_days,
             secure_cookie=settings.web.secure_cookie,
             trust_forwarded=settings.web.trust_forwarded,
@@ -156,7 +160,8 @@ async def _run() -> int:
 
     web_runner = None
     if settings.web.enabled:
-        web_runner = await _start_web(settings)
+        # 웹에서 시작한 작업도 Slack 스레드에 게시한다 (F7).
+        web_runner = await _start_web(settings, web_client, notifier_enabled=True)
     else:
         log.info("웹 콘솔 비활성 (WEB_ENABLED=false)")
 

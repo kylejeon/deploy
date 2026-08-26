@@ -10,7 +10,6 @@ import hmac
 import os
 import re
 from dataclasses import dataclass
-from datetime import datetime
 
 import aiosqlite
 
@@ -150,9 +149,10 @@ async def authenticate(
     if not verify_password(password, row["pw_salt"], row["pw_hash"]):
         return None
 
+    # CURRENT_TIMESTAMP(UTC) 로 통일한다. 여기만 datetime.now()(로컬)를 쓰면
+    # created_at·key_installed_at 과 형식·기준시가 달라져 화면에서 9시간 어긋난다.
     await db.execute(
-        "UPDATE users SET last_login_at=? WHERE id=?",
-        (datetime.now().isoformat(timespec="seconds"), row["id"]),
+        "UPDATE users SET last_login_at=CURRENT_TIMESTAMP WHERE id=?", (row["id"],)
     )
     await db.commit()
     return _row_to_user(row)

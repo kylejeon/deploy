@@ -1,0 +1,120 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AutoDeploy 설치 콘솔</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+KR:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
+<link rel="stylesheet" href="/static/console.css">
+</head>
+<body>
+
+<div class="app" id="app">
+  <aside class="rail">
+    <div class="brand">
+      <div class="brand__mark" aria-hidden="true">AD</div>
+      <div><div class="brand__name">AutoDeploy</div><div class="brand__sub">설치 콘솔</div></div>
+    </div>
+    <nav class="nav" id="nav">
+      <button class="nav__item" data-go="dash"><span class="nav__glyph" aria-hidden="true">▦</span>대시보드<span class="nav__badge" id="navBadge" hidden></span></button>
+      <button class="nav__item" data-go="srv"><span class="nav__glyph" aria-hidden="true">▤</span>서버</button>
+      <button class="nav__item" data-go="new"><span class="nav__glyph" aria-hidden="true">＋</span>새 설치</button>
+      <button class="nav__item nav__item--danger" data-go="clean"><span class="nav__glyph" aria-hidden="true">⌫</span>서버 초기화</button>
+    </nav>
+    <div class="rail__foot">
+      <div class="who">
+        <div class="who__av" aria-hidden="true" id="whoAv">·</div>
+        <div style="min-width:0"><div class="mono" style="font-size:12.5px; font-weight:500" id="whoName">…</div><span class="lbl" id="whoSub"></span></div>
+      </div>
+      <button class="btn btn--sm" id="logout">로그아웃</button>
+    </div>
+  </aside>
+
+  <main>
+    <section id="view-dash">
+      <div class="topline"><h1>설치 현황</h1><span class="chip" id="dashChip">hubctl</span></div>
+      <div class="stack gap-24">
+        <div id="pfSlot"></div>
+        <div id="liveSlot"></div>
+        <div class="tiles" id="tiles"></div>
+        <div class="card">
+          <div class="card__head"><h2>최근 작업</h2><span class="lbl push" id="recentCount"></span></div>
+          <div class="scroll-x"><table>
+            <thead><tr><th>작업</th><th>서버</th><th>환경 · ref</th><th>상태</th><th>단계</th><th>소요</th><th>시작</th><th></th></tr></thead>
+            <tbody id="rows"></tbody>
+          </table></div>
+        </div>
+      </div>
+    </section>
+
+    <section id="view-job" hidden></section>
+
+    <section id="view-srv" hidden>
+      <div class="topline"><h1>서버</h1><span class="chip">inventory/sites.yml</span>
+        <button class="btn btn--primary btn--sm push" id="addSrv">＋ 서버 추가</button></div>
+      <div class="stack gap-16">
+        <div id="srvNotice"></div>
+        <div class="card"><div class="scroll-x"><table>
+          <thead><tr><th>이름</th><th>주소</th><th>site_name</th><th>프로파일</th><th>SSH 키</th><th>메모</th><th></th></tr></thead>
+          <tbody id="srvRows"></tbody>
+        </table></div></div>
+        <div class="card">
+          <div class="card__head"><h2>sites.yml 미리보기</h2><span class="lbl push">파일에 기록된 내용</span></div>
+          <div class="card__body"><div class="yaml" id="yamlPrev"></div></div>
+        </div>
+      </div>
+    </section>
+
+    <section id="view-new" hidden>
+      <div class="topline"><h1>새 설치 시작</h1><span class="chip" id="newChip">hubctl install</span></div>
+      <form class="form-grid" id="newForm">
+        <div class="card"><div class="card__body stack gap-20">
+          <div class="field"><span class="lbl">대상 서버 <span class="dim" style="text-transform:none; letter-spacing:0">— 여러 대 선택 시 한 번에 설치 (hubctl -l a,b,c)</span></span>
+            <div class="pickall"><label class="row gap-8" style="gap:7px; cursor:pointer"><input type="checkbox" id="nAll"> <span style="font-size:13px">전체 선택</span></label>
+              <span class="count push" id="nCount">0대 선택</span></div>
+            <div class="servers" id="nSrvList"></div></div>
+          <div class="two">
+            <div class="field"><label for="f-env">환경 <span class="dim">— Vault 금고 (-e)</span></label>
+              <select class="input mono" id="f-env"><option value="dev" selected>dev (QA 기본)</option><option value="stage">stage</option><option value="prod">prod</option></select></div>
+            <div class="field"><label for="f-ref">hub-deploy ref <span class="dim">— 비우면 기본값</span></label>
+              <input class="input mono" id="f-ref" placeholder="main / feature/obs-stack / v1.2.0"></div>
+          </div>
+          <label class="type"><input type="checkbox" id="f-reftag">
+            <span><span class="type__n">태그로 지정</span><span class="type__d">ref가 브랜치가 아니라 태그일 때 체크 — <span class="mono">hub_deploy_ref_type=tag</span>가 함께 전달됩니다</span></span></label>
+        </div></div>
+        <aside class="preview">
+          <div><span class="lbl">실행 단계</span><div class="plan" id="plan" style="margin-top:9px"></div></div>
+          <div><span class="lbl">실행 명령</span><div class="cmd" id="cmdPrev" style="margin-top:9px"></div></div>
+          <div id="newWarn"></div>
+          <button class="btn btn--primary btn--block" type="submit" id="newSubmit">설치 시작</button>
+        </aside>
+      </form>
+    </section>
+
+    <section id="view-clean" hidden>
+      <div class="topline"><h1>서버 초기화</h1><span class="chip">ansible-playbook clean.yml</span></div>
+      <form class="form-grid" id="cleanForm">
+        <div class="card card--danger"><div class="card__body stack gap-20">
+          <div class="field"><span class="lbl">초기화할 서버</span><div class="servers" id="cSrvList"></div></div>
+          <div class="field"><span class="lbl">초기화 방식</span><div class="types" id="modeList"></div></div>
+        </div></div>
+        <aside class="preview">
+          <div><span class="lbl">실행 단계</span><div class="plan" id="cleanPlan" style="margin-top:9px"></div></div>
+          <div><span class="lbl">실행 명령</span><div class="cmd" id="cleanCmd" style="margin-top:9px"></div></div>
+          <div class="alert"><span class="alert__g" aria-hidden="true">✕</span>
+            <p class="note" style="color:var(--ink-2)">되돌릴 수 없습니다. 실행 전에 서버 이름을 직접 입력해 확인합니다.</p></div>
+          <button class="btn btn--danger btn--block" type="submit" id="cleanSubmit">초기화 실행</button>
+        </aside>
+      </form>
+    </section>
+  </main>
+</div>
+
+<div class="toast-wrap" id="toasts" aria-live="polite"></div>
+<div id="modalSlot"></div>
+
+<script src="/static/console.js"></script>
+</body>
+</html>

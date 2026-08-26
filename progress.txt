@@ -1197,3 +1197,59 @@ GET /jobs/{id}/stream(SSE) · POST/PUT/DELETE /api/servers · POST /servers/{hos
 - **Phase E**: 프로토타입 HTML 이식(`web/static/console.html`·`login.html`) +
   Slack 연동(F7: 웹에서 시작한 작업도 스레드 게시) + `docs/operations.md`
 - `expire_awaiting`(24시간 자동 취소)은 구현했지만 아직 주기 실행에 안 붙임 → Phase E
+
+## 2026-08-26 (Phase E 완료) — 화면 이식 + Slack 연동 + 운영 문서
+
+**716/716 테스트 통과** (696 → +20). 웹 콘솔 5단계 전부 완료.
+
+### 신규 파일
+- `src/autodeploy/web/static/console.css` — 프로토타입 CSS 그대로 (라이트/다크)
+- `src/autodeploy/web/static/login.html` — 로그인 화면
+- `src/autodeploy/web/static/console.html` — 콘솔 뼈대 (5개 뷰)
+- `src/autodeploy/web/static/console.js` — 목데이터 → 실제 API 로 전면 교체
+- `src/autodeploy/web/slack.py` — WebJobNotifier (F7)
+- `docs/operations.md` — 운영 가이드 9장
+- `tests/test_web_slack.py` (18)
+
+### 프로토타입과 달라진 것 (의도적)
+- **단계 목록을 실제 PLAY 이름 기준으로 축소**. 프로토타입엔 install 에
+  site_register·product_register 가 있었지만 그건 v1 Slack 워크플로 단계이고
+  hubctl 에는 없다. 화면에 없는 단계를 그리면 영원히 안 채워진다.
+  이제 단계 키는 서버의 ansible_log.STEP_MARKERS 와 1:1
+- 프로토타입의 "설치 상태" 컬럼 제거 — sites.yml/DB 어디에도 근거가 없다.
+  대신 메모 컬럼
+
+### Slack (F7) — 기존 SlackNotifier 를 쓰지 않은 이유
+그쪽은 v1 Job 데이터클래스·Step enum·messages.parent_message() 의 병원코드/
+타겟IP 형식에 묶여 있다. hubctl 작업을 끼우려면 가짜 v1 Job 을 만들어야 하고
+메시지도 엉뚱해진다. D1(Slack 코드 불변)을 지키려면 따로 만드는 게 맞다.
+- 시작 1회 + 종료 1회만 게시. 로그를 흘리면 채널이 잠기고 웹이 이미 보여준다
+- 스레드 링크는 **chat.getPermalink** 로 받는다 — 워크스페이스 도메인을
+  모르는 채로 URL 을 조립하면 엉뚱한 곳으로 보낸다.
+  이를 위해 jobs.slack_permalink 컬럼 추가 (ALTER, 파괴적 아님)
+- Slack 이 죽어도 설치는 계속된다 (모든 실패를 삼키고 로그만)
+
+### 고친 시각 버그
+- `accounts.last_login_at` 만 `datetime.now()`(로컬)를 썼다. 나머지는 전부
+  SQLite CURRENT_TIMESTAMP(UTC) → 화면에서 9시간 어긋난다. UTC 로 통일
+- 실시간 SSE 줄에 `created_at` 이 빠져 있었다 (DB 재생 경로에만 있었음).
+  브로드캐스트에도 넣어 두 경로의 모양을 맞춤
+- 콘솔은 UTC 문자열에 Z 를 붙여 파싱한다 (`toDate`)
+
+### 이제 실제로 도는 것
+- `expire_awaiting` 을 1시간 주기 housekeeping 에 연결 (§9, 24시간 자동 취소)
+- 만료 세션 청소도 같은 주기
+
+### 검증
+- `node --check console.js` 통과
+- **필드 계약 검증**: 콘솔이 읽는 필드 40여 개를 실서버 응답과 1:1 대조 → 전부 일치
+  (me / servers / job / job.hosts.recap / job.events / sse.line / sse.end / preflight)
+- 데몬 경로(`_start_web`)를 실제 .env 로 태워 기동·/healthz·로그인 화면·정상 종료 확인
+- 미인증 / → 302 /login, /login 200, /static/console.css 200(인증 없이),
+  로그인 후 / 200 + console.js 200
+- 실 `~/hub-provisioning` 무변경 확인 (md5 동일, git 0건)
+
+### 남은 것
+- 브라우저 실물 확인은 못 함(헤드리스 환경). 용혁님이 열어보고 피드백 주시면 반영
+- AC-14(라이트/다크 양쪽 가독성)는 CSS 가 프로토타입 그대로라 프로토타입에서 확인된 상태
+- .209 등록은 용혁님이 웹에서 직접 (요청대로 실 인벤토리 미변경)

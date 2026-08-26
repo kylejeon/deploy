@@ -253,7 +253,7 @@ async def delete_server_meta(db: aiosqlite.Connection, host: str) -> None:
 _JOB_COLUMNS = (
     "id", "kind", "status", "env", "ref", "ref_type", "clean_mode",
     "exit_code", "cancel_by", "current_step", "started_by",
-    "slack_channel", "slack_thread_ts", "error_message",
+    "slack_channel", "slack_thread_ts", "slack_permalink", "error_message",
     "created_at", "started_at", "finished_at",
 )
 

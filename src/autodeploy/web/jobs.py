@@ -19,6 +19,7 @@ import asyncio
 import logging
 from collections.abc import Sequence
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from pathlib import Path
 
 from autodeploy import repository
@@ -87,6 +88,8 @@ class JobService:
         hubctl_env: dict[str, str] | None = None,
         hubctl_shell: Sequence[str] = ("zsh", "-lc"),
         log_dir: str | Path | None = None,
+        notifier=None,
+        console_url: str | None = None,
     ) -> None:
         self.db_path = Path(db_path).expanduser()
         self.hubctl_repo = Path(hubctl_repo).expanduser()
@@ -102,6 +105,9 @@ class JobService:
             else self.db_path.parent / "joblogs"
         )
         self._runners: dict[int, HubctlRunner] = {}
+        # Slack 게시. 없으면 조용히 건너뛴다 (F7 은 선택 기능이다).
+        self._notifier = notifier
+        self._console_url = console_url
 
     # ── 생성 ────────────────────────────────────────────────────────
 
@@ -280,6 +286,7 @@ class JobService:
             await repository.add_event(db, job_id, step, "info", f"실행: {command}")
 
         self.broker.publish(job_id, {"type": "status", "status": "running", "step": step})
+        await self._notify_started(job_id, req, hosts, command)
 
         runner = HubctlRunner(
             self.hubctl_repo,
@@ -371,6 +378,7 @@ class JobService:
         if status is not JobStatus.AWAITING:
             self.broker.close_job(job_id)
         log.info("작업 %d 종료: %s (exit=%s)", job_id, status.value, exit_code)
+        await self._notify_finished(job_id, status, exit_code)
 
     async def _finalize_cancelled(self, job_id: int, *, by: str | None, reason: str) -> None:
         async with connect(self.db_path) as db:
@@ -391,6 +399,57 @@ class JobService:
 
     # ── 조회 헬퍼 ───────────────────────────────────────────────────
 
+    # ── Slack (F7) ──────────────────────────────────────────────────
+
+    async def _notify_started(self, job_id: int, req, hosts, command: str) -> None:
+        """작업당 한 번만 스레드를 만든다. patch 의 apply 는 같은 스레드에 이어 붙는다."""
+        if self._notifier is None:
+            return
+        async with connect(self.db_path) as db:
+            async with db.execute(
+                "SELECT slack_thread_ts FROM jobs WHERE id=?", (job_id,)
+            ) as cur:
+                row = await cur.fetchone()
+        if row is not None and row["slack_thread_ts"]:
+            return
+
+        thread_ts, permalink = await self._notifier.job_started(
+            job_id,
+            kind=req.kind.value,
+            hosts=tuple(hosts),
+            env=req.env,
+            ref=req.ref,
+            started_by=req.started_by,
+            command=command,
+        )
+        if not thread_ts:
+            return
+        async with connect(self.db_path) as db:
+            await db.execute(
+                "UPDATE jobs SET slack_thread_ts=?, slack_permalink=? WHERE id=?",
+                (thread_ts, permalink, job_id),
+            )
+            await db.commit()
+
+    async def _notify_finished(
+        self, job_id: int, status: JobStatus, exit_code: int | None
+    ) -> None:
+        if self._notifier is None or status is JobStatus.AWAITING:
+            return
+        async with connect(self.db_path) as db:
+            job = await repository.get_job_detail(db, job_id)
+        if job is None or not job.get("slack_thread_ts"):
+            return
+        await self._notifier.job_finished(
+            job_id,
+            thread_ts=job["slack_thread_ts"],
+            status=status.value,
+            exit_code=exit_code,
+            hosts=job["hosts"],
+            duration=_duration(job),
+            console_url=f"{self._console_url}#job/{job_id}" if self._console_url else None,
+        )
+
     async def _status(self, job_id: int) -> str | None:
         async with connect(self.db_path) as db:
             async with db.execute("SELECT status FROM jobs WHERE id=?", (job_id,)) as cur:
@@ -405,6 +464,21 @@ class JobService:
         if job["status"] != JobStatus.AWAITING.value:
             raise JobConflict(f"승인 대기 중인 작업이 아닙니다 (상태: {job['status']})")
         return job
+
+
+def _duration(job: dict) -> str:
+    """SQLite 의 UTC 문자열 두 개로 소요시간을 만든다."""
+    start, end = job.get("started_at"), job.get("finished_at")
+    if not start or not end:
+        return "–"
+    try:
+        began = datetime.fromisoformat(start)
+        ended = datetime.fromisoformat(end)
+    except ValueError:
+        return "–"
+    total = int((ended - began).total_seconds())
+    minutes, seconds = divmod(max(0, total), 60)
+    return f"{minutes}분 {seconds:02d}초" if minutes else f"{seconds}초"
 
 
 class _LogSink:
@@ -457,11 +531,15 @@ class _LogSink:
                     if self._db_lines >= MAX_DB_LINES:
                         self._write_overflow(p.text)
                         continue
+                    # created_at 을 직접 넣는다. CURRENT_TIMESTAMP 로 두면 그 값을
+                    # 알려고 다시 읽어야 하고, 안 보내면 실시간 줄만 시각이 비어
+                    # 재생 경로와 모양이 달라진다.
+                    stamp = datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S")
                     cur = await db.execute(
-                        "INSERT INTO script_logs (job_id, step, stream, line, host, kind)"
-                        " VALUES (?, ?, ?, ?, ?, ?)",
+                        "INSERT INTO script_logs (job_id, step, stream, line, host, kind, created_at)"
+                        " VALUES (?, ?, ?, ?, ?, ?, ?)",
                         (self._job_id, p.step or self._step, item.stream, p.text,
-                         p.host, p.kind.value),
+                         p.host, p.kind.value, stamp),
                     )
                     self._db_lines += 1
                     events.append({
@@ -472,6 +550,7 @@ class _LogSink:
                         "line": p.text,
                         "host": p.host,
                         "kind": p.kind.value,
+                        "created_at": stamp,
                     })
                     if self._db_lines == MAX_DB_LINES:
                         await repository.add_event(

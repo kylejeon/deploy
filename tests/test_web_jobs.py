@@ -16,7 +16,7 @@ from aiohttp.test_utils import TestClient, TestServer
 from autodeploy.accounts import create_user
 from autodeploy.db import connect
 from autodeploy.repository import mark_key_installed
-from autodeploy.web import create_app
+from autodeploy.web import create_app, keys
 from autodeploy.web.auth import CSRF_HEADER
 
 USERNAME = "yonghyuk"
@@ -567,3 +567,33 @@ async def test_stream_delivers_lines_while_the_job_runs(temp_db, tmp_path):
         await wait_finished(c, job_id)
     finally:
         await c.close()
+
+
+# ── 방치된 승인 대기 정리 (§9) ──────────────────────────────────────
+
+
+async def test_awaiting_expires_after_the_ttl(client, temp_db):
+    """승인 없이 남은 patch 는 24시간 뒤 취소된다. 번들은 컨트롤러에 남는다."""
+    job_id = (await (await post(client, "/api/jobs", {"kind": "patch", "ref": "v1"})).json())["id"]
+    assert (await wait_finished(client, job_id))["status"] == "awaiting"
+
+    async with connect(temp_db) as db:
+        await db.execute(
+            "UPDATE jobs SET created_at = datetime('now', '-25 hours') WHERE id=?", (job_id,)
+        )
+        await db.commit()
+
+    expired = await client.app[keys.JOB_SERVICE].expire_awaiting(older_than_hours=24)
+    assert expired == [job_id]
+
+    body = await (await client.get(f"/api/jobs/{job_id}")).json()
+    assert body["status"] == "cancelled"
+    assert any("번들은 유지" in e["message"] for e in body["events"])
+
+
+async def test_recent_awaiting_is_left_alone(client):
+    job_id = (await (await post(client, "/api/jobs", {"kind": "patch", "ref": "v1"})).json())["id"]
+    await wait_finished(client, job_id)
+
+    assert await client.app[keys.JOB_SERVICE].expire_awaiting(older_than_hours=24) == []
+    assert (await (await client.get(f"/api/jobs/{job_id}")).json())["status"] == "awaiting"
