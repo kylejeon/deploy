@@ -581,9 +581,30 @@ async function refreshJobMeta(ended) {
     state.job = await api(`/api/jobs/${state.jobId}`);
   } catch { return; }
   const lines = state.lines, lastId = state.lastLineId, lastAt = state.lastLineAt;
+
+  // renderJob 은 #view-job 을 통째로 다시 그린다 → #log 가 새로 만들어져 scrollTop 이
+  // 0 이 된다. 어디를 보고 있었는지 먼저 기억해 둔다.
+  const following = state.autoscroll;
+  const keep = $("#log")?.scrollTop ?? 0;
+
+  // 작업이 끝나면 따라갈 새 줄이 없다. 자동 스크롤을 끈다.
+  // renderJob 보다 먼저 꺼야 토글 버튼이 꺼진 상태로 그려진다.
+  if (ended) state.autoscroll = false;
+
   renderJob();
   state.lines = lines; state.lastLineId = lastId; state.lastLineAt = lastAt;
   paintLog();
+
+  // 따라가던 중이었으면 마지막까지 한 번 내려주고(끝을 보여준다), 아니면 보던 자리로.
+  // scroll-behavior:smooth 가 여기서 애니메이션을 걸면 위치 복원이 어색하므로 잠시 끈다.
+  const log = $("#log");
+  if (log) {
+    const smooth = log.style.scrollBehavior;
+    log.style.scrollBehavior = "auto";
+    log.scrollTop = following ? log.scrollHeight : keep;
+    log.style.scrollBehavior = smooth;
+  }
+
   if (ended) { closeStream(); state.tickTimer = setInterval(tickSince, 1000); }
 }
 
