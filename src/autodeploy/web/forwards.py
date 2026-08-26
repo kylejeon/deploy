@@ -25,12 +25,23 @@ log = logging.getLogger(__name__)
 
 # 설치가 타겟에 여는 traefik hostPort (roles/platform_component/vars/values/traefik.yml).
 # DICOM(1113)은 브라우저로 열 수 없는 원시 TCP 라 뺐다.
-ALLOWED_PORTS: dict[int, str] = {
+HTTP_PORTS: dict[int, str] = {
     8000: "프론트",
     8001: "Temporal",
     8002: "WebPACS",
     8003: "Grafana",
 }
+
+# 터미널. 중계는 위와 똑같지만 브라우저로 여는 것이 아니라 `ssh://` 링크로 넘긴다 —
+# macOS 가 ssh 스킴을 Terminal.app 에 물려두고 있어서, 누르면 맥북에 터미널 창이
+# 뜨고 `ssh -p <중계포트> <사용자>@<콘솔주소>` 가 그대로 실행된다.
+#
+# 이걸 여는 것과 콘솔 안에 셸을 다는 것은 다르다. 중계는 타겟의 sshd 까지 길만
+# 내주고, 인증은 여전히 맥북 ↔ 타겟 사이에서 일어난다. 콘솔에 로그인했다는 것만으로
+# 셸이 열리지는 않는다 — 타겟 자격증명이 따로 있어야 한다.
+SSH_PORT = 22
+
+ALLOWED_PORTS: dict[int, str] = {**HTTP_PORTS, SSH_PORT: "터미널"}
 
 # hybrid 프로파일은 앱이 사이트가 아니라 중앙(클라우드)에 있다. 그쪽은 이미 공인
 # 주소로 열려 있으므로 중계할 것이 없고, 중계해봐야 사이트의 traefik 이 404 를
@@ -68,20 +79,30 @@ def plan(*, profile: str, env: str | None) -> list[dict]:
     """포트별로 무엇을 해야 하는지. 화면이 규칙을 들고 있지 않도록 서버가 정한다.
 
     mode 는 셋 중 하나다.
-      relay   — 맥미니가 사이트로 중계한다 (onprem 전부, hybrid 의 8002)
+      relay   — 맥미니가 사이트로 중계한다 (onprem 전부, hybrid 의 8002·22)
       cloud   — 중앙 주소로 바로 간다 (hybrid)
       unknown — hybrid 인데 작업에 env 가 없어 어느 환경인지 모른다.
                 verify/clean 처럼 `-e ENV` 를 받지 않는 작업에서 생긴다.
                 이때 중계를 내주면 사이트 traefik 이 404 를 돌려줘 사람을 헷갈리게 한다.
+
+    via 는 화면이 중계 포트를 무엇으로 넘길지다 — http 는 새 탭, ssh 는 `ssh://`.
+    터미널은 프로파일과 무관하게 항상 사이트다 (중앙에는 그 PC 가 없다). 순서상
+    맨 뒤에 둔다 — 설치 끝나고 웹을 먼저 보고, 필요할 때 터미널로 내려간다.
     """
     entries = []
-    for port, label in sorted(ALLOWED_PORTS.items()):
+    for port in [*sorted(HTTP_PORTS), SSH_PORT]:
         if is_hybrid(profile) and port in HYBRID_CLOUD_PORTS:
             url = CLOUD_URLS.get(env or "", {}).get(port)
             mode = "cloud" if url else "unknown"
         else:
             url, mode = None, "relay"
-        entries.append({"port": port, "label": label, "mode": mode, "url": url})
+        entries.append({
+            "port": port,
+            "label": ALLOWED_PORTS[port],
+            "mode": mode,
+            "url": url,
+            "via": "ssh" if port == SSH_PORT else "http",
+        })
     return entries
 
 

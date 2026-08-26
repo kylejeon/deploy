@@ -232,6 +232,9 @@ async def get_forwards(request: web.Request) -> web.Response:
         body["host"] = host
         body["profile"] = server.profile
         body["env"] = env
+        # 터미널 줄이 `ssh://<사용자>@<콘솔주소>:<중계포트>` 를 만들 때 쓴다.
+        # 인벤토리의 ansible_user 가 곧 그 서버에 들어갈 계정이다.
+        body["user"] = server.ansible_user
         body["entries"] = forward_plan(profile=server.profile, env=env)
     return json_response(body)
 

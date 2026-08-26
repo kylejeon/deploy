@@ -193,6 +193,8 @@ tbody tr:hover{background:var(--surface-2)}
 .fwd__label{color:var(--ink-2); font-size:13px}
 .fwd__url{min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:12.5px}
 .fwd__host{margin-top:6px; font-size:12px}
+/* 맥이 아닌 기기에서 손으로 칠 접속 명령. 포트 줄 바로 밑에 붙인다. */
+.fwd__cmd{margin:-3px 0 0 10px; padding:4px 0; font-size:12px; user-select:all}
 @media (max-width:560px){
   .fwd{grid-template-columns:52px 1fr auto}
   .fwd__url{grid-column:1 / -1}

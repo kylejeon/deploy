@@ -1828,3 +1828,53 @@ stage 의 8003 만 "동일" 로 적혀 있어 물어봄 → **stage-grafana.conn
 맥미니 배포. JS/CSS 만 바뀐 게 아니라(파이썬 무변경) 이번 건은 `git pull` +
 브라우저 하드 리프레시로 충분하다. 데몬 재시작 불필요.
 단, 직전 커밋(958c9b1, forwards.py 신규)이 아직 안 올라갔으면 재시작이 필요하다.
+
+--------------------------------------------------------------------------------
+## 2026-08-26 (이어서) — 포트포워딩에 터미널(22) 추가
+
+### 요청
+"포트포워딩 창에 PC 터미널 연결도 해줄 수 있어?"
+→ 방식을 물었더니: **"내 맥북에 접속 명령이 입력된/이미 접속된 터미널 창이 뜨게"**
+
+### 먼저 확인한 것 (추측 금지)
+1. 맥미니 sshd 살아 있음 — Tailscale 로 `publickey,password,keyboard-interactive` 응답.
+2. `ssh_keys.py` 는 타겟 sshd 의 PasswordAuthentication 을 끄지 **않는다**.
+   `verify_key_auth` 의 "비밀번호를 끄고" 는 클라이언트 쪽 `preferred_auth` 얘기다.
+3. **Terminal.app 이 `ssh` 스킴을 물고 있다** — Info.plist CFBundleURLSchemes 에
+   telnet/ssh/x-man-page. LaunchServices 바인딩도 확인.
+4. **포트가 실제로 넘어가는지 실증**: 127.0.0.1:2222 에 프로브 리스너를 띄우고
+   `open "ssh://connecteve@127.0.0.1:2222"` → `SSH-2.0-OpenSSH_10.2` 배너 도착.
+   즉 `ssh -p 2222 connecteve@127.0.0.1` 이 실제로 실행된다. (맥북에 터미널 창 뜸)
+
+### 한 것
+- `forwards.py`: `HTTP_PORTS` / `SSH_PORT=22` 로 나누고 `ALLOWED_PORTS` 는 둘의 합.
+  `plan()` 엔트리에 `via`(http|ssh) 추가, 터미널은 항상 맨 뒤.
+  22 는 `HYBRID_CLOUD_PORTS` 에 없으므로 hybrid 에서도 자동으로 relay — 특별 분기 없음.
+- `api.py`: GET 계획 응답에 `user`(= 인벤토리 ansible_user) 추가.
+  `ssh://<user>@<콘솔주소>:<중계포트>` 를 만들려면 필요하다.
+- `console.js`: `sshUrl` / `sshCommand` / `launchSsh`.
+  `터미널 열기` 누르면 → POST 로 중계 열고 → 응답의 listen_port 로 곧바로 Terminal 띄움.
+  열린 뒤에도 `터미널 다시 열기` 링크를 남긴다 (중계를 닫았다 열 필요 없게).
+  맥이 아닌 기기용으로 `ssh -p <포트> <user>@<주소>` 를 줄 밑에 그대로 적어둔다.
+- `launchSsh` 는 `location.href` 대신 **앵커 생성 → click → 제거**.
+  스킴을 받아줄 앱이 없는 기기에서 페이지가 통째로 날아가지 않게.
+
+### 보안 판단 (문서에도 적음)
+22 를 허용 목록에 넣는 것과 콘솔 안에 셸을 다는 것은 **다르다.**
+중계는 sshd 까지 TCP 만 이어주고 인증은 맥북 ↔ 타겟 사이에 그대로 남는다.
+콘솔 로그인만으로 타겟에 명령을 돌릴 수 없다. (브라우저 터미널 안을 고르지 않은 이유)
+비밀번호 없애려면 중계 열린 동안 `ssh-copy-id -p <중계포트> <user>@<콘솔주소>` 한 번.
+
+### 테스트
+- `test_an_arbitrary_port_is_refused` 의 예시를 22 → **6443(k0s API)** 로 교체.
+  22 가 이제 허용 목록에 있어서 그대로 두면 이 테스트가 거짓말이 된다.
+- 신규 5개: 모든 프로파일에서 22 는 relay / via 표시 / 순서 맨 뒤 /
+  응답에 ansible_user / 22 도 평범한 중계로 열린다.
+- sshUrl·sshCommand 는 console.js 원문에서 뽑아 node 로 형식 대조 (커밋 안 함).
+- 758 → 763 passed.
+
+### 다음
+맥미니 배포. **파이썬이 바뀌었으니 데몬 재시작 필요.**
+  cd ~/deploy && git pull origin claude
+  launchctl kickstart -k gui/$(id -u)/com.connecteve.autodeploy
+브라우저는 하드 리프레시. 첫 클릭 때 Safari/Chrome 이 "Terminal 을 여시겠습니까?" 를 묻는다.

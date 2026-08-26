@@ -253,12 +253,57 @@ async def test_onprem_cloud_ports_still_open(client, monkeypatch):
     assert resp.status == 201
 
 
+# ── 터미널 (22) ─────────────────────────────────────────────────────
+
+
+async def test_the_terminal_is_relayed_on_every_profile(client):
+    """터미널은 프로파일과 무관하게 사이트다 — 중앙에는 그 PC 가 없다."""
+    for host, env in [("testpc", "dev"), ("hyb", "dev"), ("hyb", "prod"), ("hyb", None)]:
+        plan = await entries(client, host, env)
+        assert plan[22]["mode"] == "relay", (host, env)
+        assert plan[22]["url"] is None
+
+
+async def test_the_terminal_is_marked_for_ssh_not_a_browser_tab(client):
+    """화면이 `ssh://` 로 넘길지 새 탭으로 열지 구분하는 표시."""
+    plan = await entries(client, "testpc", "dev")
+    assert plan[22]["via"] == "ssh"
+    for port in (8000, 8001, 8002, 8003):
+        assert plan[port]["via"] == "http", port
+
+
+async def test_the_terminal_comes_last(client):
+    """설치 끝나고 웹을 먼저 보고, 필요할 때 터미널로 내려간다."""
+    body = await (await client.get("/api/forwards?host=testpc&env=dev")).json()
+    assert [e["port"] for e in body["entries"]] == [8000, 8001, 8002, 8003, 22]
+
+
+async def test_the_plan_carries_the_login_name(client):
+    """`ssh://<사용자>@...` 를 만들려면 인벤토리의 ansible_user 가 필요하다."""
+    body = await (await client.get("/api/forwards?host=testpc")).json()
+    assert body["user"] == "connecteve"
+
+
+async def test_opening_the_terminal_relays_to_sshd(client):
+    """22 도 다른 포트와 같은 중계다 — 특별한 경로가 아니다."""
+    resp = await open_forward(client, "testpc", 22)
+    assert resp.status == 201
+    body = await resp.json()
+    assert body["label"] == "터미널"
+    assert body["port"] == 22
+
+
 # ── 열어주면 안 되는 것 ─────────────────────────────────────────────
 
 
 async def test_an_arbitrary_port_is_refused(client):
-    """허용 목록 밖이면 거절. 아니면 콘솔이 사내망 포트 스캐너가 된다."""
-    resp = await open_forward(client, "testpc", 22)
+    """허용 목록 밖이면 거절. 아니면 콘솔이 사내망 포트 스캐너가 된다.
+
+    예시로 k0s API 서버(6443)를 쓴다 — 뚫리면 클러스터가 통째로 넘어가는 포트다.
+    (전에는 22 를 예시로 썼는데 터미널 때문에 허용 목록에 들어갔다. 22 가 열린
+    것과 임의 포트가 열리는 것은 다르다 — 아래 터미널 절 참고.)
+    """
+    resp = await open_forward(client, "testpc", 6443)
     assert resp.status == 400
     assert "열 수 없는 포트" in (await resp.json())["error"]
 

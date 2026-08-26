@@ -801,6 +801,28 @@ function confirmDelete(host) {
  * 중계 주소의 호스트는 location.hostname 을 쓴다. 서버가 자기 주소를 추측해
  * 알려주면 0.0.0.0 바인드나 다중 인터페이스에서 못 쓰는 주소가 나온다.
  */
+/* macOS 는 ssh 스킴을 Terminal.app 에 물려둔다 (Terminal.app 의 CFBundleURLSchemes).
+   `ssh://user@host:port` 를 열면 터미널 창이 뜨면서 `ssh -p port user@host` 가
+   그대로 실행된다. 브라우저가 한 번 "Terminal 을 여시겠습니까?" 를 묻는다.
+
+   중계 주소의 호스트는 http 쪽과 같은 이유로 location.hostname 을 쓴다. */
+const sshUrl = (user, port) =>
+  `ssh://${encodeURIComponent(user || "")}@${location.hostname}:${port}`;
+const sshCommand = (user, port) =>
+  `ssh -p ${port} ${user || ""}@${location.hostname}`;
+
+/* location.href 로 넘기면 스킴을 받아줄 앱이 없는 기기에서 페이지가 통째로
+   날아갈 수 있다. 앵커 클릭은 브라우저가 외부 스킴으로 다루므로 페이지는 그대로다.
+   여는 버튼의 클릭 제스처 안에서 불러야 팝업 차단에 걸리지 않는다. */
+function launchSsh(user, port) {
+  const a = document.createElement("a");
+  a.href = sshUrl(user, port);
+  a.rel = "noopener";
+  document.body.append(a);
+  a.click();
+  a.remove();
+}
+
 async function forwardModal(hosts, env) {
   state.forwardHosts = hosts;
   state.forwardEnv = env || null;
@@ -808,7 +830,10 @@ async function forwardModal(hosts, env) {
     <p class="note">사이트에 있는 것은 <b>맥미니가 중계</b>합니다 — 연 주소는 지금 이 콘솔에
     접속한 것과 같은 주소의 다른 포트라, Tailscale 로 들어와 있으면 그대로 열립니다.
     한동안 아무도 쓰지 않으면 자동으로 닫힙니다.
-    중앙(hybrid)에 있는 것은 중계 없이 공인 주소로 바로 갑니다.</p>
+    중앙(hybrid)에 있는 것은 중계 없이 공인 주소로 바로 갑니다.<br>
+    <b>터미널</b>은 이 맥의 Terminal 앱이 열리면서 접속까지 실행됩니다.
+    타겟 비밀번호는 직접 입력하셔야 합니다 — 중계는 길만 내주고 인증은
+    이 맥과 타겟 사이에서 일어납니다.</p>
     <div id="fwdRows" class="stack gap-8"></div>`, { confirm: false });
   await paintForwards();
 }
@@ -826,17 +851,17 @@ async function paintForwards() {
                 (env ? `&env=${encodeURIComponent(env)}` : "");
       const data = await api(q);
       const open = new Map(data.forwards.map((f) => [f.key, f]));
-      return { host, profile: data.profile, entries: data.entries, open };
+      return { host, profile: data.profile, user: data.user, entries: data.entries, open };
     }));
   } catch (e) {
     el.innerHTML = `<div class="note">${esc(e.message)}</div>`;
     return;
   }
 
-  el.innerHTML = blocks.map(({ host, profile, entries, open }) => {
+  el.innerHTML = blocks.map(({ host, profile, user, entries, open }) => {
     const rows = entries.map((entry) => {
       const f = open.get(`${host}:${entry.port}`);
-      let right;
+      let right, cmd;
       if (entry.mode === "cloud") {
         right = `<span class="fwd__url"><a class="mono" href="${esc(entry.url)}"
           target="_blank" rel="noopener">${esc(entry.url)}</a></span>
@@ -844,6 +869,13 @@ async function paintForwards() {
       } else if (entry.mode === "unknown") {
         right = `<span class="fwd__url dim">환경(dev/stage/prod)을 알 수 없어 주소를 정할 수 없습니다</span>
           <span class="tag">–</span>`;
+      } else if (f && entry.via === "ssh") {
+        /* 링크를 그대로 남겨둔다 — 중계를 닫았다 열지 않고 터미널만 다시 띄울 수 있게. */
+        right = `<span class="fwd__url"><a class="mono" href="${esc(sshUrl(user, f.listen_port))}"
+          >터미널 다시 열기</a></span>
+          <button class="btn btn--xs btn--ghost-danger" data-fwd="close"
+            data-fwd-host="${esc(host)}" data-fwd-port="${entry.port}">닫기</button>`;
+        cmd = sshCommand(user, f.listen_port);
       } else if (f) {
         const url = `http://${location.hostname}:${f.listen_port}`;
         right = `<span class="fwd__url"><a class="mono" href="${esc(url)}"
@@ -851,12 +883,18 @@ async function paintForwards() {
           <button class="btn btn--xs btn--ghost-danger" data-fwd="close"
             data-fwd-host="${esc(host)}" data-fwd-port="${entry.port}">닫기</button>`;
       } else {
+        const ssh = entry.via === "ssh";
         right = `<span class="fwd__url dim">닫힘</span>
           <button class="btn btn--xs" data-fwd="open"
-            data-fwd-host="${esc(host)}" data-fwd-port="${entry.port}">열기</button>`;
+            data-fwd-host="${esc(host)}" data-fwd-port="${entry.port}"
+            ${ssh ? `data-fwd-user="${esc(user || "")}"` : ""}>${ssh ? "터미널 열기" : "열기"}</button>`;
       }
+      /* 맥이 아닌 기기(아이패드·윈도우)에서는 ssh:// 를 받아줄 앱이 없다.
+         그럴 때 손으로 칠 수 있도록 명령을 그대로 남긴다. */
+      const tail = cmd
+        ? `<div class="fwd__cmd mono dim">${esc(cmd)}</div>` : "";
       return `<div class="fwd"><span class="mono">${entry.port}</span>
-        <span class="fwd__label">${esc(entry.label)}</span>${right}</div>`;
+        <span class="fwd__label">${esc(entry.label)}</span>${right}</div>${tail}`;
     }).join("");
     const head = hosts.length > 1 || profile
       ? `<div class="fwd__host mono dim">${esc(host)} · ${esc(profile || "")}${env ? ` · ${esc(env)}` : ""}</div>`
@@ -1075,10 +1113,12 @@ document.addEventListener("click", async (e) => {
     if (fwd === "open") {
       // env 도 함께 보낸다. 서버가 프로파일×환경으로 다시 판정하므로,
       // 화면이 버튼을 안 보여주는 것과 별개로 API 단에서도 걸러진다.
-      await api("/api/forwards", {
+      const f = await api("/api/forwards", {
         method: "POST",
         body: { host, port: Number(port), env: state.forwardEnv || undefined },
       });
+      // 터미널은 중계만 열고 끝내지 않는다 — 곧바로 Terminal 앱까지 띄운다.
+      if (btn.dataset.fwdUser !== undefined) launchSsh(btn.dataset.fwdUser, f.listen_port);
     } else {
       await api(`/api/forwards/${encodeURIComponent(`${host}:${port}`)}`, { method: "DELETE" });
     }
