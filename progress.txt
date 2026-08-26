@@ -1600,3 +1600,36 @@ return LineKind.ERROR if self._cont_host is not None else LineKind.OUT
 #32 끝난 뒤에 재시작할 것.
 또한 #32 의 이미 저장된 줄은 DB 에 kind='err' 로 남아 있어 그대로 보인다.
 새 작업부터 정상.
+
+--------------------------------------------------------------------------------
+## 2026-08-26 (이어서) — 작업 종료 후 로그가 2초마다 위→아래로 반복 스크롤
+
+### 증상
+스크립트 실행이 다 끝난 뒤에도 자동 스크롤이 켜져 있으면 로그가 처음부터
+끝까지 스크롤되는 동작이 계속 반복됨.
+
+### 원인 — end 이벤트와 onerror 의 경합
+서버는 `{"type":"end"}` 를 보낸 **직후 연결을 닫는다**(api.py:587).
+클라이언트 onmessage 는 end 를 받고 `refreshJobMeta(true)` 를 부르는데 이것이
+**async** 라 첫 `await api(...)` 에서 양보한다. 그 틈에 연결이 끊겨 onerror 가
+먼저 도는데, 그 시점엔 아직 `state.sse === es` 라서 가드를 통과하고
+2초 뒤 재연결을 예약한다.
+
+재연결 → 서버가 다시 end → renderJob() 이 #view-job 을 통째로 다시 그림 →
+#log 가 새로 만들어져 scrollTop=0 → paintLog() → scrollLog() →
+CSS `scroll-behavior:smooth` 로 맨 아래까지 스르륵. 이것이 2초마다 무한 반복.
+
+### 고침 (2중 안전장치)
+1. end 를 받으면 **동기적으로 먼저** closeStream() — await 전에 state.sse 를
+   비워 onerror 가드가 제대로 걸리게 한다
+2. onerror 는 **끝난 작업이면 재연결하지 않는다** (ACTIVE 상태일 때만)
+
+### 검증 — 브라우저 없이 재현
+가짜 EventSource(=end 보내고 곧바로 끊음)와 async refreshJobMeta 로
+openStream 을 실제 소스에서 떼어 실행:
+  고치기 전: opens 6, repaints 5   ← 반복 확인
+  고친 후  : opens 1, repaints 1
+732 passed, node --check 통과.
+
+### 적용
+정적 파일만 바뀜 → git pull + Cmd+Shift+R. 데몬 재시작 불필요.

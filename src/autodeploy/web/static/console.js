@@ -551,6 +551,11 @@ function openStream() {
     }
     if (data.type === "status" || data.type === "end") {
       if (flush) { clearTimeout(flush); flush = null; appendLines(batch); batch = []; }
+      // end 를 받으면 **동기적으로 먼저 닫는다.** refreshJobMeta 는 async 라 첫 await
+      // 에서 양보하는데, 서버는 end 직후 연결을 끊으므로 그 틈에 onerror 가 돈다.
+      // 그때 state.sse 가 아직 이 스트림이면 재연결이 예약되고, 다시 end 를 받아
+      // 화면을 통째로 다시 그리는 일이 2초마다 무한 반복된다.
+      if (data.type === "end") closeStream();
       refreshJobMeta(data.type === "end");
     }
   };
@@ -559,7 +564,9 @@ function openStream() {
     if (state.sse !== es) return;
     es.close();
     state.sse = null;
-    if (state.view === "job") setTimeout(() => { if (state.view === "job") openStream(); }, 2000);
+    // 끝난 작업은 다시 열지 않는다. 열어봐야 서버가 곧바로 end 를 돌려줄 뿐이다.
+    const running = !state.job || ACTIVE.includes(state.job.status);
+    if (state.view === "job" && running) setTimeout(() => { if (state.view === "job") openStream(); }, 2000);
   };
 }
 
