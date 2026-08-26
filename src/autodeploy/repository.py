@@ -1,6 +1,8 @@
 """Job/JobEvent/ScriptLog CRUD. workflow가 직접 SQL 만지지 않게 격리."""
 from __future__ import annotations
 
+from collections.abc import Sequence
+
 import aiosqlite
 
 from autodeploy.models import Job, JobStatus, Step
@@ -93,10 +95,35 @@ async def add_script_log(
     step: str,
     stream: str,
     line: str,
+    *,
+    host: str | None = None,
+    kind: str | None = None,
+) -> int:
+    """로그 한 줄 적재. 돌려주는 id 가 SSE 재연결(`?after=`)의 커서다."""
+    cur = await db.execute(
+        "INSERT INTO script_logs (job_id, step, stream, line, host, kind)"
+        " VALUES (?, ?, ?, ?, ?, ?)",
+        (job_id, step, stream, line, host, kind),
+    )
+    await db.commit()
+    return int(cur.lastrowid)
+
+
+async def add_script_logs(
+    db: aiosqlite.Connection,
+    rows: Sequence[tuple[int, str, str, str, str | None, str | None]],
 ) -> None:
-    await db.execute(
-        "INSERT INTO script_logs (job_id, step, stream, line) VALUES (?, ?, ?, ?)",
-        (job_id, step, stream, line),
+    """(job_id, step, stream, line, host, kind) 묶음 적재.
+
+    hubctl 은 초당 수십 줄을 쏟아내는데 줄마다 commit 하면 SQLite 가 매번 fsync 한다.
+    호출부에서 짧게 모아 한 번에 넣는다.
+    """
+    if not rows:
+        return
+    await db.executemany(
+        "INSERT INTO script_logs (job_id, step, stream, line, host, kind)"
+        " VALUES (?, ?, ?, ?, ?, ?)",
+        rows,
     )
     await db.commit()
 

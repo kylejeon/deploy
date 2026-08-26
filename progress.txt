@@ -985,3 +985,65 @@ PLAY/RECAP 파싱) + `queue.py`(동시 1개). 목표: 실서버에 verify 1회 �
 
 ### 커밋 안 함
 미커밋: progress.txt, runbook.md, dev-spec, 신규 4개 모듈 + 테스트 6개, 기존 5개 변경
+
+## 2026-08-26 (Phase A 커밋 + Phase B 완료) — hubctl 실행·파싱·큐
+
+Phase A 를 `6388ea3` 로 커밋(claude 브랜치)하고 Phase B 구현.
+**534/534 테스트 통과** (399 → +135).
+
+### 신규 파일
+- `src/autodeploy/ansible_log.py` — 줄 분류(LineKind) / 호스트 추출 / 단계 판정 /
+  PLAY RECAP 파싱. AnsibleLogParser.feed(line) -> ParsedLine
+- `src/autodeploy/hubctl.py` — build_command(작업별 명령 조립) +
+  HubctlRunner(zsh -lc 서브프로세스, 줄 펌프, 프로세스 그룹 취소)
+- `src/autodeploy/queue.py` — JobQueue(동시 1개 + 대기), JobTicket, CancelOutcome
+- `src/autodeploy/masking.py` — mask_url_secrets 를 workflow.py 에서 분리 +
+  SecretMasker. 웹 콘솔 모듈이 asyncssh/slack 을 끌고 오는 workflow 를 import 하지
+  않게 하려는 목적. workflow 는 재수출하므로 기존 import 경로 그대로 동작
+
+### 실측으로 바로잡은 것 (스펙 §F4 표만 보고 짰으면 틀렸을 것들)
+실제 ansible-core 2.21.1 출력을 받아서 확인:
+1. ansible 은 `[ERROR]` 블록까지 **전부 stdout** 으로 쓴다. stderr 로 오는 건
+   hubctl 자체 warn/err 뿐 → stream 만으로 에러를 못 가린다
+2. `fatal: [host]: FAILED! =>` 뒤에 **들여쓴 YAML 본문**이 따라온다. 이 줄들이
+   같은 호스트로 안 묶이면 호스트 필터(AC-6)에서 에러 상세가 통째로 사라진다
+3. 그런데 `[ERROR]` 블록의 소스 발췌도 들여쓰기가 섞여 있고 **호스트가 없다** →
+   "들여쓰면 직전 호스트" 규칙은 남의 호스트에 에러를 붙인다
+   → 이어짐(continuation)은 **`=>` 로 끝나는 결과 줄에서만** 열고 빈 줄/비들여쓰기에서 닫는다
+4. `ok: [beta -> localhost]`(delegate), `ok: [beta] => (item=one)`(loop) 변종
+5. RECAP 줄에 후행 공백. skipped 이후 필드는 없을 수도 있다고 보고 옵션 처리
+
+### 스펙 모순 하나 해소
+§F4 는 라인 분류를 `stream` 컬럼에 넣으라 하지만 `stream` 은 v1 부터
+CHECK(stdout|stderr) 이고 Slack 워크플로가 쓰고 있다(D1: Slack 불변).
+§6 스키마 절엔 `host` 추가만 적혀 있어 §F4 쪽을 표기 실수로 판단
+→ **`script_logs.kind` 컬럼을 따로 추가**해 stdout/stderr 와 분류를 분리했다.
+
+### 소스로 확인한 것 (추측 금지 항목)
+- `ANSIBLE_BECOME_PASSWORD_FILE`: ansible `cli/__init__.py::get_password_from_file`
+  이 **파일에 실행권한이 있으면 스크립트로 실행**한다 → 0600 은 기밀성뿐 아니라
+  정확성 요건. 아니면 read().strip() 이라 끝 개행은 무해. 빈 값은 에러 →
+  비밀번호가 없으면 파일 자체를 만들지 않는다
+- `roles/patch_apply/tasks/main.yml:180` 이 번들 메타를 SoT 로 보고
+  `-e hub_deploy_ref` 불일치 시 죽인다 → apply 에는 ref 를 절대 안 넘긴다
+- `bin/hubctl` 이 `-i` 를 받는다 (테스트용 인벤토리 주입 가능)
+
+### 실서버 실행 결과
+- `./bin/hubctl preflight` (실제, 읽기전용): **exit=0**. `zsh -lc` 가
+  Vault/hvac/AWS/Bitbucket 자격을 ~/.zshrc 에서 정상 상속. 단계 preflight 판정 OK
+- `./bin/hubctl verify -l yonseiwa` (실제): 타겟 192.168.100.224 가 **현재 도달 불가**
+  (TCP 22 timeout) → exit=4. 다만 체인 전체는 실증됨:
+  UNREACHABLE 의 YAML 본문 4줄이 yonseiwa 로 정확히 묶이고, `[ERROR]` 줄은
+  어느 호스트에도 안 붙고, RECAP unreachable=1 파싱, stderr 라벨링까지 정상
+- **취소(AC-8) 실증**: 실제 프로세스 트리 3개(hubctl 셸 / 서브셸 /
+  ansible-playbook)가 한 프로세스 그룹(pgid=2120). cancel() 후 **0개 잔존**,
+  exit=-15, cancelled=True. become 임시파일 잔여 0개
+
+### 남은 것 — verify exit=0
+Phase B 완료 기준 "실서버 verify 1회 성공"은 **타겟 미도달로 미달성**.
+yonseiwa(192.168.100.224)가 이 맥미니에서 안 잡힌다. 도달 가능한 호스트나
+VPN 연결이 필요 — 용혁님 확인 필요.
+
+### 다음 (Phase C)
+aiohttp app 팩토리 + 세션 인증(로그인/쿠키/무차별 대입 제한) +
+서버·작업 조회 API. 데몬 기동 시 running/awaiting 작업 정리(§9)도 같이.

@@ -4,7 +4,13 @@ from pathlib import Path
 
 import pytest
 
-from autodeploy.settings import SettingsError, load_settings
+from autodeploy.settings import (
+    DEFAULT_HUBCTL_REPO_PATH,
+    SettingsError,
+    load_settings,
+    resolve_become_password,
+    resolve_hubctl_repo,
+)
 
 
 def _full_env() -> dict[str, str]:
@@ -131,3 +137,45 @@ def test_jira_settings_loaded_from_env():
     assert s.jira_email == "jira@x.com"
     assert s.jira_api_token == "MYTOKEN"
     assert s.jira_key == "MYPROJECT"
+
+
+# ── v2: hubctl (웹 콘솔) ────────────────────────────────────────────
+
+
+def test_hubctl_repo_defaults_to_home():
+    assert resolve_hubctl_repo({}) == Path(DEFAULT_HUBCTL_REPO_PATH).expanduser()
+
+
+def test_hubctl_repo_from_env_expands_tilde():
+    assert resolve_hubctl_repo({"HUBCTL_REPO_PATH": "~/other-repo"}) == (
+        Path("~/other-repo").expanduser()
+    )
+
+
+def test_hubctl_repo_blank_falls_back_to_default():
+    assert resolve_hubctl_repo({"HUBCTL_REPO_PATH": "   "}) == (
+        Path(DEFAULT_HUBCTL_REPO_PATH).expanduser()
+    )
+
+
+def test_become_password_falls_back_to_ssh_password():
+    """타겟은 connecteve 계정 공통이라 sudo 비밀번호 = SSH 비밀번호다."""
+    assert resolve_become_password({"SSH_PASSWORD": "shared-pw"}) == "shared-pw"
+
+
+def test_become_password_overrides_ssh_password():
+    env = {"SSH_PASSWORD": "shared-pw", "BECOME_PASSWORD": "sudo-only-pw"}
+    assert resolve_become_password(env) == "sudo-only-pw"
+
+
+def test_become_password_absent_is_empty():
+    """빈 값이면 hubctl 러너가 비밀번호 파일 자체를 만들지 않는다."""
+    assert resolve_become_password({}) == ""
+
+
+def test_load_settings_includes_hubctl_values():
+    env = _full_env()
+    env["HUBCTL_REPO_PATH"] = "~/hp"
+    s = load_settings(env)
+    assert s.hubctl_repo_path == Path("~/hp").expanduser()
+    assert s.become_password == s.ssh_password

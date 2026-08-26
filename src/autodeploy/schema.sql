@@ -57,6 +57,9 @@ CREATE TABLE IF NOT EXISTS script_logs (
   stream      TEXT NOT NULL CHECK(stream IN ('stdout','stderr')),
   line        TEXT NOT NULL,
   host        TEXT,        -- v2: 줄에서 추출한 ansible 호스트 (공통 줄은 NULL)
+  -- v2: 줄 분류 (ansible_log.LineKind). stream(stdout/stderr)과는 별개 —
+  -- ansible 은 [ERROR] 까지 전부 stdout 으로 쓰므로 stream 만으로는 에러를 못 가린다.
+  kind        TEXT,
   created_at  TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 

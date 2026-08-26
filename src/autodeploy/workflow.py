@@ -33,13 +33,8 @@ from autodeploy.product_registration import ProductRegistrationClient
 SSHFactory = Callable[[str, int], AbstractAsyncContextManager[SSHClient]]
 
 
-# URL embedded credential pattern: scheme://user:TOKEN@host → scheme://user:***@host
-# git clone 명령 + stderr가 토큰 포함 URL을 echo할 때 DB/Slack 평문 노출 방지 (QA D-3).
-_URL_SECRET_PATTERN = re.compile(r"(https?://[^/\s:@]+:)[^@\s]+(@)")
-
-
-def mask_url_secrets(text: str) -> str:
-    return _URL_SECRET_PATTERN.sub(r"\1***\2", text)
+# masking.py 로 옮겼다. 기존 import 경로(workflow.mask_url_secrets)를 위해 재수출한다.
+from autodeploy.masking import mask_url_secrets  # noqa: E402,F401
 
 
 # app 스크립트 stdout의 URL 라인 추출 (QA O-6).

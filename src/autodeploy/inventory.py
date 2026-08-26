@@ -32,6 +32,15 @@ _HEADER = (
 _BACKUP_KEEP = 10
 
 
+def is_valid_host(name: str) -> bool:
+    """인벤토리 호스트명으로 쓸 수 있는가.
+
+    ansible `--limit` 과 clean 의 `-e confirm=` 에 그대로 들어가므로, 쉼표·공백·
+    따옴표가 섞이면 대상이 엉뚱해진다. hubctl 호출 전 게이트로도 쓴다.
+    """
+    return bool(_HOST_RE.match(name))
+
+
 class InventoryError(RuntimeError):
     """스키마 위반·파싱 실패 등."""
 

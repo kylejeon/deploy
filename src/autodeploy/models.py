@@ -9,6 +9,35 @@ from enum import StrEnum
 class JobStatus(StrEnum):
     QUEUED = "queued"
     RUNNING = "running"
+    # v2(웹 콘솔): patch 번들 생성 후 사람이 적용을 승인하기 전까지 머무는 상태.
+    AWAITING = "awaiting"
+    SUCCEEDED = "succeeded"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+
+
+TERMINAL_STATUSES: frozenset[JobStatus] = frozenset(
+    {JobStatus.SUCCEEDED, JobStatus.FAILED, JobStatus.CANCELLED}
+)
+
+
+class JobKind(StrEnum):
+    """v2(웹 콘솔) 작업 종류. schema.sql 의 jobs.kind CHECK 와 일치해야 한다."""
+
+    INSTALL = "install"
+    CONFIGURE = "configure"
+    PATCH = "patch"
+    ROLLBACK = "rollback"
+    VERIFY = "verify"
+    CLEAN = "clean"
+    SSH_KEY = "ssh_key"
+
+
+class HostStatus(StrEnum):
+    """job_hosts.status — PLAY RECAP 으로 확정되는 호스트별 결과."""
+
+    QUEUED = "queued"
+    RUNNING = "running"
     SUCCEEDED = "succeeded"
     FAILED = "failed"
     CANCELLED = "cancelled"

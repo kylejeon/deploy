@@ -20,6 +20,36 @@ def resolve_db_path(env: Mapping[str, str] | None = None) -> Path:
     return Path(e.get("AUTODEPLOY_DB_PATH", DEFAULT_DB_PATH)).expanduser()
 
 
+DEFAULT_HUBCTL_REPO_PATH = "~/hub-provisioning"
+
+
+def resolve_hubctl_repo(env: Mapping[str, str] | None = None) -> Path:
+    """hub-provisioning 저장소 경로. hubctl 은 항상 이 디렉터리에서 실행한다."""
+    e = env if env is not None else os.environ
+    raw = e.get("HUBCTL_REPO_PATH", "").strip() or DEFAULT_HUBCTL_REPO_PATH
+    return Path(raw).expanduser()
+
+
+def resolve_become_password(env: Mapping[str, str] | None = None) -> str:
+    """ansible become(sudo) 비밀번호.
+
+    타겟은 connecteve 계정 공통이라 SSH 비밀번호와 같다 (기존 workflow 도 동일 가정).
+    계정을 분리하게 되면 BECOME_PASSWORD 로 따로 준다.
+    """
+    e = env if env is not None else os.environ
+    return e.get("BECOME_PASSWORD", "").strip() or e.get("SSH_PASSWORD", "")
+
+
+# hubctl 이 로그인 셸에서 상속받아야 하는 값들. 데몬(launchd)은 ~/.zshrc 를 읽지
+# 않으므로 `zsh -lc` 로 감싸 실행한다. 여기 있는 이름은 마스킹 대상 판별에도 쓴다.
+HUBCTL_SECRET_ENV: tuple[str, ...] = (
+    "VAULT_TOKEN",
+    "HUB_DEPLOY_GIT_TOKEN",
+    "AWS_SECRET_ACCESS_KEY",
+    "AWS_SESSION_TOKEN",
+)
+
+
 def _expand_remote_home(path: str, ssh_user: str) -> str:
     """원격 서버 기준 `~` 확장. shlex.quote로 감싸도 안전한 절대경로로 만든다.
 
@@ -71,6 +101,10 @@ class Settings:
     port_frontend: int
     port_temporal: int
     port_webpacs: int
+    # v2(웹 콘솔): hubctl 실행 경로 + become(sudo) 비밀번호.
+    # 기존 Slack 워크플로는 이 값들을 쓰지 않으므로 기본값을 준다.
+    hubctl_repo_path: Path = Path(DEFAULT_HUBCTL_REPO_PATH).expanduser()
+    become_password: str = ""
 
 
 def load_settings(env: Mapping[str, str] | None = None) -> Settings:
@@ -124,4 +158,6 @@ def load_settings(env: Mapping[str, str] | None = None) -> Settings:
         port_frontend=int(e.get("PORT_FRONTEND", "8000")),
         port_temporal=int(e.get("PORT_TEMPORAL", "8001")),
         port_webpacs=int(e.get("PORT_WEBPACS", "8002")),
+        hubctl_repo_path=resolve_hubctl_repo(e),
+        become_password=resolve_become_password(e),
     )
