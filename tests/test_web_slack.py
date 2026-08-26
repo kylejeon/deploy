@@ -5,6 +5,8 @@
 """
 from __future__ import annotations
 
+import asyncio
+import re
 from pathlib import Path
 
 import pytest
@@ -169,13 +171,28 @@ async def create_job(client, payload):
     return (await resp.json())["id"]
 
 
+async def wait_posts(client, count, *, timeout=5.0):
+    """Slack 게시가 `count` 건에 이를 때까지.
+
+    작업 종료만 기다리면 안 된다. `_finalize` 는 DB 를 먼저 확정하고
+    (`jobs` UPDATE + commit) Slack 은 그 다음에 올린다 — 느린 Slack 호출이
+    작업 종료를 붙잡으면 안 되기 때문이다. 그래서 `wait_finished` 가 돌아온
+    시점에 종료 메시지는 아직 안 올라가 있을 수 있다.
+    """
+    async def poll():
+        while len(client.slack.posts) < count:
+            await asyncio.sleep(0.01)
+        return client.slack.posts
+
+    return await asyncio.wait_for(poll(), timeout)
+
+
 async def test_web_job_creates_a_thread_and_replies(client, temp_db):
     """AC-11: 웹에서 시작한 작업이 Slack 채널에도 스레드로 게시된다."""
     job_id = await create_job(client, {"kind": "verify", "hosts": ["alpha"]})
     await wait_finished(client, job_id)
 
-    assert len(client.slack.posts) == 2
-    start, finish = client.slack.posts
+    start, finish = await wait_posts(client, 2)
     assert "thread_ts" not in start, "시작 메시지가 스레드 부모다"
     # 종료 메시지는 시작 메시지가 돌려준 ts 아래에 붙어야 한다.
     assert finish["thread_ts"] == client.slack.returned_ts[0]
@@ -214,6 +231,7 @@ async def test_patch_posts_start_once_across_create_and_apply(client, temp_db):
         await db.commit()
     await client.post(f"/api/jobs/{job_id}/approve", headers={CSRF_HEADER: client.csrf})
     await wait_finished(client, job_id)
+    await wait_posts(client, 2)
 
     starts = [p for p in client.slack.posts if "thread_ts" not in p]
     assert len(starts) == 1, "스레드 부모는 하나여야 한다"
@@ -266,7 +284,44 @@ async def test_stylesheet_is_public(ui_client):
     """로그인 화면도 스타일시트를 받아야 한다."""
     resp = await ui_client.get("/static/console.css")
     assert resp.status == 200
-    assert "--accent" in await resp.text()
+    body = await resp.text()
+    assert "--accent" in body
+    # 태그로 시작하면 브라우저 CSS 파서가 첫 규칙을 통째로 삼킨다 (아래 참조).
+    assert not body.lstrip().startswith("<")
+
+
+def test_static_assets_are_not_wrapped_in_html_tags():
+    """프로토타입에서 옮길 때 <style>/<script> 태그가 딸려오는 사고를 막는다.
+
+    실제로 한 번 났다. console.css 가 `<style>` 로 시작했는데, 파일은 200 에
+    Content-Type: text/css 로 멀쩡히 나가서 서버 쪽에서는 아무 티가 안 났다.
+    브라우저만 `<style> :root` 를 하나의 셀렉터로 오인해 그 뒤 `{...}` 블록을
+    통째로 삼켰고, 디자인 토큰이 전부 사라져 화면이 무스타일로 떴다.
+    "--accent 가 본문에 있다" 만으로는 이걸 못 잡는다 — 문자열은 그대로 있으니까.
+    """
+    static = Path(__file__).resolve().parents[1] / "src" / "autodeploy" / "web" / "static"
+    assets = sorted(static.glob("*.css")) + sorted(static.glob("*.js"))
+    assert assets, "static 자산을 못 찾았다"
+    for path in assets:
+        text = path.read_text(encoding="utf-8")
+        assert not text.lstrip().startswith("<"), f"{path.name} 이 태그로 시작한다"
+        for tag in ("<style", "</style", "<script", "</script"):
+            assert tag not in text, f"{path.name} 에 {tag} 가 남아 있다"
+
+
+def test_stylesheet_starts_with_the_token_rule():
+    """파일 맨 앞(주석 제외)이 곧바로 :root 규칙이어야 한다.
+
+    위 사고에서 실제로 죽은 것이 이 규칙이다. `--accent` 가 파일 어딘가에
+    문자열로 있는 것과, :root 가 최상위 규칙으로 파싱되는 것은 다르다.
+    앞에 뭐라도 끼면 CSS 파서는 그것을 셀렉터로 보고 뒤 블록을 삼킨다.
+    """
+    css = (
+        Path(__file__).resolve().parents[1]
+        / "src" / "autodeploy" / "web" / "static" / "console.css"
+    ).read_text(encoding="utf-8")
+    head = re.sub(r"^\s*(/\*.*?\*/\s*)*", "", css, flags=re.S)
+    assert head.startswith(":root{"), f"토큰 규칙 앞에 뭔가 있다: {head[:40]!r}"
 
 
 async def test_console_requires_a_session(ui_client):
