@@ -179,3 +179,42 @@ def test_load_settings_includes_hubctl_values():
     s = load_settings(env)
     assert s.hubctl_repo_path == Path("~/hp").expanduser()
     assert s.become_password == s.ssh_password
+
+
+# ── SLACK_ENABLED ───────────────────────────────────────────────────
+
+
+def test_slack_is_enabled_when_the_flag_is_absent():
+    """이 값을 안 넣은 기존 .env 가 그대로 동작해야 한다."""
+    assert load_settings(_full_env()).slack_enabled is True
+
+
+def test_slack_can_be_turned_off():
+    env = _full_env() | {"SLACK_ENABLED": "false"}
+    assert load_settings(env).slack_enabled is False
+
+
+def test_slack_tokens_are_not_required_when_slack_is_off():
+    """웹 콘솔만 쓰는 사람이 쓰지도 않을 토큰을 발급받게 하지 않는다."""
+    env = {
+        "SLACK_ENABLED": "false",
+        "SSH_PASSWORD": "pw",
+        "BITBUCKET_APP_PASSWORD": "ATBB...",
+    }
+    s = load_settings(env)
+    assert s.slack_enabled is False
+    assert s.slack_bot_token == ""
+    assert s.slack_channel_id == ""
+
+
+def test_slack_tokens_are_still_required_when_slack_is_on():
+    env = {k: v for k, v in _full_env().items() if k != "SLACK_BOT_TOKEN"}
+    with pytest.raises(SettingsError, match="SLACK_BOT_TOKEN"):
+        load_settings(env)
+
+
+def test_turning_slack_off_does_not_touch_the_web_config():
+    env = _full_env() | {"SLACK_ENABLED": "false", "WEB_ENABLED": "true"}
+    s = load_settings(env)
+    assert s.slack_enabled is False
+    assert s.web.enabled is True

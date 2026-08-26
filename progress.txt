@@ -1395,3 +1395,55 @@ console.html 의 button/form/input/select 중 id 가 console.js 에 안 나오�
 
 ### 테스트
 719 passed
+
+--------------------------------------------------------------------------------
+## 2026-08-26 (이어서) — SLACK_ENABLED 스위치
+
+### 요청
+"슬랙봇은 이제 사용안할 것 같아." → 범위를 물어 **스위치 추가**로 확정.
+(코드 제거 아님. v1 Slack 코드는 그대로 둔다)
+
+### 왜 설정만으로 안 됐나
+SLACK_BOT_TOKEN/APP_TOKEN/CHANNEL_ID 가 required 라 없으면 exit 2,
+`_run()` 은 조건 없이 봇을 만들어 Socket Mode 를 시작했다. 봇 태스크가 죽으면
+데몬이 exit 4 → KeepAlive 가 10초마다 되살리는 크래시 루프.
+
+### 고친 것
+- `Settings.slack_enabled` (기본 True — 이 값을 안 넣은 기존 .env 동작 불변)
+- `slack_required()`: slack_enabled 가 false 면 SLACK_* 를 요구하지 않는다
+- `_run()`: deployment_types 로드 + AsyncWebClient/SlackNotifier/Workflow/
+  AutoDeployBot 생성을 전부 `if settings.slack_enabled:` 안으로
+- `_start_web(..., notifier_enabled=settings.slack_enabled)` — 게시할 곳이 없으면 게시자도 안 붙인다
+- 실행 루프가 bot 없이도 돌게: bot_task 가 None 이면 stop_event 만 기다린다.
+  finally 의 bot.close()/bot_task.cancel() 도 가드
+- **둘 다 꺼진 구성은 exit 2**. 조용히 떠 있으면 KeepAlive 가 살려둬서
+  "돌고는 있는데 아무 반응 없는" 상태로 오래 남는다
+
+### 검증 (단위 테스트 말고 실제 데몬 경로)
+- SLACK_ENABLED=false + 토큰 4개 전부 빈 값 → 웹 콘솔만 기동, healthz 200,
+  로그에 Slack 연결 흔적 0건, SIGTERM 종료 exit 0
+- SLACK_ENABLED=false + WEB_ENABLED=false → exit 2 + 안내 메시지
+- 신규 설정 테스트 5개
+
+### 사고 (내 실수) — 기록해 둠
+검증 중 저장소 디렉터리에서 데몬을 띄웠다가 `load_dotenv()` 가 실제 .env 를
+읽어 **진짜 Slack 토큰으로 Socket Mode 에 약 2분간 접속**했다. 맥미니 데몬과
+같은 앱에 두 번째 연결이 열린 셈이라, 그 사이 Slack 명령이 있었으면 내 테스트
+프로세스가 받았을 수 있다. 메시지는 안 보냈고 프로세스는 종료 확인함.
+
+**교훈**: `load_dotenv()` 는 CWD 가 아니라 **소스 파일 위치에서 위로** 올라가며
+.env 를 찾는다. 그래서 CWD 를 바꿔도 저장소 .env 를 집는다. 격리하려면
+env 로 해당 키를 **빈 값이라도 명시**해야 한다 (dotenv 는 override=False 라
+이미 있는 키를 건너뛴다).
+
+### 문서
+- .env.example: SLACK_ENABLED 항목
+- docs/operations.md §3-3 신설 (이하 절 번호 밀림)
+
+### 테스트
+724 passed
+
+### 다음
+용혁님 판단: 웹 콘솔로 실 서버 설치를 한 번 성공시킨 뒤에 끄시길 권했음.
+v1(setup-*.sh over SSH)과 웹(hubctl/Ansible)은 설치 방식이 달라서,
+Slack 을 먼저 끄면 돌아갈 경로가 없다.

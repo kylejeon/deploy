@@ -92,8 +92,11 @@ async def _run() -> int:
     _setup_logging(settings.log_level)
     log.info("AutoDeploy v%s 시작", __version__)
     log.info("DB: %s", settings.db_path)
-    log.info("Slack channel: %s", settings.slack_channel_id)
-    log.info("Allowed users: %d명", len(settings.allowed_users))
+    if settings.slack_enabled:
+        log.info("Slack channel: %s", settings.slack_channel_id)
+        log.info("Allowed users: %d명", len(settings.allowed_users))
+    else:
+        log.info("Slack 봇 비활성 (SLACK_ENABLED=false)")
 
     await init_db(settings.db_path)
 
@@ -107,66 +110,81 @@ async def _run() -> int:
     if reaped:
         log.warning("재시작으로 중단된 작업 %d건 정리: %s", len(reaped), reaped)
 
-    try:
-        deployment_types = load_deployment_types(settings.config_path)
-    except ConfigError as exc:
-        log.error("deployment_types config 오류: %s", exc)
-        return 3
-    log.info("Deployment types: %s", ", ".join(sorted(deployment_types)))
+    bot = None
+    web_client = None
+    if settings.slack_enabled:
+        try:
+            deployment_types = load_deployment_types(settings.config_path)
+        except ConfigError as exc:
+            log.error("deployment_types config 오류: %s", exc)
+            return 3
+        log.info("Deployment types: %s", ", ".join(sorted(deployment_types)))
 
-    # slack-sdk import는 여기서만 — settings 검증 전 import 실패하지 않도록
-    from slack_sdk.web.async_client import AsyncWebClient
+        # slack-sdk import는 여기서만 — settings 검증 전 import 실패하지 않도록
+        from slack_sdk.web.async_client import AsyncWebClient
 
-    web_client = AsyncWebClient(token=settings.slack_bot_token)
-    notifier = SlackNotifier(web_client, settings.slack_channel_id)
+        web_client = AsyncWebClient(token=settings.slack_bot_token)
+        notifier = SlackNotifier(web_client, settings.slack_channel_id)
 
-    def ssh_factory(host: str, port: int):
-        return AsyncSSHClient(
-            host,
-            username=settings.ssh_user,
-            password=settings.ssh_password,
-            port=port,
+        def ssh_factory(host: str, port: int):
+            return AsyncSSHClient(
+                host,
+                username=settings.ssh_user,
+                password=settings.ssh_password,
+                port=port,
+            )
+
+        workflow = Workflow(
+            ssh_factory=ssh_factory,
+            db_path=settings.db_path,
+            deployment_types=deployment_types,
+            notifier=notifier,
+            cfg=WorkflowConfig(
+                bitbucket_user=settings.bitbucket_user,
+                bitbucket_app_password=settings.bitbucket_app_password,
+                repo_host_path=settings.repo_host_path,
+                repo_branch=settings.repo_branch,
+                work_dir=settings.work_dir,
+                # sudo 비밀번호 = ssh 비밀번호 (connecteve 계정 공통). NOPASSWD가 아니어도 동작.
+                sudo_password=settings.ssh_password,
+                site_admin_email=settings.site_admin_email,
+                site_admin_password=settings.site_admin_password,
+                site_cloud_base_url=settings.site_cloud_base_url,
+                site_api_env=settings.site_api_env,
+                jira_base_url=settings.jira_base_url,
+                jira_email=settings.jira_email,
+                jira_api_token=settings.jira_api_token,
+                jira_key=settings.jira_key,
+                port_frontend=settings.port_frontend,
+                port_temporal=settings.port_temporal,
+                port_webpacs=settings.port_webpacs,
+            ),
         )
 
-    workflow = Workflow(
-        ssh_factory=ssh_factory,
-        db_path=settings.db_path,
-        deployment_types=deployment_types,
-        notifier=notifier,
-        cfg=WorkflowConfig(
-            bitbucket_user=settings.bitbucket_user,
-            bitbucket_app_password=settings.bitbucket_app_password,
-            repo_host_path=settings.repo_host_path,
-            repo_branch=settings.repo_branch,
-            work_dir=settings.work_dir,
-            # sudo 비밀번호 = ssh 비밀번호 (connecteve 계정 공통). NOPASSWD가 아니어도 동작.
-            sudo_password=settings.ssh_password,
-            site_admin_email=settings.site_admin_email,
-            site_admin_password=settings.site_admin_password,
-            site_cloud_base_url=settings.site_cloud_base_url,
-            site_api_env=settings.site_api_env,
-            jira_base_url=settings.jira_base_url,
-            jira_email=settings.jira_email,
-            jira_api_token=settings.jira_api_token,
-            jira_key=settings.jira_key,
-            port_frontend=settings.port_frontend,
-            port_temporal=settings.port_temporal,
-            port_webpacs=settings.port_webpacs,
-        ),
-    )
-
-    bot = AutoDeployBot(
-        settings=settings,
-        deployment_types=deployment_types,
-        workflow=workflow,
-    )
+        bot = AutoDeployBot(
+            settings=settings,
+            deployment_types=deployment_types,
+            workflow=workflow,
+        )
 
     web_runner = None
     if settings.web.enabled:
         # 웹에서 시작한 작업도 Slack 스레드에 게시한다 (F7).
-        web_runner = await _start_web(settings, web_client, notifier_enabled=True)
+        # Slack 을 끄면 게시할 곳이 없으므로 게시자도 붙이지 않는다.
+        web_runner = await _start_web(
+            settings, web_client, notifier_enabled=settings.slack_enabled
+        )
     else:
         log.info("웹 콘솔 비활성 (WEB_ENABLED=false)")
+
+    if bot is None and web_runner is None:
+        # 둘 다 없으면 이 프로세스가 할 일이 없다. 조용히 떠 있으면 KeepAlive 가
+        # 살려두는 바람에 "돌고 있는데 아무 반응이 없는" 상태로 오래 남는다.
+        log.error(
+            "Slack 봇도 웹 콘솔도 켜져 있지 않습니다. "
+            "SLACK_ENABLED 나 WEB_ENABLED 중 하나는 true 여야 합니다."
+        )
+        return 2
 
     loop = asyncio.get_running_loop()
     stop_event = asyncio.Event()
@@ -178,16 +196,19 @@ async def _run() -> int:
     for sig in (signal.SIGINT, signal.SIGTERM):
         loop.add_signal_handler(sig, _on_signal, sig.name)
 
-    log.info("Socket Mode 연결 시작")
-    bot_task = asyncio.create_task(bot.start(), name="autodeploy-bot")
+    bot_task = None
+    if bot is not None:
+        log.info("Socket Mode 연결 시작")
+        bot_task = asyncio.create_task(bot.start(), name="autodeploy-bot")
+
+    waits = {asyncio.create_task(stop_event.wait(), name="stop-wait")}
+    if bot_task is not None:
+        # bot_task가 먼저 끝나면 (예: 연결 실패) 그것도 종료 신호
+        waits.add(bot_task)
 
     try:
-        # bot_task가 먼저 끝나면 (예: 연결 실패) 그것도 종료 신호
-        done, _ = await asyncio.wait(
-            {bot_task, asyncio.create_task(stop_event.wait(), name="stop-wait")},
-            return_when=asyncio.FIRST_COMPLETED,
-        )
-        if bot_task in done and not stop_event.is_set():
+        done, _ = await asyncio.wait(waits, return_when=asyncio.FIRST_COMPLETED)
+        if bot_task is not None and bot_task in done and not stop_event.is_set():
             exc = bot_task.exception()
             if exc is not None:
                 log.error("봇 비정상 종료: %s", exc)
@@ -199,11 +220,12 @@ async def _run() -> int:
                 await web_runner.cleanup()
             except Exception:
                 log.exception("웹 콘솔 종료 중 오류")
-        try:
-            await bot.close()
-        except Exception:
-            log.exception("bot.close 중 오류")
-        if not bot_task.done():
+        if bot is not None:
+            try:
+                await bot.close()
+            except Exception:
+                log.exception("bot.close 중 오류")
+        if bot_task is not None and not bot_task.done():
             bot_task.cancel()
             try:
                 await bot_task

@@ -162,6 +162,9 @@ class Settings:
     # 기존 Slack 워크플로는 이 값들을 쓰지 않으므로 기본값을 준다.
     hubctl_repo_path: Path = Path(DEFAULT_HUBCTL_REPO_PATH).expanduser()
     become_password: str = ""
+    # Slack 봇(v1 워크플로 + 알림)을 띄울지. 기본 True — 기존 배포의 동작을 바꾸지 않는다.
+    # false 면 SLACK_* 토큰도 요구하지 않는다. 웹 콘솔만 쓰는 구성을 위한 스위치다.
+    slack_enabled: bool = True
     web: WebConfig = WebConfig(
         enabled=False,
         host="127.0.0.1",
@@ -182,6 +185,16 @@ def load_settings(env: Mapping[str, str] | None = None) -> Settings:
             raise SettingsError(f"missing required env var: {key}")
         return v
 
+    # 기본 True. 이 값을 안 넣은 기존 .env 가 그대로 동작해야 한다.
+    slack_enabled = _flag(e, "SLACK_ENABLED", default=True)
+
+    def slack_required(key: str) -> str:
+        """Slack 을 안 쓰면 토큰도 요구하지 않는다.
+
+        요구하면 웹 콘솔만 쓰려는 사람이 쓰지도 않을 토큰을 발급받아야 한다.
+        """
+        return required(key) if slack_enabled else e.get(key, "").strip()
+
     allowed_raw = e.get("AUTODEPLOY_ALLOWED_USERS", "")
     allowed = frozenset(u.strip() for u in allowed_raw.split(",") if u.strip())
 
@@ -192,9 +205,10 @@ def load_settings(env: Mapping[str, str] | None = None) -> Settings:
     work_dir = _expand_remote_home(raw_work_dir, ssh_user)
 
     return Settings(
-        slack_bot_token=required("SLACK_BOT_TOKEN"),
-        slack_app_token=required("SLACK_APP_TOKEN"),
-        slack_channel_id=required("SLACK_CHANNEL_ID"),
+        slack_enabled=slack_enabled,
+        slack_bot_token=slack_required("SLACK_BOT_TOKEN"),
+        slack_app_token=slack_required("SLACK_APP_TOKEN"),
+        slack_channel_id=slack_required("SLACK_CHANNEL_ID"),
         allowed_users=allowed,
         ssh_user=ssh_user,
         ssh_password=required("SSH_PASSWORD"),
