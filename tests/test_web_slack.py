@@ -351,6 +351,34 @@ def test_every_hubctl_env_has_a_display_name():
     assert not missing, f"화면 이름이 없는 환경: {missing}"
 
 
+def test_the_login_screen_does_not_stay_in_history():
+    """로그인 뒤 이동은 replace 여야 한다.
+
+    href 로 넘기면 로그인 화면이 히스토리에 남는다. 그러면 대시보드나 서버
+    화면에서 뒤로가기를 누를 때 **이미 로그인했는데도 로그인 화면으로 돌아간다**
+    (브라우저가 그 항목을 캐시에서 꺼내므로 서버의 302 도 안 탄다).
+    """
+    static = Path(__file__).resolve().parents[1] / "src" / "autodeploy" / "web" / "static"
+    html = (static / "login.html").read_text(encoding="utf-8")
+    assert 'location.replace("/")' in html
+    assert 'location.href = "/"' not in html
+
+
+def test_switching_views_counts_as_a_visit():
+    """화면 전환이 히스토리 항목을 남겨야 뒤로가기가 앱 안에서 움직인다.
+
+    전부 replaceState 면 콘솔 전체가 항목 하나라, 서버 화면에서 뒤로가기를
+    누르는 순간 앱 밖으로 나가버린다.
+    """
+    js = (
+        Path(__file__).resolve().parents[1]
+        / "src" / "autodeploy" / "web" / "static" / "console.js"
+    ).read_text(encoding="utf-8")
+    assert "history.pushState" in js, "화면 전환이 방문으로 남지 않는다"
+    # 뒤로가기로 들어온 경우까지 밀어넣으면 항목이 두 겹으로 쌓인다.
+    assert "push: false" in js, "routeFromHash 가 덮어쓰기로 들어오지 않는다"
+
+
 def test_stylesheet_starts_with_the_token_rule():
     """파일 맨 앞(주석 제외)이 곧바로 :root 규칙이어야 한다.
 

@@ -58,11 +58,34 @@ async def test_awaiting_job_is_also_reaped(db):
     assert (await get_job_detail(db, job_id))["status"] == "failed"
 
 
-async def test_queued_job_is_left_alone(db):
-    """아직 프로세스가 뜬 적 없으므로 재기동 후 그대로 실행하면 된다."""
-    job_id = await make_job(db, status="queued")
-    assert await reap_stale_jobs(db, reason=REASON) == []
-    assert (await get_job_detail(db, job_id))["status"] == "queued"
+async def test_queued_job_is_cancelled_not_left_behind(db):
+    """줄 서 있던 작업은 재시작을 못 넘긴다 — 큐가 메모리에만 있기 때문이다.
+
+    예전에는 "재기동하면 그대로 실행된다" 고 보고 두었는데 그렇지 않다.
+    `JobQueue._pending` 은 메모리이고 기동 시 DB 에서 되살리지 않는다. 그대로
+    두면 영원히 '대기' 로 남아 **서버 목록 편집이 계속 409 로 막힌다**
+    (`_reject_if_busy` 가 queued 도 진행 중으로 센다).
+
+    뜬 적이 없으므로 실패가 아니라 취소다 — 실패 이력을 부풀리지 않는다.
+    """
+    job_id = await make_job(db, status="queued", hosts=[("alpha", "queued")])
+    assert await reap_stale_jobs(db, reason=REASON) == [job_id]
+
+    job = await get_job_detail(db, job_id)
+    assert job["status"] == "cancelled"
+    assert job["cancel_by"] == "system"
+    assert job["finished_at"] is not None
+    assert [h["status"] for h in job["hosts"]] == ["cancelled"]
+
+
+async def test_reaping_unblocks_the_inventory(db):
+    """이게 이 정리의 목적이다 — 좀비 작업 하나가 서버 편집을 통째로 막는다."""
+    from autodeploy.repository import count_active_jobs
+
+    await make_job(db, status="queued")
+    assert await count_active_jobs(db) == 1
+    await reap_stale_jobs(db, reason=REASON)
+    assert await count_active_jobs(db) == 0
 
 
 @pytest.mark.parametrize("status", ["succeeded", "failed", "cancelled"])

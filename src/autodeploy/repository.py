@@ -419,6 +419,15 @@ async def get_script_logs(
     ]
 
 
+async def active_job_ids(db: aiosqlite.Connection) -> list[int]:
+    """진행 중(대기·실행·승인 대기) 작업 번호. 막고 있는 것을 이름으로 말하려고."""
+    marks = ",".join("?" * len(ACTIVE_STATUSES))
+    async with db.execute(
+        f"SELECT id FROM jobs WHERE status IN ({marks}) ORDER BY id", ACTIVE_STATUSES
+    ) as cur:
+        return [int(r["id"]) for r in await cur.fetchall()]
+
+
 async def count_active_jobs(db: aiosqlite.Connection) -> int:
     placeholders = ",".join("?" * len(ACTIVE_STATUSES))
     async with db.execute(
@@ -474,18 +483,29 @@ async def delete_jobs(
 
 
 async def reap_stale_jobs(db: aiosqlite.Connection, *, reason: str) -> list[int]:
-    """기동 시 남아있는 running/awaiting 작업을 실패로 정리한다 (§9).
+    """기동 시 남아있는 진행 중 작업을 정리한다 (§9).
 
     데몬이 죽으면 그 작업을 감독하던 러너도 함께 사라진다. 상태를 그대로 두면
-    영원히 '진행 중'으로 보이고, 큐가 이미 하나 돌고 있다고 오해해 새 작업이
-    시작되지 않는다. queued 는 아직 시작 전이라 건드리지 않는다.
+    영원히 '진행 중'으로 보이고, 그동안 **서버 목록을 고칠 수 없다**
+    (`_reject_if_busy`).
+
+    - `running` · `awaiting` → 실패. 프로세스가 떴다가 감독자를 잃었다.
+    - `queued` → 취소. 뜬 적이 없으니 실패가 아니라 취소가 맞다.
+
+    queued 를 예전에는 그냥 뒀다. "재기동하면 그대로 실행된다"는 전제였는데
+    **그렇지 않다** — 큐는 메모리에만 있고(`JobQueue._pending`) 기동 시 DB 에서
+    되살리지 않는다. 그래서 재시작 때 줄 서 있던 작업은 영원히 '대기' 로 남아
+    화면을 속이고 인벤토리 편집을 막는다. 되살릴 수 없으면 정리하는 것이 맞다.
     """
     async with db.execute(
-        "SELECT id FROM jobs WHERE status IN ('running','awaiting')"
+        "SELECT id, status FROM jobs WHERE status IN ('queued','running','awaiting')"
     ) as cur:
-        ids = [int(r["id"]) for r in await cur.fetchall()]
-    if not ids:
+        rows = [(int(r["id"]), str(r["status"])) for r in await cur.fetchall()]
+    if not rows:
         return []
+
+    ids = [i for i, _ in rows]
+    queued = [i for i, st in rows if st == "queued"]
 
     await db.execute(
         "UPDATE jobs SET status='failed', finished_at=CURRENT_TIMESTAMP,"
@@ -493,12 +513,31 @@ async def reap_stale_jobs(db: aiosqlite.Connection, *, reason: str) -> list[int]
         " WHERE status IN ('running','awaiting')",
         (reason,),
     )
-    placeholders = ",".join("?" * len(ids))
-    await db.execute(
-        f"UPDATE job_hosts SET status='failed'"
-        f" WHERE job_id IN ({placeholders}) AND status IN ('queued','running')",
-        ids,
-    )
+    if queued:
+        holes = ",".join("?" * len(queued))
+        await db.execute(
+            f"UPDATE jobs SET status='cancelled', finished_at=CURRENT_TIMESTAMP,"
+            f" cancel_by='system', error_message=COALESCE(error_message, ?)"
+            f" WHERE id IN ({holes})",
+            [reason, *queued],
+        )
+    # 호스트 결과도 작업과 같은 결말을 따른다 — 뜬 적 없는 대상을 '실패' 로
+    # 적으면 나중에 실패 이력을 세는 눈이 속는다.
+    started = [i for i, st in rows if st != "queued"]
+    if started:
+        holes = ",".join("?" * len(started))
+        await db.execute(
+            f"UPDATE job_hosts SET status='failed'"
+            f" WHERE job_id IN ({holes}) AND status IN ('queued','running')",
+            started,
+        )
+    if queued:
+        holes = ",".join("?" * len(queued))
+        await db.execute(
+            f"UPDATE job_hosts SET status='cancelled'"
+            f" WHERE job_id IN ({holes}) AND status IN ('queued','running')",
+            queued,
+        )
     await db.executemany(
         "INSERT INTO job_events (job_id, step, level, message) VALUES (?, ?, ?, ?)",
         [(job_id, "daemon", "error", reason) for job_id in ids],

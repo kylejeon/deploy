@@ -448,9 +448,16 @@ async def _reject_if_busy(request: web.Request) -> web.Response | None:
     시작한다. 작업이 끝난 뒤에 고치는 편이 안전하다.
     """
     async with connect(request.app[keys.DB_PATH]) as db:
-        active = await repository.count_active_jobs(db)
+        active = await repository.active_job_ids(db)
     if active:
-        return json_error(409, f"진행 중인 작업이 {active}건 있어 서버 목록을 바꿀 수 없습니다")
+        # 막고 있는 작업을 번호로 짚어준다. 그냥 "1건" 이라고만 하면 어디를 봐야
+        # 하는지 알 수 없고, 특히 재시작을 넘긴 좀비 작업일 때 손을 못 쓴다.
+        names = ", ".join(f"#{i}" for i in active)
+        return json_error(
+            409,
+            f"진행 중인 작업이 {len(active)}건 있어 서버 목록을 바꿀 수 없습니다"
+            f" ({names}) — 끝나기를 기다리거나 그 작업을 취소하세요",
+        )
     return None
 
 

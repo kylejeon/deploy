@@ -231,7 +231,11 @@ async def test_inventory_is_frozen_while_a_job_is_active(client, temp_db, method
 
     resp = await send(client, method, path, payload)
     assert resp.status == 409
-    assert "진행 중인 작업" in (await resp.json())["error"]
+    error = (await resp.json())["error"]
+    assert "진행 중인 작업" in error
+    # 막고 있는 작업을 번호로 짚어줘야 손을 쓸 수 있다. "1건" 만으로는
+    # 어디를 봐야 할지 알 수 없다 — 재시작을 넘긴 좀비 작업일 때 특히.
+    assert "#1" in error, error
 
 
 async def test_finished_jobs_do_not_block_edits(client, temp_db):

@@ -58,7 +58,9 @@ form.addEventListener("submit", async (event) => {
     });
     const data = await response.json().catch(() => ({}));
     if (response.ok) {
-      location.href = "/";
+      // replace 다. href 로 넘기면 로그인 화면이 히스토리에 남아, 콘솔에서
+      // 뒤로가기를 누르면 이미 로그인했는데도 로그인 화면으로 돌아간다.
+      location.replace("/");
       return;
     }
     showError(data.error || `로그인에 실패했습니다 (${response.status})`);

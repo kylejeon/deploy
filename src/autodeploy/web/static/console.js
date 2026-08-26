@@ -132,7 +132,9 @@ async function api(path, { method = "GET", body, text = false } = {}) {
   } catch (e) {
     throw new ApiError("서버에 연결할 수 없습니다", 0);
   }
-  if (response.status === 401) { location.href = "/login"; throw new ApiError("로그인이 필요합니다", 401); }
+  // replace 다. 세션이 끊겨 튕겨나갈 때마다 항목이 쌓이면, 뒤로가기가 죽은
+  // 화면과 로그인 화면 사이를 오가게 된다.
+  if (response.status === 401) { location.replace("/login"); throw new ApiError("로그인이 필요합니다", 401); }
   if (text) {
     const body = await response.text();
     if (!response.ok) throw new ApiError(body || `요청 실패 (${response.status})`, response.status);
@@ -156,7 +158,10 @@ const state = {
   sse: null, pollTimer: null, tickTimer: null,
 };
 
-function go(view, id) {
+/* push=false 는 "브라우저가 이미 그 항목을 만들었다"는 뜻이다 — 뒤로가기/앞으로,
+   주소창 입력, 첫 진입. 그때 또 밀어넣으면 항목이 두 겹으로 쌓여 뒤로가기를
+   두 번 눌러야 한 화면 움직인다. */
+function go(view, id, { push = true } = {}) {
   closeStream();
   clearInterval(state.pollTimer); state.pollTimer = null;
   state.view = view;
@@ -166,16 +171,21 @@ function go(view, id) {
     b.dataset.go === view ? b.setAttribute("aria-current", "page") : b.removeAttribute("aria-current");
   }
   const hash = view === "job" ? `#job/${state.jobId}` : `#${view}`;
-  if (location.hash !== hash) history.replaceState(null, "", hash);
+  if (location.hash !== hash) {
+    // 화면을 바꾼 것은 방문으로 친다. replace 만 하면 앱 안에 항목이 하나뿐이라
+    // 서버 화면에서 뒤로가기를 누르는 순간 콘솔 밖으로 나가버린다.
+    if (push) history.pushState(null, "", hash);
+    else history.replaceState(null, "", hash);
+  }
   window.scrollTo({ top: 0 });
   ({ dash: showDash, job: showJob, srv: showServers, new: showNew, clean: showClean })[view]();
 }
 
 function routeFromHash() {
   const m = /^#job\/(\d+)$/.exec(location.hash);
-  if (m) return go("job", Number(m[1]));
+  if (m) return go("job", Number(m[1]), { push: false });
   const view = (location.hash || "#dash").slice(1);
-  go(["dash", "srv", "new", "clean"].includes(view) ? view : "dash");
+  go(["dash", "srv", "new", "clean"].includes(view) ? view : "dash", undefined, { push: false });
 }
 
 /* ══ 대시보드 ══════════════════════════════════════════ */
@@ -1220,7 +1230,8 @@ $("#addSrv").addEventListener("click", () => serverModal());
 
 $("#logout").addEventListener("click", async () => {
   try { await api("/api/logout", { method: "POST" }); } catch { /* 어차피 화면을 뜬다 */ }
-  location.href = "/login";
+  // 콘솔 항목을 덮어쓴다 — 로그아웃한 뒤 뒤로가기로 콘솔에 되돌아가지 않도록.
+  location.replace("/login");
 });
 window.addEventListener("hashchange", routeFromHash);
 
