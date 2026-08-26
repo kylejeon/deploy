@@ -188,8 +188,8 @@ tbody tr:hover{background:var(--surface-2)}
 .ln--err .tx{color:var(--console-err)}
 .ln--recap .tx{color:#fff; font-weight:600}
 /* 오류 요약 — 실행 로그 아래. 오류가 없으면 아예 렌더되지 않는다. */
-.console__errs{border-top:1px solid var(--console-line); display:flex; flex-direction:column; max-height:280px}
-.console__errbar{display:flex; align-items:center; gap:10px; padding:8px 12px; border-bottom:1px solid var(--console-line);
+.console--errs{max-height:280px}
+.console__errbar{display:flex; align-items:center; gap:10px; padding:9px 12px; border-bottom:1px solid var(--console-line);
   background:rgba(232,166,172,.07); color:var(--console-err); font:600 11.5px/1 "IBM Plex Mono",ui-monospace,monospace}
 .console__errhint{color:var(--console-dim); font-weight:400}
 .console__errbody{overflow:auto; padding:9px 13px;

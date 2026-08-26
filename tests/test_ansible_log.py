@@ -287,3 +287,61 @@ def test_carriage_return_is_stripped():
     parsed = AnsibleLogParser().feed("ok: [alpha]\r\n")
     assert parsed.text == "ok: [alpha]"
     assert parsed.host == "alpha"
+
+
+# ── 이어짐 본문의 종류 ──────────────────────────────────────────────
+
+
+def _kinds(block: str) -> list[str]:
+    parser = AnsibleLogParser()
+    return [parser.feed(line).kind.value for line in block.splitlines()]
+
+
+def test_continuation_body_inherits_the_opening_verb():
+    """`ok: [h] =>` 뒤의 본문은 ok 다. 실패 본문만 err 여야 한다.
+
+    전에는 이어짐이 열려 있기만 하면 무조건 ERROR 로 칠했다. 그 결과
+    `msg: All assertions passed` 같은 성공 본문이 빨갛게 뜨고, 오류 요약
+    패널이 성공 메시지로 가득 찼다 (실측 23건 중 대부분이 이것이었다).
+    """
+    assert _kinds(
+        "ok: [testpc] =>\n"
+        "  changed: false\n"
+        "  msg: All assertions passed"
+    ) == ["ok", "ok", "ok"]
+
+    assert _kinds(
+        "changed: [testpc] =>\n"
+        "  msg: k0s 단일 노드 준비 완료"
+    ) == ["chg", "chg"]
+
+    assert _kinds(
+        "fatal: [testpc]: FAILED! =>\n"
+        "  msg: 실패 이유\n"
+        "  rc: 1"
+    ) == ["err", "err", "err"]
+
+
+def test_continuation_closes_on_the_next_unindented_line():
+    assert _kinds(
+        "fatal: [testpc]: FAILED! =>\n"
+        "  msg: 실패\n"
+        "ok: [testpc]\n"
+        "  이건 이어짐이 아니다"
+    ) == ["err", "err", "ok", "out"]
+
+
+def test_a_blank_line_ends_the_continuation():
+    assert _kinds(
+        "fatal: [testpc]: FAILED! =>\n"
+        "  msg: 실패\n"
+        "\n"
+        "  더 이상 실패 본문이 아니다"
+    ) == ["err", "err", "out", "out"]
+
+
+def test_retry_lines_are_not_errors():
+    """`FAILED - RETRYING` 은 정상 폴링이다. k0s 기동 대기만 해도 수십 줄 나온다."""
+    assert _kinds(
+        "FAILED - RETRYING: [testpc]: k0s | 노드 Ready 대기 (59 retries left)."
+    ) == ["out"]

@@ -158,27 +158,28 @@ class ParsedLine:
 class AnsibleLogParser:
     """줄을 순서대로 `feed` 하면 태깅해서 돌려준다. 한 작업(=한 프로세스)당 1개."""
 
-    __slots__ = ("step", "in_recap", "recaps", "_cont_host")
+    __slots__ = ("step", "in_recap", "recaps", "_cont_host", "_cont_kind")
 
     def __init__(self) -> None:
         self.step: str | None = None
         self.in_recap = False
         self.recaps: dict[str, HostRecap] = {}
         self._cont_host: str | None = None
+        self._cont_kind: LineKind = LineKind.OUT
 
     def feed(self, text: str) -> ParsedLine:
         raw = text.rstrip("\r\n")
         line = raw.rstrip()
 
         if not line:
-            self._cont_host = None
+            self._close_continuation()
             return ParsedLine(raw, LineKind.OUT, None, self.step)
 
         indented = raw[:1].isspace()
 
         if line.startswith("PLAY RECAP"):
             self.in_recap = True
-            self._cont_host = None
+            self._close_continuation()
             return ParsedLine(raw, LineKind.TASK, None, self.step)
 
         if self.in_recap and not indented:
@@ -196,11 +197,15 @@ class AnsibleLogParser:
         match = _RESULT_RE.match(line)
         if match is not None:
             host = match.group("host")
+            kind = _VERB_KIND[match.group("verb")]
             # `=>` 로 끝나면 YAML 본문이 따라온다. 그때만 이어짐을 연다.
-            self._cont_host = host if line.endswith("=>") else None
-            return ParsedLine(raw, _VERB_KIND[match.group("verb")], host, self.step)
+            if line.endswith("=>"):
+                self._cont_host, self._cont_kind = host, kind
+            else:
+                self._close_continuation()
+            return ParsedLine(raw, kind, host, self.step)
 
-        self._cont_host = None
+        self._close_continuation()
         return ParsedLine(raw, _classify_plain(line), None, self.step, step_started=step_started)
 
     def _advance_step(self, line: str) -> bool:
@@ -212,9 +217,18 @@ class AnsibleLogParser:
                 return True
         return False
 
+    def _close_continuation(self) -> None:
+        self._cont_host = None
+        self._cont_kind = LineKind.OUT
+
     def _continuation_kind(self) -> LineKind:
-        # 에러 본문은 에러로 물들여야 콘솔에서 통째로 눈에 띈다.
-        return LineKind.ERROR if self._cont_host is not None else LineKind.OUT
+        """본문은 **여는 줄과 같은 종류**다.
+
+        전에는 이어짐이 열려 있기만 하면 무조건 ERROR 로 칠했다. 그러면
+        `ok: [h] =>` 뒤의 `msg: All assertions passed` 같은 성공 본문까지 빨갛게
+        되고, 오류 요약 패널이 성공 메시지로 가득 찬다(실측: 23건 중 대부분).
+        """
+        return self._cont_kind
 
 
 def _parse_recap(line: str) -> HostRecap | None:

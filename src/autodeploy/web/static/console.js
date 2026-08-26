@@ -361,7 +361,7 @@ function renderJob() {
       <div class="card"><div class="card__body">
         <dl class="kv">
           <dt>시작</dt><dd>${esc(shortTime(job.created_at))}</dd>
-          <dt>소요</dt><dd>${esc(duration(job))}</dd>
+          <dt>소요</dt><dd id="jDur">${esc(duration(job))}</dd>
           <dt>실행자</dt><dd>${esc(job.started_by || "–")}</dd>
           <dt>ref</dt><dd>${esc(job.ref || "–")}${job.ref_type ? ` (${esc(job.ref_type)})` : ""}</dd>
           <dt>종료 코드</dt><dd>${job.exit_code === null || job.exit_code === undefined ? "–" : job.exit_code}</dd>
@@ -374,15 +374,17 @@ function renderJob() {
           <div class="card"><div class="card__head"><h2>진행 단계</h2></div><div class="steps">${steps}</div>
             ${hosts ? `<div class="hosts">${hosts}</div>` : ""}</div>
         </div>
-        <div class="console">
-          <div class="console__bar">
-            <span class="lbl">실행 로그</span>
-            <div class="hostbar push">${chips}</div>
-            <button class="toggle" id="jAuto" aria-pressed="${state.autoscroll}">자동 스크롤</button>
-            <span class="since" id="jSince"></span>
+        <div class="stack gap-12">
+          <div class="console">
+            <div class="console__bar">
+              <span class="lbl">실행 로그</span>
+              <div class="hostbar push">${chips}</div>
+              <button class="toggle" id="jAuto" aria-pressed="${state.autoscroll}">자동 스크롤</button>
+              <span class="since" id="jSince"></span>
+            </div>
+            <div class="console__body" id="log"></div>
           </div>
-          <div class="console__body" id="log"></div>
-          <div class="console__errs" id="errPanel" hidden>
+          <div class="console console--errs" id="errPanel" hidden>
             <div class="console__errbar">
               <span id="errCount"></span>
               <span class="push console__errhint">클릭하면 로그의 해당 위치로 이동합니다</span>
@@ -518,6 +520,9 @@ function scrollLog(force) {
 function tickSince() {
   const el = $("#jSince");
   if (!el) { clearInterval(state.tickTimer); state.tickTimer = null; return; }
+  // 소요는 렌더 때 한 번 박히면 그대로라 새로고침해야 움직였다. 같은 타이머에 태운다.
+  const dur = $("#jDur");
+  if (dur && state.job) dur.textContent = duration(state.job);
   if (!state.job || !ACTIVE.includes(state.job.status)) { el.textContent = ""; return; }
   if (!state.lastLineAt) { el.textContent = "출력 대기 중"; return; }
   const sec = Math.floor((Date.now() - state.lastLineAt) / 1000);
