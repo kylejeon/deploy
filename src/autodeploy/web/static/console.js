@@ -96,6 +96,12 @@ function hostLabel(job) {
   if (!hs.length) return job.kind === "patch" ? "컨트롤러" : "–";
   return hs.length === 1 ? hs[0] : `${hs[0]} 외 ${hs.length - 1}대`;
 }
+/* 환경 표기. 화면에는 읽기 쉬운 이름을 쓰되 실제 `-e` 값도 함께 남긴다 —
+   그 값이 Vault 금고 경로이고 재시도할 때 그대로 다시 나가기 때문에,
+   "Staging" 만 보여주면 로그의 `-e stage` 와 대조할 방법이 없어진다. */
+const ENV_LABEL = { dev: "Dev", stage: "Staging", prod: "Prod" };
+const envLabel = (env) => ENV_LABEL[env] || env;
+
 const phasesOf = (job) => PHASES[job.kind] || PHASES.install;
 
 function toast(message, kind) {
@@ -303,6 +309,8 @@ async function showJob() {
 
 function renderJob() {
   const job = state.job;
+  const jobHosts = hostsOf(job);
+  syncHostFilter(jobHosts);
   const phases = phasesOf(job);
   const idx = phases.findIndex(([k]) => k === job.current_step);
   const finished = !ACTIVE.includes(job.status);
@@ -353,8 +361,11 @@ function renderJob() {
   const error = job.error_message && job.status === "failed"
     ? `<div class="alert"><span class="alert__g">✕</span><p class="note" style="color:var(--ink-2)">${esc(job.error_message)}</p></div>` : "";
 
-  const chips = ["", ...hostsOf(job)].map((h) =>
-    `<button type="button" class="hchip" data-host="${esc(h)}" aria-pressed="${state.hostFilter === h}">${h ? esc(h) : "전체"}</button>`).join("");
+  /* "전체"는 두지 않는다 — 한 대짜리 작업에서는 대상 필터와 결과가 같아 고를
+     이유가 없고, 여러 대일 때는 두 대의 로그가 한 줄씩 번갈아 섞여 읽을 수 없다.
+     대상이 하나뿐이면 칩 자체를 그리지 않는다 (누를 것이 없는 버튼이 된다). */
+  const chips = jobHosts.length > 1 ? jobHosts.map((h) =>
+    `<button type="button" class="hchip" data-host="${esc(h)}" aria-pressed="${state.hostFilter === h}">${esc(h)}</button>`).join("") : "";
 
   $("#view-job").innerHTML = `
     <div class="topline"><button class="btn btn--sm" id="jBack">← 목록</button>
@@ -367,6 +378,9 @@ function renderJob() {
           <dt>시작</dt><dd>${esc(shortTime(job.created_at))}</dd>
           <dt>소요</dt><dd id="jDur">${esc(duration(job))}</dd>
           <dt>실행자</dt><dd>${esc(job.started_by || "–")}</dd>
+          <dt>환경</dt><dd>${job.env
+            ? `${esc(envLabel(job.env))} <span class="mono dim">(-e ${esc(job.env)})</span>`
+            : `– <span class="dim">이 종류는 -e 를 받지 않습니다</span>`}</dd>
           <dt>ref</dt><dd>${esc(job.ref || "–")}${job.ref_type ? ` (${esc(job.ref_type)})` : ""}</dd>
           <dt>종료 코드</dt><dd>${job.exit_code === null || job.exit_code === undefined ? "–" : job.exit_code}</dd>
           ${job.cancel_by ? `<dt>취소</dt><dd>${esc(job.cancel_by)}</dd>` : ""}
@@ -382,8 +396,8 @@ function renderJob() {
           <div class="console">
             <div class="console__bar">
               <span class="lbl">실행 로그</span>
-              <div class="hostbar push">${chips}</div>
-              <button class="toggle" id="jAuto" aria-pressed="${state.autoscroll}">자동 스크롤</button>
+              ${chips ? `<div class="hostbar push">${chips}</div>` : ""}
+              <button class="toggle${chips ? "" : " push"}" id="jAuto" aria-pressed="${state.autoscroll}">자동 스크롤</button>
               <span class="since" id="jSince"></span>
             </div>
             <div class="console__body" id="log"></div>
@@ -417,6 +431,14 @@ function renderJob() {
   $("#jRetryAll")?.addEventListener("click", () => retry(job, hostsOf(job)));
   $("#jForward")?.addEventListener("click", () => forwardModal(hostsOf(job), job.env));
   paintLog();
+}
+
+/* 필터는 항상 대상 한 대를 가리킨다. 비어 있거나(막 열었을 때) 이 작업에 없는
+   호스트를 가리키면(다른 작업을 보다 넘어왔을 때) 첫 대상으로 맞춘다.
+   대상이 없는 작업(patch 등)은 필터 없이 전부 보여준다. */
+function syncHostFilter(hosts) {
+  if (!hosts.length) state.hostFilter = "";
+  else if (!hosts.includes(state.hostFilter)) state.hostFilter = hosts[0];
 }
 
 /* 로그 — 호스트 필터는 해당 호스트 줄 + 공통 줄(host=null)을 남긴다 (AC-6) */
@@ -510,7 +532,10 @@ function appendLines(rows) {
   if (!el) return;
   const html = rows.filter((l) => !state.hostFilter || !l.host || l.host === state.hostFilter).map(lineHtml).join("");
   if (!html) return;
-  if (state.lines.length === rows.length) el.innerHTML = "";
+  // "로그가 아직 없습니다" 안내 줄을 치운다. 첫 배치가 통째로 필터에 걸려
+  // 빈 문자열이 되는 경우(다른 호스트 줄만 온 경우)가 있어 배치 번호로 세면
+  // 안내 줄이 영영 남는다. 안내 줄에는 data-id 가 없으니 그것으로 찾는다.
+  el.querySelector(".ln:not([data-id])")?.remove();
   el.insertAdjacentHTML("beforeend", html);
   scrollLog();
 }

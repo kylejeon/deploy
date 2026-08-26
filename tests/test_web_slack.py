@@ -330,6 +330,27 @@ def test_every_control_in_the_console_is_wired_to_the_script():
     assert not unwired, f"console.js 가 쓰지 않는 컨트롤: {unwired}"
 
 
+def test_every_hubctl_env_has_a_display_name():
+    """`-e` 로 넘길 수 있는 환경은 작업 상세에도 이름이 있어야 한다.
+
+    콘솔은 실행자 밑에 `Dev (-e dev)` 처럼 읽기 쉬운 이름과 실제 플래그 값을
+    함께 보여준다. hubctl 의 ENVS 에 환경이 하나 늘면 그 환경만 이름 없이
+    원문으로 떨어져(envLabel 의 폴백) 표기가 갈린다. 깨지지는 않지만
+    한 화면에 두 가지 표기가 섞이는 것을 여기서 잡는다.
+    """
+    from autodeploy.hubctl import ENVS
+
+    js = (
+        Path(__file__).resolve().parents[1]
+        / "src" / "autodeploy" / "web" / "static" / "console.js"
+    ).read_text(encoding="utf-8")
+    block = re.search(r"const ENV_LABEL = \{([^}]*)\}", js)
+    assert block, "console.js 에서 ENV_LABEL 을 못 찾았다"
+    named = set(re.findall(r"(\w+)\s*:", block.group(1)))
+    missing = sorted(set(ENVS) - named)
+    assert not missing, f"화면 이름이 없는 환경: {missing}"
+
+
 def test_stylesheet_starts_with_the_token_rule():
     """파일 맨 앞(주석 제외)이 곧바로 :root 규칙이어야 한다.
 
