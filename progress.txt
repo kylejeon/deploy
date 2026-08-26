@@ -2029,3 +2029,40 @@ DevTools: `PUT /api/servers/testpc 409 (Conflict)`. 진행 중 설치는 없었�
 
 ### 다음
 배포 후 서버 편집이 실제로 되는지 확인. 이번 건은 파이썬이라 데몬 재시작 필요.
+
+--------------------------------------------------------------------------------
+## 2026-08-26 (이어서) — tailnet 너머 타겟 지원 여부 확인
+
+### 질문
+Tailscale 로 연결된 외부 PC 도 서버 추가 → 설치 → 포트포워딩 되나?
+
+### 답: 된다. 코드로 확인한 근거
+- `inventory.validate_server` 는 **대역을 제한하지 않는다.** `_is_addr` 가
+  ip_address() 또는 `^[A-Za-z0-9][A-Za-z0-9_.-]*$`. 100.x, MagicDNS 이름 통과.
+  단 `1.2.3.4:22022` 는 거절 — 콜론이 정규식에 없다.
+- 키 등록: `register_key(host=server.ansible_host)` 기본 port=22. 주소만 다를 뿐.
+- 포트포워딩: `ForwardManager.open(address=server.ansible_host)` →
+  `asyncio.open_connection` 이라 LAN/tailnet 구분 없음.
+- 소스 전체에 LAN 대역 하드코딩 없음 (주석/문서 표현만 "사내망").
+
+### hub-provisioning 쪽 (읽기만 함, 수정 안 함)
+- `roles/k0s/defaults/main.yml:35` `k0s_phys_ip: {{ ansible_host | default(...) }}`
+  → k0s API 인증서 SAN 에 들어간다. Tailscale 주소로 등록하면 그 주소가 SAN 에.
+- `roles/platform_component/vars/values/traefik.yml` 의 hostPort 8000~8003 ·
+  1113 에 **hostIP 지정 없음** → 0.0.0.0 바인딩 → tailscale0 에서도 열린다.
+
+### 주의할 것 (코드 밖)
+Tailscale ACL(맥미니→타겟 22·8000~8003), 타겟 방화벽, 타겟이 tailnet 에 올라와
+있는지. 막히면 여기부터 본다.
+
+### `:PORT` 표기에 대해
+`7538f37` 의 `install <IP>:<포트>` 는 **v1 슬랙 워크플로 전용**이다
+(`jobs.target_port`). hubctl 인벤토리에는 그 칸이 없다. Tailscale 은 실주소를
+주므로 포트 리매핑이 필요 없어 문제되지 않는다.
+
+### 테스트
+- `test_any_reachable_address_can_be_registered` — LAN/Tailscale/MagicDNS/도메인.
+- `test_an_address_with_a_port_is_refused` — 왜 거절하는지까지 적어둠.
+- `test_a_tailnet_target_is_relayed_like_any_other` — sites.yml 에 100.101.102.103
+  호스트를 넣고 중계가 그 주소로 열리는지.
+- 776 → 782 passed.

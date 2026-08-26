@@ -37,6 +37,11 @@ sites:
       ansible_user: connecteve
       site_name: hyb
       profile: hybrid-with-ai
+    tailnet:
+      ansible_host: 100.101.102.103
+      ansible_user: connecteve
+      site_name: tailnet
+      profile: onprem
 """
 
 
@@ -291,6 +296,24 @@ async def test_opening_the_terminal_relays_to_sshd(client):
     body = await resp.json()
     assert body["label"] == "터미널"
     assert body["port"] == 22
+
+
+# ── tailnet 너머의 타겟 ─────────────────────────────────────────────
+
+
+async def test_a_tailnet_target_is_relayed_like_any_other(client):
+    """타겟이 사내 LAN 이 아니라 tailnet 에 있어도 중계는 똑같다.
+
+    중계는 맥미니에서 타겟으로 TCP 를 잇는 것뿐이라, 그 길이 LAN 이든
+    Tailscale 이든 상관하지 않는다. 인벤토리에 등록된 주소로 연결할 뿐이다.
+    """
+    plan = await entries(client, "tailnet", "dev")
+    for port in (8000, 8001, 8002, 8003, 22):
+        assert plan[port]["mode"] == "relay", port
+
+    body = await (await open_forward(client, "tailnet", 8000)).json()
+    assert body["address"] == "100.101.102.103", "인벤토리 주소로 이어야 한다"
+    assert body["listen_port"] != 8000
 
 
 # ── 열어주면 안 되는 것 ─────────────────────────────────────────────

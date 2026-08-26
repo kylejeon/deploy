@@ -16,6 +16,7 @@ from autodeploy.inventory import (
     render,
     save_inventory,
     upsert_server,
+    validate_server,
 )
 
 REAL_EXAMPLE = Path("/Users/yonghyuk/hub-provisioning/inventory/sites.example.yml")
@@ -207,3 +208,34 @@ def test_accepts_hostname_and_ipv6(tmp_path):
         _srv(host="b", ansible_host="2001:db8::1"),
     ])
     assert len(load_inventory(p).servers) == 2
+
+
+@pytest.mark.parametrize(
+    "addr",
+    [
+        "192.168.100.209",          # 사내 LAN
+        "100.116.199.41",           # Tailscale (CGNAT 100.64.0.0/10)
+        "testpc.tail1a2b.ts.net",   # Tailscale MagicDNS
+        "hub.example.com",
+    ],
+)
+def test_any_reachable_address_can_be_registered(addr):
+    """타겟이 어디 있든 맥미니가 SSH 로 닿기만 하면 등록된다.
+
+    대역을 제한하지 않는다 — LAN 만 받도록 좁히면 tailnet 너머의 서버를
+    콘솔로 설치할 수 없다.
+    """
+    validate_server(Server(host="t", ansible_host=addr, ansible_user="connecteve",
+                           site_name="t", profile="onprem"))
+
+
+def test_an_address_with_a_port_is_refused():
+    """`ansible_host` 는 주소만이다 — 포트는 못 붙인다.
+
+    `install <IP>:<포트>` 는 v1 슬랙 워크플로의 기능이고(jobs.target_port),
+    hubctl 인벤토리에는 그런 칸이 없다. 붙여 넣으면 ansible 이 그 문자열을
+    통째로 호스트명으로 해석해 이름 해석에서 죽는다. 여기서 먼저 막는다.
+    """
+    with pytest.raises(InventoryError):
+        validate_server(Server(host="t", ansible_host="1.2.3.4:22022",
+                               ansible_user="connecteve", site_name="t", profile="onprem"))
