@@ -1,6 +1,8 @@
 """SecretMasker — 로그에 시크릿 평문이 남지 않는지 (AC-13)."""
 from __future__ import annotations
 
+import os
+
 import pytest
 
 from autodeploy.masking import SecretMasker, mask_url_secrets
@@ -74,3 +76,30 @@ def test_mask_url_secrets_is_idempotent():
 
 def test_empty_masker_is_a_passthrough():
     assert SecretMasker()("plain line") == "plain line"
+
+
+# ── 데몬이 실제로 만드는 마스커 ──────────────────────────────────────
+
+
+def test_every_hubctl_secret_env_value_is_masked(monkeypatch):
+    """HUBCTL_SECRET_ENV 에 적힌 이름의 값은 전부 지워져야 한다.
+
+    _start_web 이 이 목록으로 SecretMasker 를 만든다. 목록에서 빠진 시크릿은
+    평문으로 로그에 남고, 그 로그는 Slack 스레드와 다운로드 파일에도 들어간다.
+    """
+    from autodeploy.settings import HUBCTL_SECRET_ENV
+
+    for i, name in enumerate(HUBCTL_SECRET_ENV):
+        monkeypatch.setenv(name, f"s3cret-value-{i}-xyz")
+
+    masker = SecretMasker([os.environ.get(n, "") for n in HUBCTL_SECRET_ENV])
+    for i, name in enumerate(HUBCTL_SECRET_ENV):
+        value = f"s3cret-value-{i}-xyz"
+        assert value not in masker(f"failed: password={value} end"), name
+
+
+def test_grafana_admin_password_is_in_the_masking_list():
+    """실제로 .env 에 들어간 값이라 빠지면 바로 샌다."""
+    from autodeploy.settings import HUBCTL_SECRET_ENV
+
+    assert "GRAFANA_ADMIN_PASSWORD" in HUBCTL_SECRET_ENV

@@ -40,13 +40,18 @@ def resolve_become_password(env: Mapping[str, str] | None = None) -> str:
     return e.get("BECOME_PASSWORD", "").strip() or e.get("SSH_PASSWORD", "")
 
 
-# hubctl 이 로그인 셸에서 상속받아야 하는 값들. 데몬(launchd)은 ~/.zshrc 를 읽지
-# 않으므로 `zsh -lc` 로 감싸 실행한다. 여기 있는 이름은 마스킹 대상 판별에도 쓴다.
+# hubctl 이 환경에서 물려받는 시크릿들. 여기 적힌 이름의 값은 로그를 DB 에
+# 넣기 전에 마스킹된다 — ansible 은 실패한 태스크의 인자를 통째로 되뱉으므로
+# 웹 콘솔 로그로 샐 경로가 실재한다.
+#
+# **hubctl 에 새 시크릿을 넣을 때는 여기에도 추가해야 한다.** 빠뜨리면 평문으로
+# 로그에 남고, 그 로그는 Slack 스레드와 다운로드 파일에도 그대로 들어간다.
 HUBCTL_SECRET_ENV: tuple[str, ...] = (
     "VAULT_TOKEN",
     "HUB_DEPLOY_GIT_TOKEN",
     "AWS_SECRET_ACCESS_KEY",
     "AWS_SESSION_TOKEN",
+    "GRAFANA_ADMIN_PASSWORD",
 )
 
 

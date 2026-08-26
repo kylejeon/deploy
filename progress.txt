@@ -1493,3 +1493,30 @@ load_dotenv() 를 부른다. 즉 **.env 에 넣으면 이미 hubctl 까지 전�
 ### 다음
 용혁님이 맥미니에서 진단 명령 실행 → VAULT_ADDR/VAULT_TOKEN/
 HUB_DEPLOY_GIT_TOKEN/AWS 를 .env 에 채움 → autodeploy install → 재시도.
+
+--------------------------------------------------------------------------------
+## 2026-08-26 (이어서) — 마스킹 목록 누락 (GRAFANA_ADMIN_PASSWORD)
+
+용혁님이 .env 에 VAULT_*, HUB_DEPLOY_GIT_*, GRAFANA_ADMIN_PASSWORD 를 추가했다.
+그런데 HUBCTL_SECRET_ENV 에 GRAFANA_ADMIN_PASSWORD 가 없었다. ansible 은
+실패한 태스크의 인자를 통째로 되뱉으므로, 그대로 뒀으면 **웹 콘솔 로그 · Slack
+스레드 · 다운로드 로그 파일에 평문으로 남았을 것**이다. 목록에 추가.
+
+테스트 2개:
+- test_every_hubctl_secret_env_value_is_masked — 목록의 모든 이름에 대해
+  실제로 마스킹되는지 (목록이 늘어도 자동으로 커버)
+- test_grafana_admin_password_is_in_the_masking_list
+
+.env.example 에 hubctl 자격 항목 전체를 명시하고, "새 시크릿 추가 시
+HUBCTL_SECRET_ENV 에도 넣어야 한다"는 경고를 달았다.
+728 passed
+
+### 남은 블로커
+`.env` 로는 **바이너리 문제가 안 풀린다.** preflight 가 지적한
+`ansible-playbook 없음` / `aws CLI 없음` 은 PATH 문제다.
+plist 에 /opt/homebrew/bin 을 추가했지만, 애초에 설치가 안 돼 있으면
+`brew install ansible awscli` 가 필요하다. 진단 명령 결과를 아직 못 받았다.
+
+### 보안 메모
+용혁님이 실제 토큰을 대화창에 붙여넣었다. Vault 토큰은 만료되지만
+Bitbucket 토큰과 Grafana 비밀번호는 수명이 길어 재발급 권고했다.
