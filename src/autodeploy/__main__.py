@@ -36,14 +36,17 @@ async def _start_web(settings, web_client, notifier_enabled: bool):
     별도 프로세스로 띄우면 같은 SQLite 파일을 두 프로세스가 쓰게 되어 잠금이
     엉킨다. 웹 기동에 실패해도 Slack 봇은 계속 돌아야 하므로 예외를 삼킨다.
     """
-    from autodeploy.masking import SecretMasker
-    from autodeploy.settings import HUBCTL_SECRET_ENV
-    from autodeploy.web import create_app, run_web
-    from autodeploy.web.slack import WebJobNotifier
-
     import os
 
     try:
+        # 임포트도 try 안에 둔다. aiohttp 가 빠진 환경에서 `autodeploy.web` 임포트가
+        # try 밖에서 터지면 Slack 봇까지 같이 죽어 KeepAlive 크래시 루프가 된다 —
+        # 바로 위 docstring 이 약속한 것과 정반대다.
+        from autodeploy.masking import SecretMasker
+        from autodeploy.settings import HUBCTL_SECRET_ENV
+        from autodeploy.web import create_app, run_web
+        from autodeploy.web.slack import WebJobNotifier
+
         app = create_app(
             db_path=settings.db_path,
             hubctl_repo=settings.hubctl_repo_path,

@@ -1253,3 +1253,68 @@ GET /jobs/{id}/stream(SSE) · POST/PUT/DELETE /api/servers · POST /servers/{hos
 - 브라우저 실물 확인은 못 함(헤드리스 환경). 용혁님이 열어보고 피드백 주시면 반영
 - AC-14(라이트/다크 양쪽 가독성)는 CSS 가 프로토타입 그대로라 프로토타입에서 확인된 상태
 - .209 등록은 용혁님이 웹에서 직접 (요청대로 실 인벤토리 미변경)
+
+================================================================================
+## 2026-08-26 — 맥미니 Tailscale 주소(100.116.199.41:8080)로 콘솔 열기
+
+### 요청
+"100.116.199.41:8080 으로 접속할 수 있게 해줘."
+
+### 먼저 확인한 사실
+- 100.116.199.41 = **맥미니** (tailscale status). 이 개발 맥북은 100.81.15.14 다.
+  즉 작업 대상은 맥미니이고, 여기서 직접 띄울 수 있는 게 아니다.
+- 맥미니 SSH(22)는 열려 있으나 이 맥북 키가 등록돼 있지 않다 (publickey 거부).
+  → 맥미니 쪽 명령은 용혁님이 직접 실행해야 한다.
+- 맥미니 8080 은 닫혀 있음 = 콘솔 미기동.
+- **origin/claude 가 98fe492 였다** — 웹 콘솔 5개 커밋(6388ea3..570ac61)이
+  아직 push 되지 않아 맥미니가 pull 할 게 없었다. → push 함.
+
+### 바인드 방식 결정: WEB_HOST=0.0.0.0
+두 방식을 이 맥북에서 실제로 띄워 비교했다.
+- `0.0.0.0` → 루프백/LAN/Tailscale 전부 200
+- `100.x.y.z` 직접 → Tailscale 만 200, LAN·루프백은 연결 자체가 안 됨
+
+Tailscale 주소 직접 바인드가 더 좁지만 채택하지 않았다. 재부팅 시 Tailscale 이
+utun 인터페이스를 올리기 전에 데몬이 뜨면 bind 가 EADDRNOTAVAIL 로 실패하는데,
+`_start_web` 은 그 예외를 삼키고 Slack 봇만 계속 돌린다. 프로세스가 살아 있으니
+KeepAlive 도 재시작하지 않는다 → 사람이 알아채기 전까지 콘솔만 조용히 죽어 있다.
+게다가 원 요구사항이 이미 "사내 LAN"을 포함하고 있어 0.0.0.0 이 범위상 맞다.
+
+### 배포 경로에서 터질 것 두 개를 고침 (요청 범위 밖이지만 이번 배포에서 바로 걸린다)
+1. **`__main__.py::_start_web` 임포트가 try 밖에 있었다.**
+   맥미니 venv 에 aiohttp 가 없으면 `from autodeploy.web import ...` 이 밖에서
+   터져 데몬 전체가 죽는다 = Slack 봇까지 같이 죽고 KeepAlive 로 10초마다
+   크래시 루프. 바로 위 docstring 이 "웹 기동 실패해도 Slack 봇은 계속"이라고
+   약속한 것과 정반대였다. → 임포트를 try 안으로 옮김.
+   검증: meta_path 로 autodeploy.web 임포트를 강제 실패시켜 _start_web 이
+   예외 없이 None 을 돌려주는 것 확인.
+2. **`pyproject.toml` package-data 에 web/static 이 빠져 있었다.**
+   비편집 설치면 `Path(__file__).with_name("static")` 이 없는 디렉터리를 가리켜
+   `/static/` 라우트가 아예 등록되지 않는다. 로그인 화면은 200 인데 CSS·JS 가
+   404 라 백지로 뜬다 — 에러도 안 난다. → `web/static/*` 추가.
+   검증: wheel 빌드해서 console.css/html/js/login.html 4개 포함 확인.
+
+### 문서
+- `.env.example` — WEB_HOST 에 Tailscale 직접 바인드의 함정 명시,
+  WEB_PUBLIC_URL 예시를 맥미니 Tailscale 주소로
+- `docs/operations.md` §3-3 — "사내 LAN 에 열기" → LAN + Tailscale 표로 확장.
+  tailnet 밖에서는 라우팅 자체가 안 되므로 아직 HTTPS 없이 써도 되는 이유 명시
+  (§3-4 의 공인 IP 이야기와 구분)
+
+### 테스트
+716 passed (변동 없음)
+
+### 다음에 할 것 — 맥미니에서 (용혁님)
+    cd ~/deploy
+    git pull origin claude
+    .venv/bin/pip install -e .          # aiohttp/aiosqlite 등 신규 의존성
+    # .env 에 추가:
+    #   WEB_ENABLED=true
+    #   WEB_HOST=0.0.0.0
+    #   WEB_PORT=8080
+    #   WEB_PUBLIC_URL=http://100.116.199.41:8080
+    #   HUBCTL_REPO_PATH=~/hub-provisioning
+    .venv/bin/python -m autodeploy adduser <아이디>
+    launchctl kickstart -k gui/$(id -u)/com.connecteve.autodeploy
+그 뒤 http://100.116.199.41:8080 접속. 안 열리면
+`autodeploy logs` 로 "웹 콘솔 기동 실패" 줄 확인.

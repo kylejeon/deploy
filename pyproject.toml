@@ -30,7 +30,10 @@ build-backend = "setuptools.build_meta"
 where = ["src"]
 
 [tool.setuptools.package-data]
-autodeploy = ["schema.sql"]
+# static 을 빼면 비편집(non-editable) 설치에서 create_app 의
+# Path(__file__).with_name("static") 이 빈 경로를 가리켜 /static/ 라우트가
+# 아예 등록되지 않는다. 로그인 화면은 200 인데 CSS·JS 가 404 라 백지로 뜬다.
+autodeploy = ["schema.sql", "web/static/*"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

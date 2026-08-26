@@ -30,12 +30,12 @@ HUBCTL_REPO_PATH=~/hub-provisioning
 BECOME_PASSWORD=            # 비우면 SSH_PASSWORD 사용 (connecteve 계정 공통)
 
 WEB_ENABLED=true
-WEB_HOST=127.0.0.1          # 사내 LAN 에 열려면 0.0.0.0
+WEB_HOST=0.0.0.0            # 맥미니 밖에서 접속하려면. 루프백만이면 127.0.0.1
 WEB_PORT=8080
 SESSION_TTL_DAYS=14
 WEB_SECURE_COOKIE=false     # HTTPS 프록시 뒤에 둘 때만 true
 WEB_TRUST_FORWARDED=false   # 신뢰하는 프록시 뒤에 둘 때만 true
-WEB_PUBLIC_URL=             # Slack 메시지에 넣을 콘솔 주소
+WEB_PUBLIC_URL=http://100.116.199.41:8080   # Slack 메시지에 넣을 콘솔 주소
 ```
 
 `.env` 는 `chmod 600` 으로 두고 저장소에 커밋하지 않는다.
@@ -96,10 +96,29 @@ launchctl load   ~/Library/LaunchAgents/com.connecteve.autodeploy.plist
 
 웹 기동에 실패해도 Slack 봇은 계속 돈다. 실패 이유는 데몬 로그에 남는다.
 
-### 3-3. 사내 LAN 에 열기
+### 3-3. 맥미니 밖에서 접속하기 (사내 LAN · Tailscale)
 
-`WEB_HOST=0.0.0.0` 으로 바꾸고 데몬을 다시 띄운다. 이때 `WEB_PUBLIC_URL` 에
-접속 주소(`http://<맥미니IP>:8080`)를 적어야 Slack 메시지의 링크가 맞는다.
+`WEB_HOST=0.0.0.0` 으로 바꾸고 데몬을 다시 띄우면 맥미니가 가진 모든 주소로 열린다.
+
+| 경로 | 주소 |
+|---|---|
+| 맥미니 자신 | `http://127.0.0.1:8080` |
+| 사내 LAN | `http://192.168.100.239:8080` |
+| Tailscale (사외 포함) | `http://100.116.199.41:8080` |
+
+`WEB_PUBLIC_URL` 에는 이 중 **하나**를 골라 적는다. Slack 종료 메시지의
+"웹 콘솔에서 로그 보기" 링크가 이 값으로 만들어지므로, 사외에서도 눌러야 한다면
+Tailscale 주소를 적는다. `0.0.0.0` 은 "모든 인터페이스"라는 뜻이지 주소가 아니라서
+비워두면 링크 자체가 안 붙는다.
+
+Tailscale 로 접속하려면 **보는 쪽 기기도 같은 tailnet 에 로그인**돼 있어야 한다.
+tailnet 밖에서는 이 주소가 아예 라우팅되지 않는다 — 그래서 아직 HTTPS 없이 쓸 수 있다
+(§3-4 는 tailnet 이 아니라 진짜 공인 IP 로 열 때의 이야기다).
+
+> `WEB_HOST` 에 Tailscale 주소(`100.116.199.41`)를 직접 적으면 tailnet 으로만 열려
+> 더 좁다. 다만 맥미니 재부팅 시 Tailscale 이 인터페이스를 올리기 전에 데몬이 먼저
+> 뜨면 바인드가 실패하고, 그 실패는 Slack 봇을 죽이지 않고 조용히 넘어간다 —
+> 사람이 알아채고 데몬을 다시 띄우기 전까지 콘솔만 죽어 있다. `0.0.0.0` 을 권한다.
 
 ### 3-4. 외부 고정 IP (아직 하지 말 것)
 
