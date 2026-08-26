@@ -1047,3 +1047,46 @@ VPN 연결이 필요 — 용혁님 확인 필요.
 ### 다음 (Phase C)
 aiohttp app 팩토리 + 세션 인증(로그인/쿠키/무차별 대입 제한) +
 서버·작업 조회 API. 데몬 기동 시 running/awaiting 작업 정리(§9)도 같이.
+
+## 2026-08-26 (실서버 검증) — 192.168.100.209
+
+용혁님 안내: yonseiwa 는 현재 미연결, 192.168.100.209 로 테스트.
+대상: Ubuntu 24.04.3 LTS / kernel 6.14.0-1014-oem / python3 3.12.3 / connecteve 계정.
+
+### 1. 절전 타겟 mask (용혁님 요청)
+기존 `workflow.disable_sleep_targets` 재사용 (신규 코드 없음).
+`sudo systemctl mask sleep.target suspend.target hibernate.target hybrid-sleep.target`
+→ rc=0. **실행 전에 이미 4개 모두 masked 상태였고** 멱등하게 통과.
+4개 전부 /etc/systemd/system/*.target -> /dev/null 링크 확인.
+
+### 2. F9 SSH 키 등록 — AC-15 실서버 검증 완료
+등록 전: `~/.ssh/authorized_keys` **파일 자체가 없음**.
+- 1회차 register_key → 줄수=1, 권한 600 connecteve, ~/.ssh 권한 700
+- 2회차 register_key → **여전히 줄수=1** (grep -qxF 멱등성 실증)
+- `ssh -o BatchMode=yes -o PasswordAuthentication=no` → rc=0, KEY_AUTH_OK
+맥미니 기존 키는 재사용(신규 생성 안 함).
+
+### 3. hubctl verify 실서버 실행
+실 sites.yml 은 건드리지 않고 inventory.py 의 render() 로 임시 인벤토리를 만들어
+`-i` 로 주입 (bin/hubctl parse_opts 가 -i 를 받는 것을 소스에서 확인). 실행 후 삭제.
+
+`./bin/hubctl verify -i inventory/sites.qa-209.yml -l qa-209` → **exit=2**
+- `ok: [qa-209]` — F9 로 깐 키로 **비밀번호 없이 ansible 접속 성공**
+- **become 검증됨**: 이 서버는 `sudo -n true` 가 "a password is required" 인데
+  `become: true` 인 Gathering Facts 가 성공 → ANSIBLE_BECOME_PASSWORD_FILE
+  (0600 / 실행비트 없음 / 개행 strip) 경로가 **실제 sudo 에 대해 실증됨**
+- 실패 원인은 우리 코드가 아님: verify 롤이 타겟에 python `kubernetes` 라이브러리를
+  요구하는데 이 서버엔 **k0s 자체가 미설치** (k0scontroller/k0sworker/containerd 전부 inactive)
+- 파서 실증: `[ERROR]` + 소스 발췌(`1 ---`/`^ column 3`)는 host=None,
+  `fatal: [qa-209]: FAILED! =>` 의 YAML 본문 5줄은 전부 qa-209 로 귀속.
+  `[WARNING]`(stderr) → warn 분류. RECAP ok=2/failed=1 → succeeded=False. exit=2 파싱
+  (미도달은 exit=4, 태스크 실패는 exit=2 — 둘 다 확인)
+
+### verify exit=0 은 여전히 미달성 — 원인 확정
+바탕 서버(k0s 미설치)에서는 verify 가 검증할 대상이 없다. exit=0 을 보려면
+**설치가 끝난 노드**가 필요하다. .209 에 실제 install 을 돌릴지는 용혁님 결정 필요
+(30분 이상 + 서버 상태 변경).
+
+### 다음 (Phase C)
+aiohttp app 팩토리 + 세션 인증 + 서버/작업 조회 API.
+기동 시 running/awaiting 작업 정리(§9) 포함.
