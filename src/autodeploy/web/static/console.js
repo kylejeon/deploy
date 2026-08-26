@@ -382,6 +382,13 @@ function renderJob() {
             <span class="since" id="jSince"></span>
           </div>
           <div class="console__body" id="log"></div>
+          <div class="console__errs" id="errPanel" hidden>
+            <div class="console__errbar">
+              <span id="errCount"></span>
+              <span class="push console__errhint">클릭하면 로그의 해당 위치로 이동합니다</span>
+            </div>
+            <div class="console__errbody" id="errBody"></div>
+          </div>
         </div>
       </div>
     </div>`;
@@ -411,18 +418,79 @@ function visibleLines() {
   return state.lines.filter((l) => !l.host || l.host === state.hostFilter);
 }
 
+/* ── 오류 요약 ────────────────────────────────────────
+ * 실행 로그 아래에 실패 줄만 모아 보여준다. 설치 로그는 수천 줄이라
+ * 실패 지점을 찾으려고 스크롤을 되짚게 되는데 그걸 없애는 것이 목적이다.
+ *
+ * 대상은 파서가 err 로 태깅한 줄뿐이다. `FAILED - RETRYING` 은 정상 폴링이라
+ * out 으로 분류되므로 여기 섞이지 않는다 — k0s 기동 대기만 해도 수십 줄이 나온다.
+ *
+ * ansible 은 `fatal: [host]: FAILED! =>` 다음 줄부터 들여쓴 YAML 본문에 진짜
+ * 이유를 담는다. 그 본문도 err 로 태깅돼 오므로, 들여쓰기를 보고 머리줄에
+ * 이어붙여 한 덩어리로 묶는다. 머리줄만 보여주면 "FAILED!" 밖에 안 보인다.
+ */
+const ERR_BODY_MAX = 8;
+
+function errorBlocks() {
+  const blocks = [];
+  let prevWasErr = false;
+  for (const line of visibleLines()) {
+    if (line.kind !== "err") { prevWasErr = false; continue; }
+    if (prevWasErr && /^\s/.test(line.line)) blocks[blocks.length - 1].body.push(line.line);
+    else blocks.push({ id: line.id, at: line.created_at, step: line.step, head: line.line, body: [] });
+    prevWasErr = true;
+  }
+  return blocks;
+}
+
+function renderErrors() {
+  const panel = $("#errPanel");
+  if (!panel) return;
+  const blocks = errorBlocks();
+  panel.hidden = blocks.length === 0;
+  if (!blocks.length) return;
+
+  const labels = new Map(phasesOf(state.job || {}));
+  $("#errCount").textContent = `오류 ${blocks.length}건`;
+  $("#errBody").innerHTML = blocks.map((b) => {
+    const shown = b.body.slice(0, ERR_BODY_MAX);
+    const more = b.body.length - shown.length;
+    const body = shown.map((t) => `<div class="errblk__line">${esc(t)}</div>`).join("")
+      + (more > 0 ? `<div class="errblk__meta">… ${more}줄 더 (전체는 위 로그에서)</div>` : "");
+    const step = b.step ? ` · ${esc(labels.get(b.step) || b.step)}` : "";
+    return `<button class="errblk" type="button" data-jump="${b.id}">
+      <div class="errblk__meta">${esc(clockTime(b.at))}${step}</div>
+      <div class="errblk__line">${esc(b.head)}</div>${body}</button>`;
+  }).join("");
+}
+
+/* 클릭하면 본문 로그의 그 줄로 이동. 자동 스크롤이 켜져 있으면 새 줄이 올 때마다
+ * 다시 맨 아래로 끌려가 이동이 무의미해지므로 함께 끈다. */
+function jumpToLine(id) {
+  const target = $(`#log .ln[data-id="${id}"]`);
+  if (!target) return;
+  if (state.autoscroll) {
+    state.autoscroll = false;
+    $("#jAuto")?.setAttribute("aria-pressed", "false");
+  }
+  target.scrollIntoView({ block: "center" });
+  $$("#log .ln--hit").forEach((el) => el.classList.remove("ln--hit"));
+  target.classList.add("ln--hit");
+}
+
 function paintLog() {
   const el = $("#log");
   if (!el) return;
   const lines = visibleLines();
   el.innerHTML = lines.length ? lines.map(lineHtml).join("")
     : `<div class="ln"><time></time><span class="tx" style="color:var(--console-dim)">로그가 아직 없습니다.</span></div>`;
+  renderErrors();
   scrollLog();
 }
 
 function lineHtml(line) {
   const kind = ["task", "ok", "chg", "err", "recap", "warn", "skip"].includes(line.kind) ? line.kind : "out";
-  return `<div class="ln ln--${kind}"><time>${esc(clockTime(line.created_at))}</time><span class="tx">${esc(line.line)}</span></div>`;
+  return `<div class="ln ln--${kind}" data-id="${line.id}"><time>${esc(clockTime(line.created_at))}</time><span class="tx">${esc(line.line)}</span></div>`;
 }
 
 function appendLines(rows) {
@@ -430,6 +498,7 @@ function appendLines(rows) {
   state.lines.push(...rows);
   state.lastLineId = rows[rows.length - 1].id;
   state.lastLineAt = Date.now();
+  renderErrors();
   const el = $("#log");
   if (!el) return;
   const html = rows.filter((l) => !state.hostFilter || !l.host || l.host === state.hostFilter).map(lineHtml).join("");
@@ -849,6 +918,9 @@ $("#nav").addEventListener("click", (e) => {
 document.addEventListener("click", (e) => {
   const btn = e.target.closest("[data-open-job]");
   if (btn) go("job", Number(btn.dataset.openJob));
+  // 작업 화면은 통째로 다시 그려지므로 개별 바인딩 대신 위임으로 받는다.
+  const jump = e.target.closest("[data-jump]");
+  if (jump) jumpToLine(Number(jump.dataset.jump));
 });
 // 인자 없이 부르면 serverModal 이 "서버 추가" 모드로 뜬다. 이 버튼은
 // console.html 에 정적으로 있어 다시 그려지지 않으므로 여기서 한 번만 묶는다
