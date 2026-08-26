@@ -429,6 +429,50 @@ async def count_active_jobs(db: aiosqlite.Connection) -> int:
     return int(row["n"])
 
 
+async def delete_jobs(
+    db: aiosqlite.Connection, *, job_ids: Sequence[int] | None = None
+) -> tuple[list[int], list[int]]:
+    """작업 기록을 지운다. `job_ids` 가 None 이면 **끝난 작업 전부**.
+
+    돌려주는 것은 `(지운 id, 건너뛴 id)` 다. "전부" 로 지울 때도 건너뛴 것을
+    같이 돌려준다 — 눌렀는데 뭔가 남았으면 이유를 볼 수 있어야 한다.
+
+    **진행 중인 작업은 절대 지우지 않는다.** 러너가 그 job_id 로 로그를 계속
+    쓰는 중이라, 행을 지우면 다음 INSERT 가 외래키에서 죽고 실행이 통째로
+    넘어간다. 그래서 요청에 섞여 있어도 건너뛰고 그 id 를 돌려준다 —
+    화면이 "왜 3건 중 2건만 지워졌는지" 를 말할 수 있게.
+
+    job_events · script_logs · job_hosts 는 ON DELETE CASCADE 로 함께 사라진다
+    (연결마다 `PRAGMA foreign_keys = ON` 이라 실제로 동작한다).
+    없는 id 는 조용히 무시한다 — 두 번 눌러도 같은 결과가 되도록.
+    """
+    if job_ids is None:
+        # "전부" 를 눌렀는데 뭔가 남았다면 왜 남았는지 말할 수 있어야 한다.
+        # 그래서 지울 것만 고르지 않고 상태까지 같이 읽어 건너뛴 것도 돌려준다.
+        async with db.execute("SELECT id, status FROM jobs") as cur:
+            rows = [(int(r["id"]), str(r["status"])) for r in await cur.fetchall()]
+        deletable = [i for i, st in rows if st not in ACTIVE_STATUSES]
+        skipped = [i for i, st in rows if st in ACTIVE_STATUSES]
+    else:
+        # 순서를 지키면서 중복만 제거한다 (dict 는 삽입 순서를 보존).
+        ids = list(dict.fromkeys(int(i) for i in job_ids))
+        if not ids:
+            return [], []
+        holes = ",".join("?" * len(ids))
+        async with db.execute(
+            f"SELECT id, status FROM jobs WHERE id IN ({holes})", ids
+        ) as cur:
+            rows = {int(r["id"]): str(r["status"]) for r in await cur.fetchall()}
+        deletable = [i for i in ids if i in rows and rows[i] not in ACTIVE_STATUSES]
+        skipped: list[int] = [i for i in ids if rows.get(i) in ACTIVE_STATUSES]
+
+    if deletable:
+        holes = ",".join("?" * len(deletable))
+        await db.execute(f"DELETE FROM jobs WHERE id IN ({holes})", deletable)
+        await db.commit()
+    return deletable, skipped
+
+
 async def reap_stale_jobs(db: aiosqlite.Connection, *, reason: str) -> list[int]:
     """기동 시 남아있는 running/awaiting 작업을 실패로 정리한다 (§9).
 

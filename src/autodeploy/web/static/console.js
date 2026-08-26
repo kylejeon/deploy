@@ -148,6 +148,9 @@ async function api(path, { method = "GET", body, text = false } = {}) {
 const state = {
   view: "dash", csrf: "", me: null,
   servers: [], mtime: 0, jobs: [], job: null,
+  // 대시보드는 5초마다 다시 그린다. 고른 것을 여기 두지 않으면 그때마다
+  // 체크가 풀려 여러 건을 고를 수가 없다.
+  selectedJobs: new Set(),
   jobId: null, hostFilter: "", autoscroll: true,
   lines: [], lastLineId: 0, lastLineAt: null,
   sse: null, pollTimer: null, tickTimer: null,
@@ -218,8 +221,53 @@ function renderDash() {
 
   $("#recentCount").textContent = `${jobs.length}건`;
   $("#rows").innerHTML = jobs.length ? jobs.map(jobRow).join("")
-    : `<tr><td colspan="8" class="dim" style="text-align:center; padding:24px">아직 실행한 작업이 없습니다.</td></tr>`;
-  $$("#rows tr[data-open]").forEach((tr) => tr.addEventListener("click", () => go("job", Number(tr.dataset.open))));
+    : `<tr><td colspan="9" class="dim" style="text-align:center; padding:24px">아직 실행한 작업이 없습니다.</td></tr>`;
+  $$("#rows tr[data-open]").forEach((tr) => tr.addEventListener("click", (e) => {
+    if (e.target.closest("[data-nogo]")) return;   // 체크박스 칸은 상세로 넘기지 않는다
+    go("job", Number(tr.dataset.open));
+  }));
+  syncJobPicks();
+}
+
+/* ── 작업 기록 삭제 ───────────────────────────────────────
+ * 고른 것은 state 에 두고 다시 그릴 때마다 복원한다. 목록에서 사라진 id 는
+ * 버린다 — 안 그러면 화면에 없는 것이 "선택 삭제 (3)" 에 계속 남는다.
+ */
+function syncJobPicks() {
+  const listed = new Set(state.jobs.map((j) => j.id));
+  for (const id of state.selectedJobs) if (!listed.has(id)) state.selectedJobs.delete(id);
+
+  const boxes = $$("#rows .jchk");
+  boxes.forEach((c) => { c.checked = state.selectedJobs.has(Number(c.dataset.id)); });
+
+  const n = state.selectedJobs.size;
+  const sel = $("#jobsDelSel");
+  sel.disabled = n === 0;
+  sel.textContent = n ? `선택 삭제 (${n})` : "선택 삭제";
+
+  const all = $("#jobsAll");
+  all.disabled = boxes.length === 0;
+  all.checked = boxes.length > 0 && n === boxes.length;
+  all.indeterminate = n > 0 && n < boxes.length;
+
+  $("#jobsDelAll").disabled = boxes.length === 0;
+}
+
+function confirmJobDelete(heading, note, payload) {
+  modal(`<h2>${esc(heading)}</h2>
+    <p class="note">${note}<br>
+    작업 기록과 <b>실행 로그가 함께 지워집니다.</b> 되돌릴 수 없습니다.
+    진행 중인 작업은 남겨둡니다 — 실행에 쓰이는 기록입니다.</p>`,
+    { label: "삭제", danger: true },
+    async () => {
+      try {
+        const r = await api("/api/jobs", { method: "DELETE", body: payload });
+        state.selectedJobs.clear();
+        const kept = r.skipped.length ? ` (진행 중 ${r.skipped.length}건은 남겼습니다)` : "";
+        toast(`${r.deleted.length}건을 지웠습니다${kept}`);
+        await refreshDash();
+      } catch (e) { toast(e.message, "danger"); throw e; }
+    });
 }
 
 function liveCard(job) {
@@ -256,7 +304,14 @@ function stepLabel(job, key) {
 }
 
 function jobRow(job) {
+  /* 진행 중인 작업은 고를 수 없다 — 러너가 그 job_id 로 로그를 쓰는 중이라
+     행을 지우면 다음 INSERT 가 외래키에서 죽고 실행이 통째로 넘어간다.
+     서버도 같은 이유로 거절하지만, 애초에 못 고르게 하는 편이 낫다. */
+  const pick = ACTIVE.includes(job.status)
+    ? `<span class="dim" title="진행 중인 작업은 지울 수 없습니다">·</span>`
+    : `<input type="checkbox" class="jchk" data-id="${job.id}" aria-label="#${job.id} 선택">`;
   return `<tr data-open="${job.id}">
+    <td class="col-chk" data-nogo>${pick}</td>
     <td><span class="jobid">#${job.id}</span> ${kindTag(job)}</td>
     <td><span class="tag">${esc(hostLabel(job))}</span></td>
     <td>${job.env ? `<span class="env">${esc(job.env)}</span> ` : ""}<span class="mono dim">${esc(job.ref || "")}</span></td>
@@ -1127,6 +1182,37 @@ document.addEventListener("click", async (e) => {
   }
   await paintForwards();
 });
+/* 행은 5초마다 새로 그려지므로 개별 바인딩 대신 tbody 에서 위임으로 받는다. */
+$("#rows").addEventListener("change", (e) => {
+  const box = e.target.closest(".jchk");
+  if (!box) return;
+  const id = Number(box.dataset.id);
+  if (box.checked) state.selectedJobs.add(id); else state.selectedJobs.delete(id);
+  syncJobPicks();
+});
+
+$("#jobsAll").addEventListener("change", (e) => {
+  state.selectedJobs.clear();
+  if (e.currentTarget.checked) {
+    for (const j of state.jobs) if (!ACTIVE.includes(j.status)) state.selectedJobs.add(j.id);
+  }
+  syncJobPicks();
+});
+
+$("#jobsDelSel").addEventListener("click", () => {
+  const ids = [...state.selectedJobs];
+  if (!ids.length) return;
+  confirmJobDelete(`선택한 ${ids.length}건을 지울까요?`,
+    `<b class="mono">${esc(ids.map((i) => "#" + i).join(", "))}</b>`, { ids });
+});
+
+$("#jobsDelAll").addEventListener("click", () => {
+  /* 목록은 최근 50건만 받아온다. all 은 그보다 오래된 것까지 지우므로
+     화면의 건수를 약속하지 않는다 — 실제로 몇 건이었는지는 응답으로 말한다. */
+  confirmJobDelete("끝난 작업을 모두 지울까요?",
+    "목록에 보이지 않는 오래된 기록까지 <b>전부</b> 지웁니다.", { all: true });
+});
+
 // 인자 없이 부르면 serverModal 이 "서버 추가" 모드로 뜬다. 이 버튼은
 // console.html 에 정적으로 있어 다시 그려지지 않으므로 여기서 한 번만 묶는다
 // (행마다 붙는 편집·삭제 버튼은 렌더 때마다 다시 묶어야 해서 renderServers 안에 있다).

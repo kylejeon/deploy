@@ -146,12 +146,17 @@ main{padding:26px 30px 72px; max-width:1220px; width:100%}
 
 .scroll-x{overflow-x:auto}
 table{width:100%; border-collapse:collapse; font-size:13.5px; min-width:860px}
-thead th{text-align:left; font:500 10.5px/1 "IBM Plex Mono",monospace; letter-spacing:.1em; text-transform:uppercase; color:var(--ink-3); padding:0 12px 9px; white-space:nowrap}
-tbody td{padding:11px 12px; border-top:1px solid var(--line-soft); vertical-align:middle}
+/* line-height:1 이면 한글 글자상자가 잘려 눌린 것처럼 보인다. 라틴 대문자만
+   있을 때는 티가 안 나는데 헤더에 한글이 섞이면 바로 드러난다. */
+thead th{text-align:left; font:500 11px/1.7 "IBM Plex Mono",monospace; letter-spacing:.1em; text-transform:uppercase; color:var(--ink-3); padding:4px 12px 11px; white-space:nowrap}
+tbody td{padding:14px 12px; line-height:1.6; border-top:1px solid var(--line-soft); vertical-align:middle}
 tbody tr[data-open]{cursor:pointer}
+/* 최근 작업 선택 칸 */
+.col-chk{width:36px; text-align:center; padding-right:0}
+.col-chk input{accent-color:var(--accent); cursor:pointer; margin:0; vertical-align:middle}
 tbody tr:hover{background:var(--surface-2)}
-.jobid{font:600 12.5px/1 "IBM Plex Mono",monospace; color:var(--ink-2)}
-.retry-of{font:500 10.5px/1 "IBM Plex Mono",monospace; color:var(--ink-3); margin-left:6px}
+.jobid{font:600 12.5px/1.6 "IBM Plex Mono",monospace; color:var(--ink-2)}
+.retry-of{font:500 10.5px/1.6 "IBM Plex Mono",monospace; color:var(--ink-3); margin-left:6px}
 .tag{display:inline-block; padding:2px 7px; border-radius:5px; background:var(--surface-2); border:1px solid var(--line-soft); font:500 11.5px/1.6 "IBM Plex Mono",monospace; color:var(--ink-2); white-space:nowrap}
 
 .split{display:grid; grid-template-columns:minmax(280px,340px) 1fr; gap:16px; align-items:start}

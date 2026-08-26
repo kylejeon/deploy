@@ -313,6 +313,32 @@ async def get_jobs(request: web.Request) -> web.Response:
     return json_response({"jobs": jobs})
 
 
+@routes.delete("/api/jobs")
+async def delete_jobs(request: web.Request) -> web.Response:
+    """작업 기록 삭제. `{"all": true}` 면 끝난 것 전부, 아니면 `{"ids": [...]}`.
+
+    진행 중인 작업은 지우지 않는다 (repository.delete_jobs 참고). 요청에
+    섞여 있으면 건너뛴 id 를 그대로 돌려줘 화면이 이유를 말할 수 있게 한다.
+    """
+    data = await _body(request)
+    ids: list[int] | None
+    if data.get("all") is True:
+        ids = None
+    else:
+        raw = data.get("ids")
+        if not isinstance(raw, list) or not raw:
+            return json_error(400, "지울 작업을 고르세요 (ids) 또는 all: true")
+        try:
+            ids = [int(x) for x in raw]
+        except (TypeError, ValueError):
+            return json_error(400, "ids 는 정수 목록이어야 합니다")
+
+    async with connect(request.app[keys.DB_PATH]) as db:
+        deleted, skipped = await repository.delete_jobs(db, job_ids=ids)
+    log.info("작업 기록 삭제: %d건 (건너뜀 %d건)", len(deleted), len(skipped))
+    return json_response({"deleted": deleted, "skipped": skipped})
+
+
 @routes.get("/api/jobs/{job_id}")
 async def get_job(request: web.Request) -> web.Response:
     job_id = _int_path(request, "job_id")

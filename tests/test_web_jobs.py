@@ -597,3 +597,137 @@ async def test_recent_awaiting_is_left_alone(client):
 
     assert await client.app[keys.JOB_SERVICE].expire_awaiting(older_than_hours=24) == []
     assert (await (await client.get(f"/api/jobs/{job_id}")).json())["status"] == "awaiting"
+
+
+# ── 작업 기록 삭제 ──────────────────────────────────────────────────
+
+
+async def delete_jobs(client, payload):
+    return await client.delete(
+        "/api/jobs", json=payload, headers={CSRF_HEADER: client.csrf}
+    )
+
+
+async def count_rows(temp_db, table: str, job_id: int) -> int:
+    async with connect(temp_db) as db:
+        async with db.execute(
+            f"SELECT COUNT(*) AS n FROM {table} WHERE job_id = ?", (job_id,)
+        ) as cur:
+            return int((await cur.fetchone())["n"])
+
+
+async def test_deleting_a_job_takes_its_logs_with_it(client, temp_db):
+    """기록만 지우고 로그가 남으면 DB 는 계속 불어난다 (ON DELETE CASCADE 확인).
+
+    이건 스키마를 믿는 것이 아니라 실제로 확인해야 한다 — 외래키 CASCADE 는
+    연결마다 `PRAGMA foreign_keys = ON` 이 켜져 있을 때만 동작한다.
+    """
+    job_id = (await (await post(
+        client, "/api/jobs", {"kind": "verify", "hosts": ["alpha", "beta"]}
+    )).json())["id"]
+    await wait_finished(client, job_id)
+
+    # 지우기 전에 실제로 쌓였는지 본다. 안 쌓였으면 아래 검사가 무의미하다.
+    assert await count_rows(temp_db, "script_logs", job_id) > 0
+    assert await count_rows(temp_db, "job_hosts", job_id) > 0
+
+    resp = await delete_jobs(client, {"ids": [job_id]})
+    assert resp.status == 200
+    assert (await resp.json())["deleted"] == [job_id]
+
+    assert (await client.get(f"/api/jobs/{job_id}")).status == 404
+    assert await count_rows(temp_db, "script_logs", job_id) == 0
+    assert await count_rows(temp_db, "job_hosts", job_id) == 0
+    assert await count_rows(temp_db, "job_events", job_id) == 0
+
+
+async def test_deleting_everything_leaves_the_running_job_alone(temp_db, tmp_path):
+    """`전체 삭제` 는 끝난 것만 치운다.
+
+    돌고 있는 작업의 행을 지우면 러너의 다음 로그 INSERT 가 외래키에서 죽어
+    실행이 통째로 넘어간다. 그래서 건너뛰고, 몇 건을 남겼는지 돌려준다.
+    """
+    started = tmp_path / "started"
+    c = await make_client(
+        temp_db, tmp_path, script=SLOW_HUBCTL, env={"FAKE_STARTED": str(started)}
+    )
+    try:
+        done = (await (await post(c, "/api/jobs", {"kind": "verify", "hosts": ["alpha"]})).json())["id"]
+        for _ in range(200):
+            if started.exists():
+                break
+            await asyncio.sleep(0.05)
+        assert started.exists(), "가짜 hubctl 이 실제로 떠야 의미 있는 테스트다"
+
+        running = done  # 첫 작업이 SLOW 라 아직 돌고 있다
+        assert (await (await c.get(f"/api/jobs/{running}")).json())["status"] == "running"
+
+        resp = await delete_jobs(c, {"all": True})
+        assert resp.status == 200
+        body = await resp.json()
+        assert body["deleted"] == []
+        assert body["skipped"] == [running]
+        assert (await c.get(f"/api/jobs/{running}")).status == 200
+    finally:
+        await c.close()
+
+
+async def test_a_running_job_in_the_selection_is_skipped_not_refused(temp_db, tmp_path):
+    """섞여 있으면 끝난 것만 지우고 나머지는 남긴다 — 요청 전체를 거절하지 않는다."""
+    started = tmp_path / "started"
+    c = await make_client(
+        temp_db, tmp_path, script=SLOW_HUBCTL, env={"FAKE_STARTED": str(started)}
+    )
+    try:
+        running = (await (await post(c, "/api/jobs", {"kind": "verify", "hosts": ["alpha"]})).json())["id"]
+        queued = (await (await post(c, "/api/jobs", {"kind": "verify", "hosts": ["beta"]})).json())["id"]
+        for _ in range(200):
+            if started.exists():
+                break
+            await asyncio.sleep(0.05)
+
+        body = await (await delete_jobs(c, {"ids": [running, queued]})).json()
+        assert body["deleted"] == []
+        assert body["skipped"] == [running, queued], "queued 도 아직 실행 전이라 남겨야 한다"
+    finally:
+        await c.close()
+
+
+async def test_deleting_all_clears_finished_jobs(client):
+    first = (await (await post(client, "/api/jobs", {"kind": "verify", "hosts": ["alpha"]})).json())["id"]
+    await wait_finished(client, first)
+    second = (await (await post(client, "/api/jobs", {"kind": "verify", "hosts": ["beta"]})).json())["id"]
+    await wait_finished(client, second)
+
+    body = await (await delete_jobs(client, {"all": True})).json()
+    assert sorted(body["deleted"]) == sorted([first, second])
+    assert (await (await client.get("/api/jobs")).json())["jobs"] == []
+
+
+async def test_deleting_an_id_that_is_gone_is_not_an_error(client):
+    """두 번 눌러도 같은 결과여야 한다 — 5초마다 새로 그리는 화면이라 겹칠 수 있다."""
+    resp = await delete_jobs(client, {"ids": [9999]})
+    assert resp.status == 200
+    assert (await resp.json())["deleted"] == []
+
+
+async def test_deleting_without_a_target_is_refused(client):
+    for payload in ({}, {"ids": []}, {"ids": "3"}, {"all": False}):
+        resp = await delete_jobs(client, payload)
+        assert resp.status == 400, payload
+
+
+async def test_deleting_requires_a_session(temp_db, tmp_path):
+    app = create_app(
+        db_path=temp_db,
+        hubctl_repo=write_repo(tmp_path),
+        inventory_path=tmp_path / "sites.yml",
+        static_dir=tmp_path / "static",
+    )
+    (tmp_path / "sites.yml").write_text(SITES_YML, encoding="utf-8")
+    c = TestClient(TestServer(app))
+    await c.start_server()
+    try:
+        assert (await c.delete("/api/jobs", json={"all": True})).status == 401
+    finally:
+        await c.close()

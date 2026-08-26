@@ -40,9 +40,12 @@
         <div id="liveSlot"></div>
         <div class="tiles" id="tiles"></div>
         <div class="card">
-          <div class="card__head"><h2>최근 작업</h2><span class="lbl push" id="recentCount"></span></div>
+          <div class="card__head"><h2>최근 작업</h2><span class="lbl push" id="recentCount"></span>
+            <button class="btn btn--sm btn--ghost-danger" id="jobsDelSel" disabled>선택 삭제</button>
+            <button class="btn btn--sm" id="jobsDelAll">전체 삭제</button></div>
           <div class="scroll-x"><table>
-            <thead><tr><th>작업</th><th>서버</th><th>환경 · ref</th><th>상태</th><th>단계</th><th>소요</th><th>시작</th><th></th></tr></thead>
+            <thead><tr><th class="col-chk"><input type="checkbox" id="jobsAll" aria-label="끝난 작업 전체 선택"></th>
+              <th>작업</th><th>서버</th><th>환경 · ref</th><th>상태</th><th>단계</th><th>소요</th><th>시작</th><th></th></tr></thead>
             <tbody id="rows"></tbody>
           </table></div>
         </div>
