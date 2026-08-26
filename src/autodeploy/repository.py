@@ -128,6 +128,50 @@ async def add_script_logs(
     await db.commit()
 
 
+async def reclassify_script_logs(
+    db: aiosqlite.Connection, *, job_id: int | None = None
+) -> dict[int, int]:
+    """저장된 로그 줄의 `kind` 를 현재 파서로 다시 매긴다. {작업번호: 바뀐 줄 수}.
+
+    `kind` 는 줄 내용에서만 유도되는 표시용 값이라 다시 계산해도 안전하고,
+    같은 코드로 두 번 돌려도 결과가 같다. `stream`(stdout/stderr)은 건드리지 않는다 —
+    그쪽은 Slack 경로가 쓰는 원본 정보다.
+
+    파서는 상태를 들고 있다(이어짐 본문이 여는 줄의 종류를 물려받는다). 그래서
+    **작업별로, 넣은 순서 그대로** 다시 먹여야 한다.
+    """
+    from autodeploy.ansible_log import AnsibleLogParser
+
+    if job_id is None:
+        async with db.execute(
+            "SELECT DISTINCT job_id FROM script_logs ORDER BY job_id"
+        ) as cur:
+            targets = [int(r["job_id"]) for r in await cur.fetchall()]
+    else:
+        targets = [job_id]
+
+    changed: dict[int, int] = {}
+    for target in targets:
+        async with db.execute(
+            "SELECT id, line, kind FROM script_logs WHERE job_id=? ORDER BY id",
+            (target,),
+        ) as cur:
+            rows = await cur.fetchall()
+
+        parser = AnsibleLogParser()
+        updates = [
+            (kind, row["id"])
+            for row in rows
+            if (kind := parser.feed(row["line"]).kind.value) != row["kind"]
+        ]
+        if not updates:
+            continue
+        await db.executemany("UPDATE script_logs SET kind=? WHERE id=?", updates)
+        await db.commit()
+        changed[target] = len(updates)
+    return changed
+
+
 async def get_job(db: aiosqlite.Connection, job_id: int) -> Job | None:
     async with db.execute("SELECT * FROM jobs WHERE id=?", (job_id,)) as cur:
         row = await cur.fetchone()
