@@ -46,12 +46,55 @@ WEB_PUBLIC_URL=http://100.116.199.41:8080   # Slack 메시지에 넣을 콘솔 �
 ### 1-3. 환경변수 상속 (중요)
 
 hubctl 은 `VAULT_ADDR` · `VAULT_TOKEN` · `HUB_DEPLOY_GIT_TOKEN` · AWS 자격을
-셸 환경에서 읽는다. 그런데 **launchd 로 뜨는 데몬은 `~/.zshrc` 를 읽지 않는다.**
-그래서 콘솔은 hubctl 을 `zsh -lc "<명령>"` 으로 감싸 실행한다 —
-사람이 터미널에서 실행할 때와 같은 환경이 되도록.
+셸 환경에서 읽는다. 콘솔은 hubctl 을 `zsh -lc "<명령>"` 으로 감싸 실행한다.
 
-즉 **터미널에서 `hubctl preflight` 가 통과하면 콘솔에서도 통과한다.** 반대로
-터미널에서 `vault login` 을 새로 해야 하는 상태면 콘솔도 똑같이 실패한다.
+**그런데 `zsh -lc` 는 `~/.zshrc` 를 읽지 않는다.** zsh 는 `.zshrc` 를
+*대화형* 셸에서만 읽기 때문이다. 실제로 확인한 결과:
+
+| 실행 방식 | `.zshenv` | `.zprofile` | `.zshrc` | `.zlogin` |
+|---|---|---|---|---|
+| `zsh -lc` (데몬이 쓰는 것) | ✅ | ✅ | **❌** | ✅ |
+| `zsh -ic` | ✅ | ❌ | ✅ | ❌ |
+
+macOS 에서 `export` 를 두는 기본 자리가 `.zshrc` 라서, **터미널에서 되는데
+콘솔에서만 안 되는** 일이 생긴다. 자격을 `.zshrc` 에만 넣어두면 콘솔은 못 본다.
+
+#### 자격을 콘솔에 전달하는 방법
+
+**`.env` 에 넣는 것을 권한다.** 데몬은 기동할 때 `load_dotenv()` 로 `.env` 를
+`os.environ` 에 올리고, hubctl 자식 프로세스는 그 환경을 그대로 물려받는다.
+셸 설정 파일이 뭘 읽는지 따질 필요가 없어 가장 확실하다.
+
+```
+VAULT_ADDR=https://vault.connecteve.com
+VAULT_TOKEN=
+HUB_DEPLOY_GIT_USER=x-bitbucket-api-token-auth
+HUB_DEPLOY_GIT_TOKEN=
+AWS_ACCESS_KEY_ID=
+AWS_SECRET_ACCESS_KEY=
+```
+
+`VAULT_TOKEN` 은 만료되므로 `vault login` 을 다시 할 때마다 갱신해야 한다.
+
+`~/.zprofile` 이나 `~/.zshenv` 에 `export` 하는 것도 동작한다 — 위 표에서
+`zsh -lc` 가 읽는 파일이다. `.zshrc` 는 안 된다.
+
+#### 실행 파일 경로
+
+`ansible-playbook` · `aws` 는 launchd 가 주는 `PATH` 에서 찾는다. plist 는
+`/opt/homebrew/bin` 을 포함한다 (Apple Silicon 의 Homebrew 위치). 다른 곳에
+설치했다면 plist 의 `PATH` 에 추가하고 `autodeploy install` 로 다시 등록한다.
+
+#### 지금 데몬이 뭘 보는지 확인하기
+
+```bash
+zsh -lc 'echo "VAULT_ADDR=${VAULT_ADDR:-없음}";
+         echo "HUB_DEPLOY_GIT_TOKEN=${HUB_DEPLOY_GIT_TOKEN:+설정됨}";
+         echo "ansible-playbook: $(command -v ansible-playbook || echo 없음)";
+         echo "aws: $(command -v aws || echo 없음)"'
+```
+
+토큰 값은 찍지 않는다 — 설정 여부만 본다.
 
 ---
 

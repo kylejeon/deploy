@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import shutil
 import textwrap
 from pathlib import Path
 
@@ -410,3 +411,46 @@ def _alive(pid: int) -> bool:
     except PermissionError:
         return True
     return True
+
+
+# ── 환경 전달 (.env → os.environ → hubctl 자식) ──────────────────────
+
+
+async def test_parent_environment_reaches_the_child(fake_repo, monkeypatch):
+    """`.env` 에 넣은 자격이 hubctl 까지 도달해야 한다.
+
+    데몬은 기동할 때 load_dotenv() 로 .env 를 os.environ 에 올린다. 그 뒤
+    _child_env 가 dict(os.environ) 에서 출발하므로 자식이 그대로 물려받는다.
+    운영 가이드가 이 경로를 권장으로 적고 있으니 실제 셸을 태워 고정해 둔다.
+    """
+    monkeypatch.setenv("VAULT_ADDR", "https://vault.example.com")
+    result, lines = await collect(runner(fake_repo), 'echo "seen=$VAULT_ADDR"')
+    assert result.exit_code == 0
+    assert any("seen=https://vault.example.com" in p.text for _, p in lines)
+
+
+async def test_a_login_shell_does_not_read_zshrc(tmp_path):
+    """`zsh -lc` 는 .zshrc 를 읽지 않는다 — 그래서 .env 를 권장한다.
+
+    "터미널에서 되는데 콘솔에서만 안 되는" 사고의 원인이 이것이었다.
+    zsh 는 .zshrc 를 대화형 셸에서만 읽는다. 문서가 이 사실에 기대고 있으므로
+    zsh 가 있는 환경에서는 실제로 확인한다.
+    """
+    zsh = shutil.which("zsh")
+    if zsh is None:
+        pytest.skip("zsh 없음")
+    zdotdir = tmp_path / "zdot"
+    zdotdir.mkdir()
+    (zdotdir / ".zshenv").write_text("export MARK_ZSHENV=1\n", encoding="utf-8")
+    (zdotdir / ".zprofile").write_text("export MARK_ZPROFILE=1\n", encoding="utf-8")
+    (zdotdir / ".zshrc").write_text("export MARK_ZSHRC=1\n", encoding="utf-8")
+
+    proc = await asyncio.create_subprocess_exec(
+        zsh, "-lc", 'echo "${MARK_ZSHENV:-0}${MARK_ZPROFILE:-0}${MARK_ZSHRC:-0}"',
+        env={"ZDOTDIR": str(zdotdir), "PATH": os.environ.get("PATH", ""),
+             "HOME": str(tmp_path)},
+        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
+    )
+    out, _ = await proc.communicate()
+    # zshenv=1, zprofile=1, zshrc=0
+    assert out.decode().strip() == "110"

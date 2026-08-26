@@ -34,8 +34,11 @@
 
     <key>EnvironmentVariables</key>
     <dict>
+        <!-- Apple Silicon 의 Homebrew 는 /opt/homebrew/bin 이다. 이게 없으면
+             hubctl preflight 가 ansible-playbook / aws 를 못 찾는다.
+             Intel 이면 그 경로가 없을 뿐 해가 없다. -->
         <key>PATH</key>
-        <string>/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
         <key>LANG</key>
         <string>ko_KR.UTF-8</string>
         <key>LC_ALL</key>
