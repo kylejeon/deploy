@@ -1,6 +1,7 @@
 """서버 인벤토리 변경 + SSH 키 등록 API (§F2 / §F9)."""
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -72,8 +73,17 @@ async def send(client, method, path, payload=None):
     )
 
 
-async def current_mtime(client) -> int:
+async def current_mtime(client):
     return (await (await client.get("/api/servers")).json())["mtime_ns"]
+
+
+def like_a_browser(payload: str) -> dict:
+    """브라우저의 `JSON.parse` 를 흉내낸다 — 숫자 리터럴은 double 로 읽힌다.
+
+    JS 의 Number 는 배정밀도 실수라 정수를 2^53 까지만 정확히 담는다.
+    `parse_int` 를 float 경유로 두면 파이썬에서도 같은 손실이 재현된다.
+    """
+    return json.loads(payload, parse_int=lambda raw: int(float(raw)))
 
 
 # ── 추가 ────────────────────────────────────────────────────────────
@@ -134,6 +144,58 @@ async def test_stale_mtime_is_a_conflict(client, inventory_path):
     resp = await send(client, "POST", "/api/servers", {**NEW_SERVER, "mtime_ns": stale})
     assert resp.status == 409
     assert "다른 곳에서" in (await resp.json())["error"]
+
+
+async def test_editing_survives_the_browsers_json_parse(client, inventory_path):
+    """§F2 의 잠금 키가 브라우저를 왕복해도 그대로여야 한다.
+
+    실제로 한 번 났다. `st_mtime_ns` 는 나노초라 61비트인데 JSON 숫자로 내보내면
+    브라우저의 JSON.parse 가 double 로 읽어 반올림한다(이 크기에서 간격 256ns).
+    화면이 돌려준 값이 파일 시각과 달라지므로 서버는 "다른 곳에서 수정됐다" 고
+    판단했고, **서버 편집이 100% 409 로 실패했다.** 실제 mtime 20개를 재봤더니
+    20개 전부 바뀌었다. 파이썬 테스트만으로는 절대 안 잡힌다 — 파이썬 int 는
+    임의 정밀도라 서버끼리는 아무 문제가 없었다.
+    """
+    raw = await (await client.get("/api/servers")).text()
+    seen = like_a_browser(raw)
+
+    resp = await send(client, "PUT", "/api/servers/alpha", {
+        "ansible_host": "192.0.2.99",
+        "ansible_user": "connecteve",
+        "site_name": "alpha",
+        "profile": "onprem",
+        "mtime_ns": seen["mtime_ns"],
+    })
+    assert resp.status == 200, await resp.text()
+    assert load_inventory(inventory_path).get("alpha").ansible_host == "192.0.2.99"
+
+
+async def test_the_lock_key_is_not_a_json_number(client, inventory_path):
+    """위 사고의 원인을 직접 못박는다 — 값이 아니라 **타입**이 문제였다."""
+    body = await (await client.get("/api/servers")).json()
+    assert isinstance(body["mtime_ns"], str), "숫자로 내보내면 브라우저에서 깎인다"
+    assert int(body["mtime_ns"]) == inventory_path.stat().st_mtime_ns
+
+
+async def test_every_write_returns_a_usable_lock_key(client):
+    """추가·수정·삭제 응답의 키로 곧바로 다음 편집을 할 수 있어야 한다.
+
+    새로고침 없이 연속으로 고칠 때 쓰는 값이라, 한 곳만 숫자로 남아도 그 다음
+    저장이 409 로 막힌다.
+    """
+    added = like_a_browser(await (await send(
+        client, "POST", "/api/servers", {**NEW_SERVER, "mtime_ns": await current_mtime(client)}
+    )).text())
+    assert isinstance(added["mtime_ns"], str)
+
+    edited = like_a_browser(await (await send(client, "PUT", "/api/servers/qa-209", {
+        **NEW_SERVER, "site_name": "qa209b", "mtime_ns": added["mtime_ns"],
+    })).text())
+    assert isinstance(edited["mtime_ns"], str)
+
+    resp = await send(client, "DELETE", "/api/servers/qa-209",
+                      {"mtime_ns": edited["mtime_ns"]})
+    assert resp.status == 200, await resp.text()
 
 
 async def test_add_requires_csrf(client):

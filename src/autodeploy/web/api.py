@@ -196,7 +196,7 @@ async def get_servers(request: web.Request) -> web.Response:
         for s in inventory.servers
     ]
     # mtime_ns 는 저장 시 낙관적 잠금 키로 되돌아온다 (§F2).
-    return json_response({"servers": servers, "mtime_ns": inventory.mtime_ns})
+    return json_response({"servers": servers, "mtime_ns": _version(inventory.mtime_ns)})
 
 
 # ── 포트포워딩 (사내망 타겟 임시 중계) ──────────────────────────────
@@ -461,6 +461,23 @@ async def _reject_if_busy(request: web.Request) -> web.Response | None:
     return None
 
 
+def _version(mtime_ns: int) -> str:
+    """인벤토리 낙관적 잠금 키를 **문자열로** 내보낸다.
+
+    `st_mtime_ns` 는 나노초라 61비트다. JSON 숫자로 내보내면 브라우저의
+    `JSON.parse` 가 double 로 읽는데, double 은 정수를 2^53 까지만 정확히
+    담는다. 이 크기에서는 값 사이 간격이 256ns 라 거의 항상 반올림된다.
+
+    그러면 화면이 돌려준 값이 파일 시각과 달라지고, 서버는 "다른 곳에서
+    수정됐다" 고 판단한다 — **서버 편집이 항상 409 로 실패한다.** 실제 mtime
+    20개로 재봤더니 20개 전부 값이 바뀌었다.
+
+    화면은 이 값을 되돌려주기만 하고 계산에 쓰지 않는다. 문자열이면 정밀도가
+    깎일 일이 없다. `_mtime` 이 int() 로 되돌리므로 받는 쪽은 그대로다.
+    """
+    return str(mtime_ns)
+
+
 def _mtime(data: dict) -> int | None:
     raw = data.get("mtime_ns")
     if raw is None:
@@ -492,7 +509,7 @@ async def post_server(request: web.Request) -> web.Response:
     except InventoryError as exc:
         return json_error(400, str(exc))
     log.info("서버 추가: %s (by %s)", server.host, request["session"].user.username)
-    return json_response({"host": server.host, "mtime_ns": mtime_ns}, status=201)
+    return json_response({"host": server.host, "mtime_ns": _version(mtime_ns)}, status=201)
 
 
 @routes.put("/api/servers/{host}")
@@ -524,7 +541,7 @@ async def put_server(request: web.Request) -> web.Response:
         memo = data["memo"]
         async with connect(request.app[keys.DB_PATH]) as db:
             await repository.set_server_memo(db, host, str(memo) if memo else None)
-    return json_response({"host": host, "mtime_ns": mtime_ns})
+    return json_response({"host": host, "mtime_ns": _version(mtime_ns)})
 
 
 @routes.delete("/api/servers/{host}")
@@ -546,7 +563,7 @@ async def delete_server(request: web.Request) -> web.Response:
     async with connect(request.app[keys.DB_PATH]) as db:
         await repository.delete_server_meta(db, host)
     log.info("서버 삭제: %s (by %s)", host, request["session"].user.username)
-    return json_response({"host": host, "mtime_ns": mtime_ns})
+    return json_response({"host": host, "mtime_ns": _version(mtime_ns)})
 
 
 @routes.post("/api/servers/{host}/ssh-key")

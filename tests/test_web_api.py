@@ -237,11 +237,16 @@ async def test_servers_list_merges_inventory_and_meta(client, temp_db):
 
 
 async def test_servers_response_carries_mtime_for_optimistic_locking(client):
-    """§F2: 저장할 때 이 값을 되돌려줘야 남의 수정을 덮어쓰지 않는다."""
+    """§F2: 저장할 때 이 값을 되돌려줘야 남의 수정을 덮어쓰지 않는다.
+
+    **문자열이다.** 나노초 mtime 은 61비트라 JSON 숫자로 내보내면 브라우저의
+    JSON.parse 가 double 로 읽어 반올림한다 — 그래서 서버 편집이 늘 409 였다.
+    자세한 것은 test_web_servers.py 의 브라우저 왕복 테스트.
+    """
     await login(client)
     body = await (await client.get("/api/servers")).json()
-    assert isinstance(body["mtime_ns"], int)
-    assert body["mtime_ns"] > 0
+    assert isinstance(body["mtime_ns"], str)
+    assert int(body["mtime_ns"]) > 0
 
 
 async def test_wrong_repo_path_reports_503(temp_db, tmp_path):
@@ -279,7 +284,7 @@ async def test_absent_sites_yml_in_a_valid_repo_is_an_empty_list(temp_db, tmp_pa
         assert resp.status == 200
         body = await resp.json()
         assert body["servers"] == []
-        assert body["mtime_ns"] == 0
+        assert body["mtime_ns"] == "0"   # 잠금 키는 문자열이다 (위 참고)
     finally:
         await client.close()
 
