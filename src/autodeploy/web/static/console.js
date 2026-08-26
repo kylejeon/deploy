@@ -850,6 +850,11 @@ document.addEventListener("click", (e) => {
   const btn = e.target.closest("[data-open-job]");
   if (btn) go("job", Number(btn.dataset.openJob));
 });
+// 인자 없이 부르면 serverModal 이 "서버 추가" 모드로 뜬다. 이 버튼은
+// console.html 에 정적으로 있어 다시 그려지지 않으므로 여기서 한 번만 묶는다
+// (행마다 붙는 편집·삭제 버튼은 렌더 때마다 다시 묶어야 해서 renderServers 안에 있다).
+$("#addSrv").addEventListener("click", () => serverModal());
+
 $("#logout").addEventListener("click", async () => {
   try { await api("/api/logout", { method: "POST" }); } catch { /* 어차피 화면을 뜬다 */ }
   location.href = "/login";

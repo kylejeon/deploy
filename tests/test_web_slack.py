@@ -309,6 +309,27 @@ def test_static_assets_are_not_wrapped_in_html_tags():
             assert tag not in text, f"{path.name} 에 {tag} 가 남아 있다"
 
 
+def test_every_control_in_the_console_is_wired_to_the_script():
+    """화면의 버튼·폼·입력이 console.js 에서 실제로 쓰이는지 본다.
+
+    실제로 한 번 났다. `＋ 서버 추가`(id=addSrv) 버튼이 console.html 에만 있고
+    console.js 어디에서도 바인딩되지 않아, 눌러도 아무 일이 안 일어났다.
+    serverModal() 함수는 멀쩡히 있었지만 행마다 붙는 `편집` 버튼에서만 불렸다.
+    이런 누락은 서버 테스트로는 절대 안 잡힌다 — 파일은 200 으로 잘 나가니까.
+
+    id 가 console.js 에 등장하는지만 보는 얕은 검사다. 잘못 묶인 것까지는
+    못 잡지만, 아예 안 묶인 것은 잡는다.
+    """
+    static = Path(__file__).resolve().parents[1] / "src" / "autodeploy" / "web" / "static"
+    html = (static / "console.html").read_text(encoding="utf-8")
+    js = (static / "console.js").read_text(encoding="utf-8")
+
+    controls = re.findall(r'<(?:button|form|input|select)\b[^>]*\bid="([^"]+)"', html)
+    assert controls, "console.html 에서 컨트롤을 못 찾았다"
+    unwired = [i for i in controls if i not in js]
+    assert not unwired, f"console.js 가 쓰지 않는 컨트롤: {unwired}"
+
+
 def test_stylesheet_starts_with_the_token_rule():
     """파일 맨 앞(주석 제외)이 곧바로 :root 규칙이어야 한다.
 

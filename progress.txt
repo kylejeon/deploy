@@ -1365,3 +1365,33 @@ JS 는 정상(대시보드에 preflight 결과·작업 27건이 실제로 렌더
 ### 다음
 맥미니에서 git pull + launchctl kickstart -k 하면 화면이 제대로 뜬다.
 브라우저 강력 새로고침(Cmd+Shift+R) 필요 — 깨진 CSS 가 캐시돼 있다.
+
+--------------------------------------------------------------------------------
+## 2026-08-26 (이어서) — `＋ 서버 추가` 버튼 무반응
+
+### 원인
+`id="addSrv"` 가 console.html 에만 있고 console.js 어디에서도 바인딩되지 않았다.
+`serverModal()` 함수는 멀쩡히 있었는데, 행마다 붙는 `편집` 버튼
+(`#srvRows [data-edit]`)에서만 호출됐다. 인자 없이 부르면 "서버 추가" 모드로
+뜨도록 이미 돼 있었으므로, 빠진 건 연결 한 줄뿐이었다.
+
+`#addSrv` 는 console.html 에 정적으로 있어 다시 그려지지 않으므로 모듈 최상위에서
+한 번만 묶었다 (편집·삭제 버튼은 렌더 때마다 다시 묶어야 해서 renderServers 안에 있다).
+
+### 전수 대조로 같이 확인한 것
+console.html 의 id 42개를 console.js 와 대조. 미언급 8개 중
+- view-dash/job/srv/new/clean → 라우터가 `"#view-" + v` 로 조립 (오탐)
+- dashChip, newChip → 장식용 정적 칩 (JS 불필요)
+- srvNotice → 프로토타입에서 넘어온 빈 div. 아무것도 안 채워지지만 동작은 안 깨짐
+- **addSrv → 진짜 버그**
+
+### 회귀 테스트
+`test_every_control_in_the_console_is_wired_to_the_script`
+console.html 의 button/form/input/select 중 id 가 console.js 에 안 나오는 게
+있으면 실패. 대상 10개 전부 통과(오탐 0) 확인했고, 바인딩을 도로 지워
+실제로 실패하는 것도 확인했다.
+얕은 검사다 — 잘못 묶인 건 못 잡고, 아예 안 묶인 것만 잡는다.
+이런 누락은 서버 테스트로는 절대 안 잡힌다. 파일은 200 으로 잘 나가니까.
+
+### 테스트
+719 passed
