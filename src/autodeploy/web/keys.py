@@ -16,6 +16,8 @@ from aiohttp import web
 if TYPE_CHECKING:
     from autodeploy.masking import SecretMasker
     from autodeploy.web.auth import LoginThrottle
+    from autodeploy.web.jobs import JobService
+    from autodeploy.web.sse import SseBroker
 
 DB_PATH = web.AppKey("db_path", Path)
 HUBCTL_REPO = web.AppKey("hubctl_repo", Path)
@@ -32,3 +34,6 @@ PREFLIGHT_LOCK = web.AppKey("preflight_lock", asyncio.Lock)
 # hubctl 을 감싸는 셸. 기본은 로그인 셸(~/.zshrc 의 Vault/AWS 자격 상속)이지만,
 # 테스트는 사용자 rc 에 좌우되지 않도록 갈아끼운다.
 HUBCTL_SHELL: web.AppKey[tuple] = web.AppKey("hubctl_shell", tuple)
+BROKER: web.AppKey["SseBroker"] = web.AppKey("broker")
+JOB_SERVICE: web.AppKey["JobService"] = web.AppKey("job_service")
+SSH_THROTTLE: web.AppKey["LoginThrottle"] = web.AppKey("ssh_throttle")

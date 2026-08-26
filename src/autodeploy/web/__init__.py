@@ -15,7 +15,10 @@ from aiohttp import web
 
 from autodeploy.db import connect
 from autodeploy.masking import SecretMasker
+from autodeploy.queue import JobQueue
 from autodeploy.web import api, keys
+from autodeploy.web.jobs import JobService
+from autodeploy.web.sse import SseBroker
 from autodeploy.web.auth import (
     CSRF_HEADER,
     SESSION_COOKIE,
@@ -83,6 +86,8 @@ def create_app(
     masker: SecretMasker | None = None,
     hubctl_env: dict[str, str] | None = None,
     hubctl_shell: tuple[str, ...] = ("zsh", "-lc"),
+    become_password: str = "",
+    log_dir: str | Path | None = None,
     session_ttl_days: int = 14,
     secure_cookie: bool = False,
     trust_forwarded: bool = False,
@@ -112,9 +117,42 @@ def create_app(
         else Path(__file__).with_name("static")
     )
     app[keys.THROTTLE] = LoginThrottle()
+    # SSH 키 등록도 비밀번호를 받는다 — 여기도 무차별 대입을 막는다 (§9: 3회/60초).
+    app[keys.SSH_THROTTLE] = LoginThrottle(max_failures=3, lock_seconds=60.0)
     app[keys.PREFLIGHT_LOCK] = asyncio.Lock()
+
+    app[keys.QUEUE] = queue if queue is not None else JobQueue()
+    app[keys.BROKER] = SseBroker()
+    app[keys.JOB_SERVICE] = JobService(
+        db_path=app[keys.DB_PATH],
+        hubctl_repo=hubctl_repo,
+        inventory_path=app[keys.INVENTORY_PATH],
+        queue=app[keys.QUEUE],
+        broker=app[keys.BROKER],
+        become_password=become_password,
+        masker=app[keys.MASKER],
+        hubctl_env=app[keys.HUBCTL_ENV],
+        hubctl_shell=app[keys.HUBCTL_SHELL],
+        log_dir=log_dir,
+    )
+
+    app.on_startup.append(_start_queue)
+    app.on_cleanup.append(_stop_queue)
     app.add_routes(api.routes)
     return app
+
+
+async def _start_queue(app: web.Application) -> None:
+    await app[keys.QUEUE].start()
+
+
+async def _stop_queue(app: web.Application) -> None:
+    """앱이 내려가면 실행 중인 hubctl 도 세운다.
+
+    `start_new_session=True` 로 띄운 자식은 부모가 죽어도 살아남는다. 감독자 없이
+    도는 ansible 을 남기지 않으려면 여기서 취소를 내려야 한다.
+    """
+    await app[keys.QUEUE].stop()
 
 
 async def run_web(

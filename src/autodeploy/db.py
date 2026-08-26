@@ -14,6 +14,9 @@ log = logging.getLogger(__name__)
 
 _SCHEMA = Path(__file__).with_name("schema.sql").read_text(encoding="utf-8")
 
+# 쓰기 잠금 대기 한도. ansible 로그 적재가 몰릴 때 웹 요청이 튕기지 않을 만큼.
+BUSY_TIMEOUT_MS = 5000
+
 # v2에서 jobs에 추가된 컬럼 (기존 DB는 ALTER로 붙인다)
 _JOBS_NEW_COLUMNS: tuple[tuple[str, str], ...] = (
     ("kind", "TEXT NOT NULL DEFAULT 'install'"),
@@ -40,6 +43,10 @@ async def init_db(path: str | Path) -> None:
     path = Path(path).expanduser()
     path.parent.mkdir(parents=True, exist_ok=True)
     async with aiosqlite.connect(path) as db:
+        # WAL: 읽는 쪽이 쓰는 쪽을 막지 않는다. 웹 요청·백그라운드 로그 적재·
+        # Slack 워크플로가 한 파일을 동시에 쓰므로 기본 롤백 저널로는 서로
+        # "database is locked" 를 만든다. DB 파일에 기록되는 설정이라 한 번만 켜면 된다.
+        await db.execute("PRAGMA journal_mode=WAL")
         await db.executescript(_SCHEMA)
         await db.commit()
         if await _jobs_needs_rebuild(db):
@@ -161,4 +168,6 @@ async def connect(path: str | Path) -> AsyncIterator[aiosqlite.Connection]:
     async with aiosqlite.connect(path) as db:
         db.row_factory = aiosqlite.Row
         await db.execute("PRAGMA foreign_keys = ON")
+        # 쓰기가 겹치면 즉시 실패하지 말고 잠깐 기다린다 (기본값은 0 = 즉시 오류).
+        await db.execute(f"PRAGMA busy_timeout = {BUSY_TIMEOUT_MS}")
         yield db

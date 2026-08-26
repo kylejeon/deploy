@@ -1146,3 +1146,54 @@ aiohttp app 팩토리 + 세션 인증 + 서버/작업 조회 API.
 ### 다음 (Phase D)
 SSE 스트리밍(`/api/jobs/{id}/stream`) + 작업 생성/취소/승인/거부 +
 서버 추가·수정·삭제 + SSH 키 등록 API. JobQueue 를 앱에 연결한다.
+
+## 2026-08-26 (Phase D 완료) — 작업 실행/취소/승인 + SSE + 서버 변경 API
+
+**696/696 테스트 통과** (625 → +71).
+
+### 신규 파일
+- `src/autodeploy/web/sse.py` — SseBroker. 작업별 구독자 관리
+- `src/autodeploy/web/jobs.py` — JobService. 큐 + hubctl 러너 + 로그 적재 + SSE 연결
+- `tests/test_web_jobs.py` (31) / `tests/test_web_servers.py` (28) / `tests/test_sse.py` (12)
+
+### 신규 엔드포인트
+POST /api/jobs · /jobs/{id}/cancel · /approve · /reject ·
+GET /jobs/{id}/stream(SSE) · POST/PUT/DELETE /api/servers · POST /servers/{host}/ssh-key
+
+### 설계 판단
+- **로그 적재 주기 0.15초**. 줄마다 commit 하면 fsync 로 설치가 느려지고,
+  트랜잭션을 길게 열면 **다른 커넥션이 그 줄을 못 본다** — SSE 재연결(`?after=`)이
+  DB 를 다시 읽는 구조라 치명적. 모아서 커밋한 **뒤에** 방송한다
+- **SSE 는 구독을 먼저 걸고 DB 를 읽는다**. 반대면 그 사이 적재된 줄이 양쪽 어디에도
+  안 걸려 사라진다. 겹치는 구간은 id 로 걸러낸다
+- **느린 구독자는 끊는다**. 큐가 차면 그 구독만 끊고, 클라이언트는 마지막 id 로
+  재연결해 DB 에서 따라잡는다. 화면 하나 때문에 설치가 느려지면 안 된다
+- **SQLite WAL 활성화**. 웹 요청·백그라운드 로그 적재·Slack 워크플로가 한 파일을
+  동시에 쓴다. 기본 롤백 저널로는 서로 "database is locked" 를 만든다.
+  busy_timeout 5초도 같이
+- **실행 중에는 인벤토리 편집 금지** (409). 화면에서 본 목록과 실제 대상이 어긋난다
+- **호스트명 변경 거부**. job_hosts·server_meta 참조가 끊긴다 → 삭제 후 추가로 유도
+- **서버 삭제 시 server_meta 도 삭제**. 같은 이름으로 재등록했을 때 남의
+  key_installed_at 을 물려받으면 AC-16 게이트가 잘못 열린다
+- **SSH 키 등록도 3회/60초 제한**. 비밀번호를 계속 넣어보는 것도 무차별 대입이다
+
+### 잡은 버그
+- `Subscription` 이 dataclass 기본 eq=True 라 `__hash__` 가 없어져 set 에 못 담겼다
+  → `eq=False` (구독은 값이 아니라 개체)
+
+### 실서버 end-to-end (웹 API 로만 조작)
+용혁님 `~/hub-provisioning` 은 건드리지 않으려고 저장소를 복사해서 사용
+(원본 sites.yml md5 불변, git 0건 변경 확인).
+1. POST /api/servers → qa-209 등록, 봇이 헤더 주석 포함 sites.yml 생성
+2. 키 미등록 상태로 작업 시도 → **400 AC-16 게이트 작동**
+3. POST /servers/qa-209/ssh-key → 실제 192.168.100.209 접속, key_installed_at 기록
+4. POST /api/jobs (verify) → 201, 큐 등록
+5. GET /jobs/1/stream → **38줄 SSE 실시간 수신**. kind/host 태깅 정확
+   ([ERROR] 블록·소스 발췌는 host 없음, fatal YAML 본문 5줄은 qa-209 로 귀속)
+6. 최종: status=failed exit_code=2, host qa-209 recap ok=2 failed=1
+   (실패 원인은 우리 코드가 아니라 타겟에 k0s·python kubernetes 미설치)
+
+### 남은 것
+- **Phase E**: 프로토타입 HTML 이식(`web/static/console.html`·`login.html`) +
+  Slack 연동(F7: 웹에서 시작한 작업도 스레드 게시) + `docs/operations.md`
+- `expire_awaiting`(24시간 자동 취소)은 구현했지만 아직 주기 실행에 안 붙임 → Phase E

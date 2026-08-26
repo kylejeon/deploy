@@ -50,6 +50,7 @@ async def _start_web(settings):
                 [os.environ.get(name, "") for name in HUBCTL_SECRET_ENV]
                 + [settings.become_password, settings.ssh_password]
             ),
+            become_password=settings.become_password,
             session_ttl_days=settings.web.session_ttl_days,
             secure_cookie=settings.web.secure_cookie,
             trust_forwarded=settings.web.trust_forwarded,

@@ -1,0 +1,327 @@
+"""서버 인벤토리 변경 + SSH 키 등록 API (§F2 / §F9)."""
+from __future__ import annotations
+
+from pathlib import Path
+
+import pytest
+from aiohttp.test_utils import TestClient, TestServer
+
+from autodeploy.accounts import create_user
+from autodeploy.db import connect
+from autodeploy.inventory import load_inventory
+from autodeploy.ssh_keys import SSHKeyError
+from autodeploy.web import api, create_app
+from autodeploy.web.auth import CSRF_HEADER
+
+USERNAME = "yonghyuk"
+PASSWORD = "correct-horse-battery"
+
+SITES_YML = """\
+sites:
+  hosts:
+    alpha:
+      ansible_host: 192.0.2.10
+      ansible_user: connecteve
+      site_name: alpha
+      profile: onprem
+"""
+
+NEW_SERVER = {
+    "host": "qa-209",
+    "ansible_host": "192.168.100.209",
+    "ansible_user": "connecteve",
+    "site_name": "qa209",
+    "profile": "onprem",
+}
+
+
+@pytest.fixture
+def inventory_path(tmp_path: Path) -> Path:
+    path = tmp_path / "sites.yml"
+    path.write_text(SITES_YML, encoding="utf-8")
+    return path
+
+
+@pytest.fixture
+async def client(temp_db, tmp_path, inventory_path):
+    async with connect(temp_db) as db:
+        await create_user(db, USERNAME, PASSWORD)
+
+    repo = tmp_path / "hub-provisioning"
+    repo.mkdir()
+    app = create_app(
+        db_path=temp_db,
+        hubctl_repo=repo,
+        inventory_path=inventory_path,
+        static_dir=tmp_path / "static",
+        hubctl_shell=("bash", "-c"),
+    )
+    c = TestClient(TestServer(app))
+    await c.start_server()
+    resp = await c.post("/api/login", json={"username": USERNAME, "password": PASSWORD})
+    c.csrf = (await resp.json())["csrf_token"]
+    try:
+        yield c
+    finally:
+        await c.close()
+
+
+async def send(client, method, path, payload=None):
+    return await client.request(
+        method, path, json=payload or {}, headers={CSRF_HEADER: client.csrf}
+    )
+
+
+async def current_mtime(client) -> int:
+    return (await (await client.get("/api/servers")).json())["mtime_ns"]
+
+
+# ── 추가 ────────────────────────────────────────────────────────────
+
+
+async def test_add_server_writes_sites_yml(client, inventory_path):
+    """AC-3: 추가하면 sites.yml 이 갱신되고 백업이 남는다."""
+    resp = await send(client, "POST", "/api/servers",
+                      {**NEW_SERVER, "mtime_ns": await current_mtime(client)})
+    assert resp.status == 201
+
+    hosts = {s.host: s for s in load_inventory(inventory_path).servers}
+    assert set(hosts) == {"alpha", "qa-209"}
+    assert hosts["qa-209"].ansible_host == "192.168.100.209"
+    assert hosts["qa-209"].profile == "onprem"
+
+    backups = list(inventory_path.parent.glob("sites.yml.bak-*"))
+    assert len(backups) == 1
+
+
+async def test_add_returns_the_new_mtime_for_the_next_edit(client):
+    before = await current_mtime(client)
+    body = await (await send(client, "POST", "/api/servers",
+                             {**NEW_SERVER, "mtime_ns": before})).json()
+    assert body["mtime_ns"] != before
+    assert body["mtime_ns"] == await current_mtime(client)
+
+
+async def test_duplicate_host_rejected(client):
+    payload = {**NEW_SERVER, "host": "alpha", "mtime_ns": await current_mtime(client)}
+    resp = await send(client, "POST", "/api/servers", payload)
+    assert resp.status == 409
+    assert "이미 등록된" in (await resp.json())["error"]
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("host", "bad host"),
+        ("host", ""),
+        ("ansible_host", ""),
+        ("ansible_user", ""),
+        ("profile", "k8s"),
+        ("profile", ""),
+    ],
+)
+async def test_invalid_server_rejected(client, field, value):
+    payload = {**NEW_SERVER, field: value, "mtime_ns": await current_mtime(client)}
+    resp = await send(client, "POST", "/api/servers", payload)
+    assert resp.status == 400
+
+
+async def test_stale_mtime_is_a_conflict(client, inventory_path):
+    """§F2: 다른 곳에서 고친 걸 조용히 덮어쓰면 안 된다."""
+    stale = await current_mtime(client)
+    inventory_path.write_text(SITES_YML + "      # 다른 사람이 손댐\n", encoding="utf-8")
+
+    resp = await send(client, "POST", "/api/servers", {**NEW_SERVER, "mtime_ns": stale})
+    assert resp.status == 409
+    assert "다른 곳에서" in (await resp.json())["error"]
+
+
+async def test_add_requires_csrf(client):
+    resp = await client.post("/api/servers", json=NEW_SERVER)
+    assert resp.status == 403
+
+
+# ── 수정 ────────────────────────────────────────────────────────────
+
+
+async def test_edit_server(client, inventory_path):
+    resp = await send(client, "PUT", "/api/servers/alpha", {
+        "ansible_host": "192.0.2.99",
+        "ansible_user": "connecteve",
+        "site_name": "alpha",
+        "profile": "hybrid-with-ai",
+        "mtime_ns": await current_mtime(client),
+    })
+    assert resp.status == 200
+    server = load_inventory(inventory_path).get("alpha")
+    assert server.ansible_host == "192.0.2.99"
+    assert server.profile == "hybrid-with-ai"
+
+
+async def test_edit_saves_memo_to_the_database(client, temp_db):
+    """메모는 sites.yml 스키마에 없는 값이라 DB 에 둔다 (§F2)."""
+    await send(client, "PUT", "/api/servers/alpha", {
+        "ansible_host": "192.0.2.10", "ansible_user": "connecteve",
+        "site_name": "alpha", "profile": "onprem", "memo": "연세와병원",
+        "mtime_ns": await current_mtime(client),
+    })
+    body = await (await client.get("/api/servers")).json()
+    assert body["servers"][0]["memo"] == "연세와병원"
+
+
+async def test_renaming_a_host_is_refused(client):
+    """이름이 바뀌면 job_hosts·server_meta 참조가 끊긴다."""
+    resp = await send(client, "PUT", "/api/servers/alpha", {
+        **NEW_SERVER, "mtime_ns": await current_mtime(client),
+    })
+    assert resp.status == 400
+    assert "호스트명은 바꿀 수 없습니다" in (await resp.json())["error"]
+
+
+async def test_edit_unknown_host_is_404(client):
+    resp = await send(client, "PUT", "/api/servers/ghost", NEW_SERVER)
+    assert resp.status == 404
+
+
+# ── 삭제 ────────────────────────────────────────────────────────────
+
+
+async def test_delete_server(client, inventory_path, temp_db):
+    async with connect(temp_db) as db:
+        from autodeploy.repository import mark_key_installed
+
+        await mark_key_installed(db, "alpha")
+
+    resp = await send(client, "DELETE", "/api/servers/alpha",
+                      {"mtime_ns": await current_mtime(client)})
+    assert resp.status == 200
+    assert load_inventory(inventory_path).servers == ()
+
+    # 부가정보도 같이 지운다 — 같은 이름으로 다시 등록했을 때 남의 키 상태를
+    # 물려받으면 AC-16 게이트가 잘못 열린다.
+    async with connect(temp_db) as db:
+        from autodeploy.repository import get_server_meta
+
+        assert await get_server_meta(db) == {}
+
+
+async def test_delete_unknown_host_is_404(client):
+    resp = await send(client, "DELETE", "/api/servers/ghost")
+    assert resp.status == 404
+
+
+# ── 실행 중 편집 금지 ───────────────────────────────────────────────
+
+
+@pytest.mark.parametrize(
+    "method,path,payload",
+    [
+        ("POST", "/api/servers", NEW_SERVER),
+        ("PUT", "/api/servers/alpha", NEW_SERVER),
+        ("DELETE", "/api/servers/alpha", {}),
+    ],
+)
+async def test_inventory_is_frozen_while_a_job_is_active(client, temp_db, method, path, payload):
+    """§F2: 인벤토리가 흔들리면 화면에서 본 목록과 실제 대상이 어긋난다."""
+    async with connect(temp_db) as db:
+        await db.execute(
+            "INSERT INTO jobs (kind, status, started_by) VALUES ('install','running','web:x')"
+        )
+        await db.commit()
+
+    resp = await send(client, method, path, payload)
+    assert resp.status == 409
+    assert "진행 중인 작업" in (await resp.json())["error"]
+
+
+async def test_finished_jobs_do_not_block_edits(client, temp_db):
+    async with connect(temp_db) as db:
+        await db.execute(
+            "INSERT INTO jobs (kind, status, started_by) VALUES ('install','succeeded','web:x')"
+        )
+        await db.commit()
+    resp = await send(client, "POST", "/api/servers",
+                      {**NEW_SERVER, "mtime_ns": await current_mtime(client)})
+    assert resp.status == 201
+
+
+# ── SSH 키 등록 (F9) ────────────────────────────────────────────────
+
+
+async def test_ssh_key_registration_marks_the_server(client, monkeypatch, temp_db):
+    calls = []
+
+    async def fake_register(*, host, username, password, **kw):
+        calls.append((host, username, password))
+        return "ssh-ed25519 AAAA... autodeploy@macmini"
+
+    monkeypatch.setattr(api, "register_key", fake_register)
+
+    resp = await send(client, "POST", "/api/servers/alpha/ssh-key", {"password": "target-pw"})
+    assert resp.status == 200
+    assert (await resp.json())["key_installed_at"] is not None
+
+    # 인벤토리의 ansible_host/ansible_user 로 붙어야 한다 (호스트 키 이름이 아니라).
+    assert calls == [("192.0.2.10", "connecteve", "target-pw")]
+
+
+async def test_ssh_key_registration_opens_the_install_gate(client, monkeypatch):
+    async def fake_register(**kw):
+        return "ssh-ed25519 AAAA..."
+
+    monkeypatch.setattr(api, "register_key", fake_register)
+    before = await (await client.get("/api/servers")).json()
+    assert before["servers"][0]["key_installed_at"] is None
+
+    await send(client, "POST", "/api/servers/alpha/ssh-key", {"password": "pw"})
+    after = await (await client.get("/api/servers")).json()
+    assert after["servers"][0]["key_installed_at"] is not None
+
+
+async def test_ssh_key_failure_does_not_mark_the_server(client, monkeypatch):
+    async def boom(**kw):
+        raise SSHKeyError("비밀번호가 올바르지 않습니다")
+
+    monkeypatch.setattr(api, "register_key", boom)
+    resp = await send(client, "POST", "/api/servers/alpha/ssh-key", {"password": "wrong"})
+    assert resp.status == 400
+    assert "비밀번호" in (await resp.json())["error"]
+
+    body = await (await client.get("/api/servers")).json()
+    assert body["servers"][0]["key_installed_at"] is None
+
+
+async def test_ssh_key_repeated_failures_are_throttled(client, monkeypatch):
+    """§9: 비밀번호를 계속 넣어보는 것도 무차별 대입이다 (3회/60초)."""
+    async def boom(**kw):
+        raise SSHKeyError("접속 실패")
+
+    monkeypatch.setattr(api, "register_key", boom)
+    for _ in range(3):
+        assert (await send(client, "POST", "/api/servers/alpha/ssh-key",
+                           {"password": "x"})).status == 400
+
+    resp = await send(client, "POST", "/api/servers/alpha/ssh-key", {"password": "x"})
+    assert resp.status == 429
+
+
+async def test_ssh_key_requires_a_password(client):
+    resp = await send(client, "POST", "/api/servers/alpha/ssh-key", {})
+    assert resp.status == 400
+
+
+async def test_ssh_key_unknown_host_is_404(client):
+    resp = await send(client, "POST", "/api/servers/ghost/ssh-key", {"password": "x"})
+    assert resp.status == 404
+
+
+async def test_target_password_is_never_echoed_back(client, monkeypatch):
+    """비밀번호는 DB·로그·응답 어디에도 남기지 않는다 (§F9)."""
+    secret = "s3cret-target-password"
+
+    async def boom(**kw):
+        raise SSHKeyError(f"접속 실패 ({kw['host']})")
+
+    monkeypatch.setattr(api, "register_key", boom)
+    resp = await send(client, "POST", "/api/servers/alpha/ssh-key", {"password": secret})
+    assert secret not in await resp.text()
