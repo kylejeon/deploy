@@ -16,6 +16,7 @@ from aiohttp import web
 if TYPE_CHECKING:
     from autodeploy.masking import SecretMasker
     from autodeploy.web.auth import LoginThrottle
+    from autodeploy.web.forwards import ForwardManager
     from autodeploy.web.jobs import JobService
     from autodeploy.web.sse import SseBroker
 
@@ -38,3 +39,4 @@ BROKER: web.AppKey["SseBroker"] = web.AppKey("broker")
 JOB_SERVICE: web.AppKey["JobService"] = web.AppKey("job_service")
 SSH_THROTTLE: web.AppKey["LoginThrottle"] = web.AppKey("ssh_throttle")
 HOUSEKEEPER: web.AppKey[Any] = web.AppKey("housekeeper")
+FORWARDS: web.AppKey["ForwardManager"] = web.AppKey("forwards")

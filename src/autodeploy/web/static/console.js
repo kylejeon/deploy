@@ -337,6 +337,10 @@ function renderJob() {
   if (failedHosts.length) actions.push(`<button class="btn btn--sm btn--primary" id="jRetryFailed">실패한 ${failedHosts.length}대만 재시도</button>`);
   if (finished && hostsOf(job).length) actions.push(`<button class="btn btn--sm" id="jRetryAll">전체 재시도</button>`);
   actions.push(`<a class="btn btn--sm" href="/api/jobs/${job.id}/log" download>로그 내려받기</a>`);
+  /* 설치가 끝나야 타겟에 포트가 열린다. 그전에 버튼을 보여주면 눌러도 안 열린다. */
+  if (job.status === "succeeded" && hostsOf(job).length) {
+    actions.push(`<button class="btn btn--sm" id="jForward">포트포워딩</button>`);
+  }
   /* 링크는 서버가 chat.getPermalink 로 받아둔 값만 쓴다 — 워크스페이스 도메인을
      모르는 채로 URL 을 조립하면 엉뚱한 곳으로 보낸다. */
   if (job.slack_permalink) {
@@ -411,6 +415,7 @@ function renderJob() {
   $("#jReject")?.addEventListener("click", () => act(`/api/jobs/${job.id}/reject`, "적용을 거부했습니다 (번들은 유지)"));
   $("#jRetryFailed")?.addEventListener("click", () => retry(job, failedHosts));
   $("#jRetryAll")?.addEventListener("click", () => retry(job, hostsOf(job)));
+  $("#jForward")?.addEventListener("click", () => forwardModal(hostsOf(job)));
   paintLog();
 }
 
@@ -760,6 +765,57 @@ function confirmDelete(host) {
     });
 }
 
+/* ── 포트포워딩 ───────────────────────────────────────
+ * 타겟(사내망)의 UI 포트는 밖에서 직접 못 연다. 맥미니는 사내망 안에 있으면서
+ * Tailscale 로 밖에서 닿으므로, 맥미니에 중계를 열어 이어준다.
+ *
+ * 열린 주소의 호스트는 **지금 이 콘솔에 접속한 그 주소**를 그대로 쓴다.
+ * 서버가 자기 주소를 추측해 알려주면 (0.0.0.0 바인드·다중 인터페이스에서)
+ * 보는 사람이 못 쓰는 주소가 나온다.
+ */
+async function forwardModal(hosts) {
+  state.forwardHosts = hosts;
+  modal(`<h2>포트포워딩</h2>
+    <p class="note">맥미니가 중계합니다. 연 주소는 <b>지금 이 콘솔에 접속한 것과 같은 주소</b>의
+    다른 포트라, Tailscale 로 들어와 있으면 그대로 열립니다.
+    한동안 아무도 쓰지 않으면 자동으로 닫힙니다.</p>
+    <div id="fwdRows" class="stack gap-8"></div>`, { confirm: false });
+  await paintForwards();
+}
+
+async function paintForwards() {
+  const el = $("#fwdRows");
+  if (!el) return;
+  let data;
+  try {
+    data = await api("/api/forwards");
+  } catch (e) {
+    el.innerHTML = `<div class="note">${esc(e.message)}</div>`;
+    return;
+  }
+  const open = new Map(data.forwards.map((f) => [f.key, f]));
+  const hosts = state.forwardHosts || [];
+  el.innerHTML = hosts.map((host) => {
+    const rows = Object.entries(data.ports).map(([port, label]) => {
+      const f = open.get(`${host}:${port}`);
+      const url = f ? `http://${location.hostname}:${f.listen_port}` : null;
+      const target = f
+        ? `<a class="mono" href="${esc(url)}" target="_blank" rel="noopener">${esc(url)}</a>`
+        : `<span class="dim">닫힘</span>`;
+      return `<div class="fwd">
+        <span class="mono">${esc(port)}</span>
+        <span class="fwd__label">${esc(label)}</span>
+        <span class="fwd__url">${target}</span>
+        <button class="btn btn--xs${f ? " btn--ghost-danger" : ""}"
+          data-fwd="${f ? "close" : "open"}" data-fwd-host="${esc(host)}" data-fwd-port="${esc(port)}"
+        >${f ? "닫기" : "열기"}</button>
+      </div>`;
+    }).join("");
+    return hosts.length > 1 ? `<div class="fwd__host mono dim">${esc(host)}</div>${rows}` : rows;
+  }).join("");
+}
+
+
 function sshKeyModal(host) {
   const s = state.servers.find((x) => x.host === host);
   modal(`<h2>SSH 키 등록 — ${esc(host)}</h2>
@@ -917,13 +973,16 @@ $("#cleanForm").addEventListener("submit", (e) => {
 
 /* ══ 모달 ══════════════════════════════════════════════ */
 
-function modal(html, { label = "확인", danger = false } = {}, onConfirm) {
+function modal(html, { label = "확인", danger = false, confirm = true } = {}, onConfirm) {
   const scrim = document.createElement("div");
   scrim.className = "scrim";
+  // confirm:false — 보기만 하는 모달(포트포워딩)에는 확인 버튼이 할 일이 없다.
+  const okBtn = confirm
+    ? `<button class="btn ${danger ? "btn--danger" : "btn--primary"}" data-ok>${esc(label)}</button>`
+    : "";
   scrim.innerHTML = `<div class="modal" role="dialog" aria-modal="true">${html}
     <div class="row" style="justify-content:flex-end">
-      <button class="btn" data-close>닫기</button>
-      <button class="btn ${danger ? "btn--danger" : "btn--primary"}" data-ok>${esc(label)}</button>
+      <button class="btn" data-close>닫기</button>${okBtn}
     </div></div>`;
   $("#modalSlot").append(scrim);
 
@@ -934,6 +993,7 @@ function modal(html, { label = "확인", danger = false } = {}, onConfirm) {
   $("[data-close]", scrim).addEventListener("click", close);
 
   const ok = $("[data-ok]", scrim);
+  if (!ok) { scrim.querySelector("input")?.focus(); return close; }
   ok.addEventListener("click", async () => {
     ok.disabled = true;
     try { await onConfirm(); close(); }
@@ -954,6 +1014,23 @@ document.addEventListener("click", (e) => {
   // 작업 화면은 통째로 다시 그려지므로 개별 바인딩 대신 위임으로 받는다.
   const jump = e.target.closest("[data-jump]");
   if (jump) jumpToLine(Number(jump.dataset.jump));
+});
+
+document.addEventListener("click", async (e) => {
+  const btn = e.target.closest("[data-fwd]");
+  if (!btn) return;
+  const { fwd, fwdHost: host, fwdPort: port } = btn.dataset;
+  btn.disabled = true;
+  try {
+    if (fwd === "open") {
+      await api("/api/forwards", { method: "POST", body: { host, port: Number(port) } });
+    } else {
+      await api(`/api/forwards/${encodeURIComponent(`${host}:${port}`)}`, { method: "DELETE" });
+    }
+  } catch (err) {
+    toast(err.message, "danger");
+  }
+  await paintForwards();
 });
 // 인자 없이 부르면 serverModal 이 "서버 추가" 모드로 뜬다. 이 버튼은
 // console.html 에 정적으로 있어 다시 그려지지 않으므로 여기서 한 번만 묶는다

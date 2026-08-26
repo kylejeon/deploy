@@ -187,6 +187,17 @@ tbody tr:hover{background:var(--surface-2)}
 .ln--chg .tx{color:var(--console-chg)}
 .ln--err .tx{color:var(--console-err)}
 .ln--recap .tx{color:#fff; font-weight:600}
+/* 포트포워딩 모달의 포트 한 줄 */
+.fwd{display:grid; grid-template-columns:52px 76px 1fr auto; align-items:center; gap:10px;
+  padding:7px 10px; border:1px solid var(--line-soft); border-radius:7px; background:var(--surface)}
+.fwd__label{color:var(--ink-2); font-size:13px}
+.fwd__url{min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:12.5px}
+.fwd__host{margin-top:6px; font-size:12px}
+@media (max-width:560px){
+  .fwd{grid-template-columns:52px 1fr auto}
+  .fwd__url{grid-column:1 / -1}
+}
+
 /* 오류 요약 — 실행 로그 아래. 오류가 없으면 아예 렌더되지 않는다. */
 .console--errs{max-height:280px}
 .console__errbar{display:flex; align-items:center; gap:10px; padding:9px 12px; border-bottom:1px solid var(--console-line);

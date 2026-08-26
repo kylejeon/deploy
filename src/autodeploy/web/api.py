@@ -28,6 +28,7 @@ from autodeploy.inventory import (
 from autodeploy.models import JobKind
 from autodeploy.ssh_keys import SSHKeyError, register_key
 from autodeploy.web import keys
+from autodeploy.web.forwards import ALLOWED_PORTS, ForwardError
 from autodeploy.web.jobs import JobConflict, JobError, JobRequest
 from autodeploy.web.auth import (
     SESSION_COOKIE,
@@ -195,6 +196,67 @@ async def get_servers(request: web.Request) -> web.Response:
     ]
     # mtime_ns 는 저장 시 낙관적 잠금 키로 되돌아온다 (§F2).
     return json_response({"servers": servers, "mtime_ns": inventory.mtime_ns})
+
+
+# ── 포트포워딩 (사내망 타겟 임시 중계) ──────────────────────────────
+
+
+def _resolve_target(request: web.Request, host: str) -> str | None:
+    """인벤토리에 있는 이름만 주소로 바꿔준다. 없으면 None.
+
+    임의의 host 를 그대로 받으면 콘솔이 사내망 프록시가 된다. 등록된 서버만
+    통과시키는 것이 이 함수의 존재 이유다.
+    """
+    try:
+        inventory = load_inventory(request.app[keys.INVENTORY_PATH])
+    except InventoryError:
+        return None
+    for server in inventory.servers:
+        if server.host == host:
+            return server.ansible_host
+    return None
+
+
+@routes.get("/api/forwards")
+async def get_forwards(request: web.Request) -> web.Response:
+    manager = request.app[keys.FORWARDS]
+    return json_response({"forwards": manager.list(), "ports": ALLOWED_PORTS})
+
+
+@routes.post("/api/forwards")
+async def open_forward(request: web.Request) -> web.Response:
+    try:
+        data = await request.json()
+    except Exception:
+        return json_error(400, "JSON 본문이 필요합니다")
+
+    host = str(data.get("host", "")).strip()
+    try:
+        port = int(data.get("port", 0))
+    except (TypeError, ValueError):
+        return json_error(400, "port 는 정수여야 합니다")
+
+    address = _resolve_target(request, host)
+    if address is None:
+        return json_error(404, f"인벤토리에 없는 서버입니다: {host or '(비어 있음)'}")
+
+    try:
+        forward = await request.app[keys.FORWARDS].open(
+            host=host, address=address, port=port
+        )
+    except ForwardError as exc:
+        return json_error(400, str(exc))
+    except OSError as exc:
+        return json_error(500, f"중계를 열지 못했습니다: {exc}")
+    return json_response(forward.as_dict(), status=201)
+
+
+@routes.delete("/api/forwards/{key}")
+async def close_forward(request: web.Request) -> web.Response:
+    key = request.match_info["key"]
+    if not await request.app[keys.FORWARDS].close(key):
+        return json_error(404, f"열려 있지 않습니다: {key}")
+    return json_response({"ok": True})
 
 
 # ── 작업 (조회) ─────────────────────────────────────────────────────

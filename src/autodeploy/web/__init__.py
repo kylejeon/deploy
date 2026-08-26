@@ -18,6 +18,7 @@ from autodeploy.db import connect
 from autodeploy.masking import SecretMasker
 from autodeploy.queue import JobQueue
 from autodeploy.web import api, keys
+from autodeploy.web.forwards import ForwardManager
 from autodeploy.web.jobs import JobService
 from autodeploy.web.sse import SseBroker
 from autodeploy.web.auth import (
@@ -106,6 +107,7 @@ def create_app(
     secure_cookie: bool = False,
     trust_forwarded: bool = False,
     static_dir: str | Path | None = None,
+    forward_bind: str = "127.0.0.1",
 ) -> web.Application:
     """콘솔 앱. 실행은 `run_web` 또는 호출자의 AppRunner 가 맡는다."""
     hubctl_repo = Path(hubctl_repo).expanduser()
@@ -135,6 +137,10 @@ def create_app(
     app[keys.SSH_THROTTLE] = LoginThrottle(max_failures=3, lock_seconds=60.0)
     app[keys.PREFLIGHT_LOCK] = asyncio.Lock()
 
+    # 중계 리스너는 콘솔과 같은 주소에 연다. 노출 범위는 운영자가 WEB_HOST 로
+    # 이미 내린 결정이고, 중계가 그보다 넓어지면 안 된다.
+    app[keys.FORWARDS] = ForwardManager(bind_host=forward_bind)
+
     app[keys.QUEUE] = queue if queue is not None else JobQueue()
     app[keys.BROKER] = SseBroker()
     app[keys.JOB_SERVICE] = JobService(
@@ -152,6 +158,8 @@ def create_app(
         console_url=console_url,
     )
 
+    app.on_startup.append(_start_forwards)
+    app.on_cleanup.append(_stop_forwards)
     app.on_startup.append(_start_queue)
     app.on_startup.append(_start_housekeeping)
     app.on_cleanup.append(_stop_housekeeping)
@@ -161,6 +169,15 @@ def create_app(
     if static_dir.is_dir():
         app.router.add_static("/static/", static_dir, name="static")
     return app
+
+
+async def _start_forwards(app: web.Application) -> None:
+    app[keys.FORWARDS].start()
+
+
+async def _stop_forwards(app: web.Application) -> None:
+    """앱이 내려가면 열린 중계도 전부 닫는다 — 사내망으로 가는 길을 남기지 않는다."""
+    await app[keys.FORWARDS].stop()
 
 
 async def _start_queue(app: web.Application) -> None:
