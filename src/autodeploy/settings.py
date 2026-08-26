@@ -50,6 +50,54 @@ HUBCTL_SECRET_ENV: tuple[str, ...] = (
 )
 
 
+@dataclass(frozen=True, slots=True)
+class WebConfig:
+    enabled: bool
+    host: str
+    port: int
+    session_ttl_days: int
+    secure_cookie: bool
+    trust_forwarded: bool
+
+
+def _flag(env: Mapping[str, str], key: str, default: bool = False) -> bool:
+    raw = env.get(key, "").strip().lower()
+    if not raw:
+        return default
+    return raw in ("1", "true", "yes", "on")
+
+
+def resolve_web_config(env: Mapping[str, str] | None = None) -> WebConfig:
+    """웹 콘솔 설정.
+
+    바인드 주소 기본값은 **루프백**이다 (§11). 0.0.0.0 을 기본으로 두면 LAN 노출이
+    설정 실수로 일어나는데, 이 콘솔은 타겟 서버에 sudo 로 임의 변경을 가할 수 있어
+    노출 범위는 명시적 선택이어야 한다.
+    """
+    e = env if env is not None else os.environ
+    try:
+        port = int(e.get("WEB_PORT", "8080"))
+    except ValueError as exc:
+        raise SettingsError(f"WEB_PORT 는 정수여야 합니다: {e.get('WEB_PORT')!r}") from exc
+    try:
+        ttl = int(e.get("SESSION_TTL_DAYS", "14"))
+    except ValueError as exc:
+        raise SettingsError(
+            f"SESSION_TTL_DAYS 는 정수여야 합니다: {e.get('SESSION_TTL_DAYS')!r}"
+        ) from exc
+    if ttl < 1:
+        raise SettingsError("SESSION_TTL_DAYS 는 1 이상이어야 합니다")
+
+    return WebConfig(
+        enabled=_flag(e, "WEB_ENABLED"),
+        host=e.get("WEB_HOST", "").strip() or "127.0.0.1",
+        port=port,
+        session_ttl_days=ttl,
+        secure_cookie=_flag(e, "WEB_SECURE_COOKIE"),
+        trust_forwarded=_flag(e, "WEB_TRUST_FORWARDED"),
+    )
+
+
 def _expand_remote_home(path: str, ssh_user: str) -> str:
     """원격 서버 기준 `~` 확장. shlex.quote로 감싸도 안전한 절대경로로 만든다.
 
@@ -105,6 +153,14 @@ class Settings:
     # 기존 Slack 워크플로는 이 값들을 쓰지 않으므로 기본값을 준다.
     hubctl_repo_path: Path = Path(DEFAULT_HUBCTL_REPO_PATH).expanduser()
     become_password: str = ""
+    web: WebConfig = WebConfig(
+        enabled=False,
+        host="127.0.0.1",
+        port=8080,
+        session_ttl_days=14,
+        secure_cookie=False,
+        trust_forwarded=False,
+    )
 
 
 def load_settings(env: Mapping[str, str] | None = None) -> Settings:
@@ -160,4 +216,5 @@ def load_settings(env: Mapping[str, str] | None = None) -> Settings:
         port_webpacs=int(e.get("PORT_WEBPACS", "8002")),
         hubctl_repo_path=resolve_hubctl_repo(e),
         become_password=resolve_become_password(e),
+        web=resolve_web_config(e),
     )

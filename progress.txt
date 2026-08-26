@@ -1090,3 +1090,59 @@ aiohttp app 팩토리 + 세션 인증(로그인/쿠키/무차별 대입 제한) 
 ### 다음 (Phase C)
 aiohttp app 팩토리 + 세션 인증 + 서버/작업 조회 API.
 기동 시 running/awaiting 작업 정리(§9) 포함.
+
+## 2026-08-26 (Phase C 완료) — aiohttp 앱 + 인증 + 조회 API
+
+**625/625 테스트 통과** (534 → +91).
+용혁님 확인: 설치는 맥미니(컨트롤러)에서 hub-provisioning 코드로만 실행하고,
+타겟 PC 에서 직접 install 하지 않는다. .209 등록은 완성 후 웹에서 직접 하신다.
+
+### 신규 파일
+- `src/autodeploy/web/__init__.py` — create_app() + 미들웨어 3개
+  (session → require_auth → csrf) + run_web()
+- `src/autodeploy/web/auth.py` — 세션 발급·검증, LoginThrottle, CSRF
+- `src/autodeploy/web/api.py` — login/logout/me/servers/jobs/job 상세/log/preflight
+- `src/autodeploy/web/keys.py` — web.AppKey 정의 (문자열 키는 NotAppKeyWarning)
+
+### 설계 판단
+- **세션**: 쿠키엔 원본 토큰, DB 엔 sha256 만. DB 유출로 로그인 불가.
+  만료는 SQLite `datetime('now','+N days')` 로 계산 — 파이썬 `datetime.now()`(로컬)와
+  SQLite `CURRENT_TIMESTAMP`(UTC) 를 섞으면 만료가 9시간 어긋난다
+- **CSRF**: 세션 원본 토큰에서 `sha256("csrf:"+token)` 로 파생. sessions 에 컬럼을
+  안 늘려도 되고, 원본은 HttpOnly 쿠키라 스크립트가 못 읽으며 파생값은 동일
+  오리진의 /api/me 로만 얻는다. 쿠키는 자동 전송되지만 헤더는 아니라는 점이 핵심
+- **바인드 기본값 127.0.0.1** (§11). 0.0.0.0 을 기본으로 두면 LAN 노출이 설정
+  실수로 일어난다. 이 콘솔은 타겟에 sudo 변경을 가할 수 있어 노출은 명시적 선택
+- **X-Forwarded-For 는 기본 무시**. 켜두면 클라이언트가 헤더를 위조해 로그인
+  잠금을 우회한다. 프록시를 앞에 둘 때만 WEB_TRUST_FORWARDED=true
+- **웹은 데몬과 같은 프로세스**. 별도 프로세스면 SQLite 를 둘이 쓰게 된다.
+  웹 기동 실패해도 Slack 봇은 계속 돈다
+
+### 구현 중 잡은 결함 2개 (테스트가 먼저 잡음)
+1. 잠금을 유발한 **5번째** 실패가 429 를 반환했다 → 마지막 한 번만 응답이 달라져
+   그 차이로 잠금 임계값을 역산할 수 있다. 자격 실패는 전부 401, 429 는 그 다음
+   시도부터로 고침 (test_lock_response_does_not_reveal_the_threshold)
+2. `load_inventory` 는 파일이 없으면 빈 인벤토리를 돌려준다(첫 저장을 위한 의도된
+   계약). 그대로 두면 HUBCTL_REPO_PATH 오타가 '서버 0대'로 조용히 보인다 →
+   **저장소 디렉터리 부재는 503**, sites.yml 만 없는 초기 상태는 빈 목록으로 구분
+
+### 기타
+- `repository`: list_jobs / get_job_detail / get_job_hosts / get_job_events /
+  get_script_logs / count_active_jobs / **reap_stale_jobs**(§9) 추가.
+  v1 함수(Job 데이터클래스)는 Slack 이 쓰므로 그대로 둠
+- `__main__`: 기동 시 reap_stale_jobs 실행 + WEB_ENABLED 면 웹 기동/종료
+- `settings`: WebConfig (WEB_ENABLED/WEB_HOST/WEB_PORT/SESSION_TTL_DAYS/
+  WEB_SECURE_COOKIE/WEB_TRUST_FORWARDED)
+- JSON 응답 `ensure_ascii=False` — 한글 오류 메시지를 로그/curl 에서 읽기 위함
+
+### 실제 기동 확인 (스크래치 DB + 실 sites.yml 읽기전용)
+- CLI 로 계정 생성 → 로그인 → 쿠키 발급(HttpOnly/SameSite=Lax)
+- 미인증: `/` → 302 /login, `/api/*` → 401
+- 잘못된 비밀번호 → 401 단일 메시지
+- `/api/servers` → 실제 yonseiwa 항목 + mtime_ns 반환
+- CSRF 없는 POST → 403, 붙이면 200 → 이후 /api/me 401
+- `/api/preflight` → 실제 hubctl 실행, 4항목 ok, exit_code 0 (0.56초)
+
+### 다음 (Phase D)
+SSE 스트리밍(`/api/jobs/{id}/stream`) + 작업 생성/취소/승인/거부 +
+서버 추가·수정·삭제 + SSH 키 등록 API. JobQueue 를 앱에 연결한다.

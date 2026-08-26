@@ -242,3 +242,178 @@ async def clear_key_installed(db: aiosqlite.Connection, host: str) -> None:
 async def delete_server_meta(db: aiosqlite.Connection, host: str) -> None:
     await db.execute("DELETE FROM server_meta WHERE host=?", (host,))
     await db.commit()
+
+
+# ── v2: 웹 콘솔용 조회 ──────────────────────────────────────────────
+#
+# v1 의 get_job/list_recent_jobs 는 Job 데이터클래스(구 SSH 워크플로 모양)를
+# 돌려주고 Slack 봇이 쓰고 있다. 웹은 kind/env/ref/job_hosts 가 필요해 모양이
+# 다르므로 건드리지 않고 따로 둔다 (D1: Slack 경로 불변).
+
+_JOB_COLUMNS = (
+    "id", "kind", "status", "env", "ref", "ref_type", "clean_mode",
+    "exit_code", "cancel_by", "current_step", "started_by",
+    "slack_channel", "slack_thread_ts", "error_message",
+    "created_at", "started_at", "finished_at",
+)
+
+ACTIVE_STATUSES = ("queued", "running", "awaiting")
+
+
+def _job_dict(row: aiosqlite.Row) -> dict:
+    return {name: row[name] for name in _JOB_COLUMNS}
+
+
+async def list_jobs(db: aiosqlite.Connection, *, limit: int = 50) -> list[dict]:
+    """최근 작업 목록. 호스트는 job_hosts 에서 한 번에 끌어와 N+1 을 피한다."""
+    async with db.execute(
+        f"SELECT {', '.join(_JOB_COLUMNS)} FROM jobs"
+        " ORDER BY created_at DESC, id DESC LIMIT ?",
+        (limit,),
+    ) as cur:
+        rows = await cur.fetchall()
+    jobs = [_job_dict(r) for r in rows]
+    if not jobs:
+        return []
+
+    placeholders = ",".join("?" * len(jobs))
+    async with db.execute(
+        f"SELECT job_id, host, status FROM job_hosts WHERE job_id IN ({placeholders})"
+        " ORDER BY host",
+        tuple(j["id"] for j in jobs),
+    ) as cur:
+        host_rows = await cur.fetchall()
+
+    by_job: dict[int, list[dict]] = {}
+    for r in host_rows:
+        by_job.setdefault(r["job_id"], []).append({"host": r["host"], "status": r["status"]})
+    for job in jobs:
+        job["hosts"] = by_job.get(job["id"], [])
+    return jobs
+
+
+async def get_job_detail(db: aiosqlite.Connection, job_id: int) -> dict | None:
+    async with db.execute(
+        f"SELECT {', '.join(_JOB_COLUMNS)} FROM jobs WHERE id=?", (job_id,)
+    ) as cur:
+        row = await cur.fetchone()
+    if row is None:
+        return None
+    job = _job_dict(row)
+    job["hosts"] = await get_job_hosts(db, job_id)
+    job["events"] = await get_job_events(db, job_id)
+    return job
+
+
+async def get_job_hosts(db: aiosqlite.Connection, job_id: int) -> list[dict]:
+    async with db.execute(
+        "SELECT host, status, recap_ok, recap_changed, recap_failed, recap_unreachable"
+        " FROM job_hosts WHERE job_id=? ORDER BY host",
+        (job_id,),
+    ) as cur:
+        rows = await cur.fetchall()
+    return [
+        {
+            "host": r["host"],
+            "status": r["status"],
+            "recap": None
+            if r["recap_ok"] is None
+            else {
+                "ok": r["recap_ok"],
+                "changed": r["recap_changed"],
+                "failed": r["recap_failed"],
+                "unreachable": r["recap_unreachable"],
+            },
+        }
+        for r in rows
+    ]
+
+
+async def get_job_events(db: aiosqlite.Connection, job_id: int) -> list[dict]:
+    async with db.execute(
+        "SELECT step, level, message, created_at FROM job_events"
+        " WHERE job_id=? ORDER BY id",
+        (job_id,),
+    ) as cur:
+        rows = await cur.fetchall()
+    return [
+        {
+            "step": r["step"],
+            "level": r["level"],
+            "message": r["message"],
+            "created_at": r["created_at"],
+        }
+        for r in rows
+    ]
+
+
+async def get_script_logs(
+    db: aiosqlite.Connection,
+    job_id: int,
+    *,
+    after_id: int = 0,
+    limit: int = 2000,
+) -> list[dict]:
+    """`after_id` 이후 로그 줄. SSE 재연결 커서(§F4)와 전체 로그 조회에 함께 쓴다."""
+    async with db.execute(
+        "SELECT id, step, stream, line, host, kind, created_at FROM script_logs"
+        " WHERE job_id=? AND id>? ORDER BY id LIMIT ?",
+        (job_id, after_id, limit),
+    ) as cur:
+        rows = await cur.fetchall()
+    return [
+        {
+            "id": r["id"],
+            "step": r["step"],
+            "stream": r["stream"],
+            "line": r["line"],
+            "host": r["host"],
+            "kind": r["kind"],
+            "created_at": r["created_at"],
+        }
+        for r in rows
+    ]
+
+
+async def count_active_jobs(db: aiosqlite.Connection) -> int:
+    placeholders = ",".join("?" * len(ACTIVE_STATUSES))
+    async with db.execute(
+        f"SELECT COUNT(*) AS n FROM jobs WHERE status IN ({placeholders})",
+        ACTIVE_STATUSES,
+    ) as cur:
+        row = await cur.fetchone()
+    return int(row["n"])
+
+
+async def reap_stale_jobs(db: aiosqlite.Connection, *, reason: str) -> list[int]:
+    """기동 시 남아있는 running/awaiting 작업을 실패로 정리한다 (§9).
+
+    데몬이 죽으면 그 작업을 감독하던 러너도 함께 사라진다. 상태를 그대로 두면
+    영원히 '진행 중'으로 보이고, 큐가 이미 하나 돌고 있다고 오해해 새 작업이
+    시작되지 않는다. queued 는 아직 시작 전이라 건드리지 않는다.
+    """
+    async with db.execute(
+        "SELECT id FROM jobs WHERE status IN ('running','awaiting')"
+    ) as cur:
+        ids = [int(r["id"]) for r in await cur.fetchall()]
+    if not ids:
+        return []
+
+    await db.execute(
+        "UPDATE jobs SET status='failed', finished_at=CURRENT_TIMESTAMP,"
+        " error_message=COALESCE(error_message, ?)"
+        " WHERE status IN ('running','awaiting')",
+        (reason,),
+    )
+    placeholders = ",".join("?" * len(ids))
+    await db.execute(
+        f"UPDATE job_hosts SET status='failed'"
+        f" WHERE job_id IN ({placeholders}) AND status IN ('queued','running')",
+        ids,
+    )
+    await db.executemany(
+        "INSERT INTO job_events (job_id, step, level, message) VALUES (?, ?, ?, ?)",
+        [(job_id, "daemon", "error", reason) for job_id in ids],
+    )
+    await db.commit()
+    return ids
