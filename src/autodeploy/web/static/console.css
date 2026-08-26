@@ -158,6 +158,8 @@ tbody tr[data-open]{cursor:pointer}
 .tr--grp-first td{border-top:1px solid var(--line-soft)}
 .tr--grp td:nth-child(2){box-shadow:inset 2px 0 0 var(--line)}
 .tr--grp .jobid{opacity:.4}
+/* 기록이 아니라 "지금 인벤토리 값" 이라는 표시. 점선으로 확정이 아님을 알린다. */
+.tag--guess{border-style:dashed; color:var(--ink-3)}
 .tr--grp-first .jobid{opacity:1}
 /* 최근 작업 선택 칸 */
 .col-chk{width:36px; text-align:center; padding-right:0}

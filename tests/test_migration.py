@@ -178,6 +178,33 @@ async def test_script_logs_host_column_added(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_job_hosts_profile_column_added(tmp_path):
+    """실행 시점 프로파일 칸. 지난 작업 행은 NULL 로 남는다.
+
+    그때 무엇이었는지는 알 수 없으므로 지어내지 않는다 — 화면이 "기록 없음"
+    으로 구분해서 보여준다.
+    """
+    path = tmp_path / "state.db"
+    job_id = await _make_v1_db(path)
+    await init_db(path)
+    async with connect(path) as db:
+        await db.execute(
+            "INSERT INTO job_hosts (job_id, host, status) VALUES (?,?, 'queued')",
+            (job_id, "old"),
+        )
+        await db.execute(
+            "INSERT INTO job_hosts (job_id, host, status, profile) VALUES (?,?, 'queued', ?)",
+            (job_id, "new", "hybrid-with-ai"),
+        )
+        await db.commit()
+        async with db.execute(
+            "SELECT host, profile FROM job_hosts ORDER BY host"
+        ) as cur:
+            rows = {r["host"]: r["profile"] for r in await cur.fetchall()}
+    assert rows == {"new": "hybrid-with-ai", "old": None}
+
+
+@pytest.mark.asyncio
 async def test_cascade_still_works_after_rebuild(tmp_path):
     """재생성 후에도 job 삭제 시 자식 행이 함께 지워져야 한다."""
     path = tmp_path / "state.db"

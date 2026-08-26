@@ -119,8 +119,9 @@ class JobService:
         phase = "create" if kind is JobKind.PATCH else None
         hosts = tuple(dict.fromkeys(h.strip() for h in req.hosts if h and h.strip()))
 
+        profiles: dict[str, str] = {}
         if (kind.value, phase) not in _HOSTLESS_PHASES:
-            await self._check_hosts(kind, hosts, confirm=req.confirm)
+            profiles = await self._check_hosts(kind, hosts, confirm=req.confirm)
         elif hosts:
             raise JobError("patch 는 번들 생성 후 승인 단계에서 대상을 지정합니다")
 
@@ -147,8 +148,9 @@ class JobService:
             job_id = int(cur.lastrowid)
             if hosts:
                 await db.executemany(
-                    "INSERT INTO job_hosts (job_id, host, status) VALUES (?, ?, 'queued')",
-                    [(job_id, h) for h in hosts],
+                    "INSERT INTO job_hosts (job_id, host, status, profile)"
+                    " VALUES (?, ?, 'queued', ?)",
+                    [(job_id, h, profiles.get(h)) for h in hosts],
                 )
             await db.commit()
 
@@ -158,7 +160,13 @@ class JobService:
 
     async def _check_hosts(
         self, kind: JobKind, hosts: tuple[str, ...], *, confirm: str | None
-    ) -> None:
+    ) -> dict[str, str]:
+        """대상 검증. 부수적으로 **실행 시점의 프로파일**을 함께 돌려준다.
+
+        인벤토리를 어차피 여기서 읽으므로 한 번 더 읽지 않는다. 이 값은
+        job_hosts 에 박아둔다 — 나중에 서버를 onprem 에서 hybrid 로 바꿔도
+        지난 작업이 무엇으로 설치됐는지가 바뀌면 안 된다.
+        """
         if not hosts:
             raise JobError("대상 서버를 하나 이상 선택하세요")
 
@@ -185,6 +193,8 @@ class JobService:
             # 화면 검증만 믿지 않는다 (§7). 파괴적 작업이라 서버에서 다시 대조한다.
             if (confirm or "").strip() != hosts[0]:
                 raise JobError("확인을 위해 대상 호스트명을 정확히 입력하세요")
+
+        return {s.host: s.profile for s in inventory.servers if s.host in set(hosts)}
 
     # ── 취소 / 승인 ─────────────────────────────────────────────────
 

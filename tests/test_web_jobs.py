@@ -843,3 +843,49 @@ async def test_the_recap_still_has_the_last_word(client):
 
     states = await host_states(client, job_id)
     assert states == {"alpha": "succeeded", "beta": "failed"}
+
+
+# ── 프로파일 스냅샷 ─────────────────────────────────────────────────
+
+
+async def test_the_profile_is_recorded_when_the_job_is_created(client):
+    """목록에 띄우려면 작업이 프로파일을 알아야 한다."""
+    job_id = (await (await post(
+        client, "/api/jobs", {"kind": "verify", "hosts": ["alpha", "beta"]}
+    )).json())["id"]
+    body = await (await client.get("/api/jobs")).json()
+    job = next(j for j in body["jobs"] if j["id"] == job_id)
+    assert {h["host"]: h["profile"] for h in job["hosts"]} == {
+        "alpha": "onprem", "beta": "onprem",
+    }
+
+
+async def test_changing_a_servers_profile_does_not_rewrite_history(client):
+    """지난 작업이 **무엇으로 설치됐는지**는 바뀌면 안 된다.
+
+    인벤토리를 참조해서 그리면, 나중에 서버를 onprem 에서 hybrid 로 바꾸는 순간
+    지난 작업 기록까지 전부 hybrid 로 보인다. 그래서 실행 시점 값을 job_hosts 에
+    박아둔다.
+    """
+    job_id = (await (await post(
+        client, "/api/jobs", {"kind": "verify", "hosts": ["alpha"]}
+    )).json())["id"]
+    await wait_finished(client, job_id)
+
+    # 서버를 hybrid 로 바꾼다 (작업이 끝나야 인벤토리를 고칠 수 있다)
+    mtime = (await (await client.get("/api/servers")).json())["mtime_ns"]
+    resp = await client.put("/api/servers/alpha", json={
+        "ansible_host": "192.0.2.10", "ansible_user": "connecteve",
+        "site_name": "alpha", "profile": "hybrid-with-ai", "mtime_ns": mtime,
+    }, headers={CSRF_HEADER: client.csrf})
+    assert resp.status == 200, await resp.text()
+
+    detail = await (await client.get(f"/api/jobs/{job_id}")).json()
+    assert detail["hosts"][0]["profile"] == "onprem", "지난 작업 기록이 따라 바뀌었다"
+
+    # 새 작업은 바뀐 값으로 기록된다
+    new_id = (await (await post(
+        client, "/api/jobs", {"kind": "verify", "hosts": ["alpha"]}
+    )).json())["id"]
+    fresh = await (await client.get(f"/api/jobs/{new_id}")).json()
+    assert fresh["hosts"][0]["profile"] == "hybrid-with-ai"

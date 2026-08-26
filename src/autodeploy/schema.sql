@@ -93,6 +93,9 @@ CREATE TABLE IF NOT EXISTS job_hosts (
   host              TEXT NOT NULL,
   status            TEXT NOT NULL DEFAULT 'queued'
                       CHECK(status IN ('queued','running','succeeded','failed','cancelled')),
+  -- 실행 시점의 프로파일 스냅샷. 인벤토리를 보지 않고 목록에 띄우기 위한 것이고,
+  -- 무엇보다 나중에 서버의 프로파일을 바꿔도 지난 작업 기록이 바뀌지 않게 한다.
+  profile           TEXT,
   recap_ok          INTEGER,
   recap_changed     INTEGER,
   recap_failed      INTEGER,

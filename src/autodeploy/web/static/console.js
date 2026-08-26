@@ -237,7 +237,7 @@ function renderDash() {
     ? `${jobs.length}건` : `작업 ${jobs.length}건 · 서버 ${servers}대`;
 
   $("#rows").innerHTML = jobs.length ? jobs.map(jobRows).join("")
-    : `<tr><td colspan="9" class="dim" style="text-align:center; padding:24px">아직 실행한 작업이 없습니다.</td></tr>`;
+    : `<tr><td colspan="10" class="dim" style="text-align:center; padding:24px">아직 실행한 작업이 없습니다.</td></tr>`;
   $$("#rows tr[data-open]").forEach((tr) => tr.addEventListener("click", (e) => {
     if (e.target.closest("[data-nogo]")) return;   // 체크박스 칸은 상세로 넘기지 않는다
     // 그 서버 줄을 눌렀으면 상세도 그 서버로 필터해서 연다.
@@ -334,6 +334,25 @@ function jobRows(job) {
   return hosts.map((h, i) => jobRow(job, h, i === 0, i === hosts.length - 1)).join("");
 }
 
+/* 프로파일은 **실행 시점의 값**을 job_hosts 에 박아둔 것을 쓴다. 서버를 나중에
+   onprem 에서 hybrid 로 바꿔도 지난 작업 기록이 따라 바뀌면 안 되기 때문이다.
+   그 칸이 생기기 전(2026-08-26 이전) 작업은 기록이 없다. 그때는 지금 인벤토리
+   값을 흐리게 보여주고, 그것이 기록이 아니라는 것을 툴팁으로 밝힌다. */
+function profileTag(job, hostRow) {
+  const hosts = hostRow ? [hostRow] : (job.hosts || []);
+  const recorded = [...new Set(hosts.map((h) => h.profile).filter(Boolean))];
+  if (recorded.length) {
+    return recorded.map((p) =>
+      `<span class="tag" title="${esc(PROFILES[p] || "")}">${esc(p)}</span>`).join(" ");
+  }
+  const now = [...new Set(hosts
+    .map((h) => (state.servers.find((s) => s.host === h.host) || {}).profile)
+    .filter(Boolean))];
+  if (!now.length) return `<span class="dim">–</span>`;
+  return now.map((p) =>
+    `<span class="tag tag--guess" title="이 작업에는 프로파일 기록이 없습니다. 지금 인벤토리 값입니다.">${esc(p)}?</span>`).join(" ");
+}
+
 function jobRow(job, hostRow = null, first = true, last = true) {
   /* 진행 중인 작업은 고를 수 없다 — 러너가 그 job_id 로 로그를 쓰는 중이라
      행을 지우면 다음 INSERT 가 외래키에서 죽고 실행이 통째로 넘어간다.
@@ -354,6 +373,7 @@ function jobRow(job, hostRow = null, first = true, last = true) {
     <td><span class="jobid">#${job.id}</span> ${kindTag(job)}</td>
     <td><span class="tag">${server}</span></td>
     <td>${job.env ? `<span class="env">${esc(job.env)}</span> ` : ""}<span class="mono dim">${esc(job.ref || "")}</span></td>
+    <td>${profileTag(job, hostRow)}</td>
     <td>${pill(status)}</td>
     <td class="dim">${esc(stepLabel(job, job.current_step))}</td>
     <td class="mono">${esc(duration(job))}</td>

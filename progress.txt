@@ -2114,3 +2114,39 @@ hub-provisioning 의 ignore_errors 는 7곳, 전부 patch_apply/rollback (설치
 - `test_the_recap_still_has_the_last_word` — 최종은 RECAP.
 - jobRows 는 원문에서 뽑아 node 로 표 모양 확인 (1대/3대).
 - 782 → 785 passed.
+
+--------------------------------------------------------------------------------
+## 2026-08-26 (이어서) — 최근 작업에 프로파일 칸 추가
+
+### 요청
+작업 테이블 환경 칸 오른쪽에 onprem / hybrid-with-ai / hybrid-without-ai 표시.
+
+### 판단: 인벤토리를 참조하지 않고 **실행 시점 값을 기록**한다
+프로파일은 서버(인벤토리)의 속성이지 작업의 속성이 아니라, 화면에서
+`state.servers` 로 찾아 그리면 코드 한 줄이면 된다. 그런데 그러면 **나중에 서버를
+onprem → hybrid 로 바꾸는 순간 지난 작업 기록까지 전부 hybrid 로 보인다.**
+작업 목록은 "무엇이 언제 어떻게 설치됐는지" 의 기록이라 그건 거짓말이 된다.
+→ `job_hosts.profile` 스냅샷.
+
+### 한 것
+- `schema.sql`: `job_hosts.profile TEXT`
+- `db.py _migrate`: 멱등 ALTER (기존 행은 NULL — 그때 값을 알 수 없으니 지어내지 않음)
+- `jobs.py`: `_check_hosts` 가 검증하면서 프로파일 맵을 함께 돌려준다.
+  어차피 거기서 인벤토리를 읽으므로 두 번 읽지 않는다.
+- `repository.list_jobs` / `get_job_hosts` 에 profile 포함
+- `console.js profileTag(job, hostRow)` — 기록이 있으면 태그,
+  없으면 **지금 인벤토리 값 + `?` + 점선 테두리 + 툴팁**("기록이 아니라 현재 값").
+  인벤토리에도 없으면 `–`.
+- 테이블 칸 하나 늘었으므로 빈 상태 colspan 9 → 10.
+
+### 테스트
+- `test_the_profile_is_recorded_when_the_job_is_created`
+- `test_changing_a_servers_profile_does_not_rewrite_history` — 작업 끝낸 뒤 서버를
+  hybrid 로 바꾸고, 지난 작업은 onprem 그대로 / 새 작업은 hybrid 인지.
+  **INSERT 에 None 을 넣어 실제로 빨간불 확인함.**
+- `test_job_hosts_profile_column_added` — v1 DB 마이그레이션.
+- 785 → 788 passed.
+
+### 다음
+배포. 스키마가 바뀌므로 데몬 재시작 시 자동 마이그레이션이 돈다(멱등).
+기존 #32·#33 은 기록이 없어 `onprem?` 으로 보인다.

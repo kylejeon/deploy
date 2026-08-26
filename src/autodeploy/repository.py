@@ -322,15 +322,17 @@ async def list_jobs(db: aiosqlite.Connection, *, limit: int = 50) -> list[dict]:
 
     placeholders = ",".join("?" * len(jobs))
     async with db.execute(
-        f"SELECT job_id, host, status FROM job_hosts WHERE job_id IN ({placeholders})"
-        " ORDER BY host",
+        f"SELECT job_id, host, status, profile FROM job_hosts"
+        f" WHERE job_id IN ({placeholders}) ORDER BY host",
         tuple(j["id"] for j in jobs),
     ) as cur:
         host_rows = await cur.fetchall()
 
     by_job: dict[int, list[dict]] = {}
     for r in host_rows:
-        by_job.setdefault(r["job_id"], []).append({"host": r["host"], "status": r["status"]})
+        by_job.setdefault(r["job_id"], []).append(
+            {"host": r["host"], "status": r["status"], "profile": r["profile"]}
+        )
     for job in jobs:
         job["hosts"] = by_job.get(job["id"], [])
     return jobs
@@ -351,8 +353,8 @@ async def get_job_detail(db: aiosqlite.Connection, job_id: int) -> dict | None:
 
 async def get_job_hosts(db: aiosqlite.Connection, job_id: int) -> list[dict]:
     async with db.execute(
-        "SELECT host, status, recap_ok, recap_changed, recap_failed, recap_unreachable"
-        " FROM job_hosts WHERE job_id=? ORDER BY host",
+        "SELECT host, status, profile, recap_ok, recap_changed, recap_failed,"
+        " recap_unreachable FROM job_hosts WHERE job_id=? ORDER BY host",
         (job_id,),
     ) as cur:
         rows = await cur.fetchall()
@@ -360,6 +362,7 @@ async def get_job_hosts(db: aiosqlite.Connection, job_id: int) -> list[dict]:
         {
             "host": r["host"],
             "status": r["status"],
+            "profile": r["profile"],
             "recap": None
             if r["recap_ok"] is None
             else {

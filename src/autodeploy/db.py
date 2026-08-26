@@ -104,6 +104,11 @@ async def _migrate(db: aiosqlite.Connection) -> None:
         if name not in log_cols:
             await db.execute(f"ALTER TABLE script_logs ADD COLUMN {name} TEXT")
 
+    # 지난 작업 행은 NULL 로 남는다. 그때의 프로파일은 알 수 없으므로 지어내지
+    # 않고 비워둔다 — 화면이 "기록 없음" 으로 구분해 보여준다.
+    if "profile" not in await _columns(db, "job_hosts"):
+        await db.execute("ALTER TABLE job_hosts ADD COLUMN profile TEXT")
+
     if await _jobs_needs_rebuild(db):
         await _rebuild_jobs(db)
 
