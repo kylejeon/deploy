@@ -32,6 +32,11 @@ sites:
       ansible_user: connecteve
       site_name: faraway
       profile: onprem
+    hyb:
+      ansible_host: 127.0.0.1
+      ansible_user: connecteve
+      site_name: hyb
+      profile: hybrid-with-ai
 """
 
 
@@ -148,12 +153,104 @@ async def test_closing_something_that_is_not_open_is_404(client):
     assert resp.status == 404
 
 
-async def test_listing_reports_open_forwards_and_allowed_ports(client):
+async def test_listing_reports_open_forwards(client):
     await open_forward(client, "testpc", client.echo_port)
     body = await (await client.get("/api/forwards")).json()
     assert body["forwards"][0]["host"] == "testpc"
-    # 화면이 포트 목록을 하드코딩하지 않도록 서버가 알려준다.
-    assert "8000" in body["ports"] or 8000 in body["ports"]
+
+
+# ── onprem / hybrid 별 포트 계획 ────────────────────────────────────
+
+
+async def entries(client, host: str, env: str | None = None) -> dict[int, dict]:
+    q = f"/api/forwards?host={host}" + (f"&env={env}" if env else "")
+    body = await (await client.get(q)).json()
+    return {e["port"]: e for e in body["entries"]}
+
+
+async def test_onprem_relays_every_port(client):
+    plan = await entries(client, "testpc", "dev")
+    for port in (8000, 8001, 8002, 8003):
+        assert plan[port]["mode"] == "relay", port
+        assert plan[port]["url"] is None
+
+
+@pytest.mark.parametrize(
+    ("env", "expected"),
+    [
+        ("dev", {
+            8000: "https://dev-gateway.connecteve.com",
+            8001: "https://dev-temporal-web.connecteve.com",
+            8003: "https://dev-grafana.connecteve.com",
+        }),
+        ("stage", {
+            8000: "https://stage-gateway.connecteve.com",
+            8001: "https://stage-temporal-web.connecteve.com",
+            8003: "https://stage-grafana.connecteve.com",
+        }),
+        ("prod", {
+            8000: "https://hub.connecteve.com",
+            8001: "https://temporal-web.connecteve.com",
+            8003: "https://grafana.connecteve.com",
+        }),
+    ],
+)
+async def test_hybrid_sends_central_ports_to_the_cloud(client, env, expected):
+    plan = await entries(client, "hyb", env)
+    for port, url in expected.items():
+        assert plan[port]["mode"] == "cloud", port
+        assert plan[port]["url"] == url
+
+
+async def test_hybrid_still_relays_webpacs(client):
+    """영상은 병원 안에 남는다 — 8002 는 프로파일과 무관하게 사이트다."""
+    for env in ("dev", "stage", "prod"):
+        plan = await entries(client, "hyb", env)
+        assert plan[8002]["mode"] == "relay"
+        assert plan[8002]["url"] is None
+
+
+async def test_hybrid_without_an_env_cannot_choose_an_address(client):
+    """verify/clean 처럼 `-e ENV` 가 없는 작업. 중계를 내주면 404 만 보게 된다."""
+    plan = await entries(client, "hyb", None)
+    assert plan[8000]["mode"] == "unknown"
+    assert plan[8000]["url"] is None
+    assert plan[8002]["mode"] == "relay", "8002 는 환경과 무관하다"
+
+
+async def test_plan_needs_a_known_host(client):
+    assert (await client.get("/api/forwards?host=nope")).status == 404
+
+
+# ── 화면만 숨기는 것으로는 부족하다 ────────────────────────────────
+
+
+async def test_opening_a_cloud_port_on_hybrid_is_refused(client):
+    resp = await client.post(
+        "/api/forwards", json={"host": "hyb", "port": 8000, "env": "dev"},
+        headers={CSRF_HEADER: client.csrf},
+    )
+    assert resp.status == 400
+    assert "dev-gateway.connecteve.com" in (await resp.json())["error"]
+
+
+async def test_opening_a_cloud_port_without_an_env_is_refused(client):
+    resp = await client.post(
+        "/api/forwards", json={"host": "hyb", "port": 8003},
+        headers={CSRF_HEADER: client.csrf},
+    )
+    assert resp.status == 400
+    assert "환경" in (await resp.json())["error"]
+
+
+async def test_onprem_cloud_ports_still_open(client, monkeypatch):
+    """규칙은 hybrid 에만 걸린다. onprem 은 8000 도 중계 대상이다."""
+    monkeypatch.setitem(forwards.ALLOWED_PORTS, 8000, "프론트")
+    resp = await client.post(
+        "/api/forwards", json={"host": "testpc", "port": 8000, "env": "dev"},
+        headers={CSRF_HEADER: client.csrf},
+    )
+    assert resp.status == 201
 
 
 # ── 열어주면 안 되는 것 ─────────────────────────────────────────────

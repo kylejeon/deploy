@@ -1752,3 +1752,37 @@ API: GET/POST /api/forwards, DELETE /api/forwards/{key}
 서브넷 라우터(②)를 켜면 원래 주소 그대로 쓸 수 있어 웹앱 설정에는 더 안전하다.
 다만 병원망 대역을 통째로 tailnet 에 여는 일이고, 맥 앱스토어판 Tailscale 은
 서브넷 라우팅을 지원하지 않는다. 용혁님 판단 대기.
+
+--------------------------------------------------------------------------------
+## 2026-08-26 (이어서) — 포트포워딩: 프로파일 × 환경별 목적지
+
+### 요청
+onprem 은 지금대로 중계. hybrid 는 8000/8001/8003 을 환경별 공인 주소로,
+8002 는 onprem 과 동일(중계).
+
+stage 의 8003 만 "동일" 로 적혀 있어 물어봄 → **stage-grafana.connecteve.com** 확정.
+(dev·prod 에는 grafana URL 이 있는데 stage 만 빠진 게 어색해서 확인한 것)
+
+### 매핑 (forwards.py CLOUD_URLS 한 곳에 있음)
+| 포트 | onprem | hybrid dev | hybrid stage | hybrid prod |
+|---|---|---|---|---|
+| 8000 | 중계 | dev-gateway | stage-gateway | hub |
+| 8001 | 중계 | dev-temporal-web | stage-temporal-web | temporal-web |
+| 8002 | 중계 | 중계 | 중계 | 중계 |
+| 8003 | 중계 | dev-grafana | stage-grafana | grafana |
+전부 https://<이름>.connecteve.com
+
+### 설계 판단
+- **판정은 서버가 한다** (`forwards.plan(profile, env)`). 화면이 규칙을 들고 있으면
+  주소 바뀔 때 두 군데를 고쳐야 하고, 무엇보다 **API 로는 여전히 뚫린다.**
+  POST /api/forwards 도 같은 plan 으로 재검증해 cloud 포트면 400.
+- mode 를 셋으로 나눔: relay / cloud / **unknown**.
+  unknown 은 hybrid 인데 작업에 env 가 없는 경우(verify·clean 은 `-e ENV` 를 안 받음).
+  이때 중계를 내주면 사이트 traefik 이 404 를 돌려줘 사람을 헷갈리게 한다.
+  그래서 열지 않고 이유를 표시한다.
+- 8002 가 hybrid 에서도 중계인 이유를 코드 주석에 남김 (영상은 병원 안에 남는다).
+
+### 테스트
+21개 (신규 10). dev/stage/prod 를 parametrize 로 전부 대조.
+"화면만 숨기는 것으로는 부족하다" 절에 API 직접 호출 거부 테스트 3개.
+757 passed.

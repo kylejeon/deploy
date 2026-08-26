@@ -28,7 +28,8 @@ from autodeploy.inventory import (
 from autodeploy.models import JobKind
 from autodeploy.ssh_keys import SSHKeyError, register_key
 from autodeploy.web import keys
-from autodeploy.web.forwards import ALLOWED_PORTS, ForwardError
+from autodeploy.web.forwards import ForwardError
+from autodeploy.web.forwards import plan as forward_plan
 from autodeploy.web.jobs import JobConflict, JobError, JobRequest
 from autodeploy.web.auth import (
     SESSION_COOKIE,
@@ -201,8 +202,8 @@ async def get_servers(request: web.Request) -> web.Response:
 # ── 포트포워딩 (사내망 타겟 임시 중계) ──────────────────────────────
 
 
-def _resolve_target(request: web.Request, host: str) -> str | None:
-    """인벤토리에 있는 이름만 주소로 바꿔준다. 없으면 None.
+def _find_server(request: web.Request, host: str):
+    """인벤토리에 있는 이름만 돌려준다. 없으면 None.
 
     임의의 host 를 그대로 받으면 콘솔이 사내망 프록시가 된다. 등록된 서버만
     통과시키는 것이 이 함수의 존재 이유다.
@@ -213,14 +214,26 @@ def _resolve_target(request: web.Request, host: str) -> str | None:
         return None
     for server in inventory.servers:
         if server.host == host:
-            return server.ansible_host
+            return server
     return None
 
 
 @routes.get("/api/forwards")
 async def get_forwards(request: web.Request) -> web.Response:
-    manager = request.app[keys.FORWARDS]
-    return json_response({"forwards": manager.list(), "ports": ALLOWED_PORTS})
+    """열려 있는 중계 목록. `host`(+`env`)를 주면 그 서버의 포트별 계획도 함께."""
+    body: dict = {"forwards": request.app[keys.FORWARDS].list()}
+
+    host = request.query.get("host", "").strip()
+    if host:
+        server = _find_server(request, host)
+        if server is None:
+            return json_error(404, f"인벤토리에 없는 서버입니다: {host}")
+        env = request.query.get("env", "").strip() or None
+        body["host"] = host
+        body["profile"] = server.profile
+        body["env"] = env
+        body["entries"] = forward_plan(profile=server.profile, env=env)
+    return json_response(body)
 
 
 @routes.post("/api/forwards")
@@ -235,14 +248,35 @@ async def open_forward(request: web.Request) -> web.Response:
         port = int(data.get("port", 0))
     except (TypeError, ValueError):
         return json_error(400, "port 는 정수여야 합니다")
+    env = str(data.get("env", "")).strip() or None
 
-    address = _resolve_target(request, host)
-    if address is None:
+    server = _find_server(request, host)
+    if server is None:
         return json_error(404, f"인벤토리에 없는 서버입니다: {host or '(비어 있음)'}")
+
+    # 화면에서 안 보이게 하는 것만으로는 부족하다 — API 로는 여전히 열 수 있다.
+    # hybrid 의 중앙 포트는 중계할 대상이 사이트에 없으므로 여기서 막는다.
+    entry = next(
+        (e for e in forward_plan(profile=server.profile, env=env) if e["port"] == port),
+        None,
+    )
+    if entry is not None and entry["mode"] == "cloud":
+        return json_error(
+            400,
+            f"{server.profile} 에서 {port} 는 중앙 주소로 접속합니다: {entry['url']}"
+            " — 중계할 대상이 사이트에 없습니다",
+        )
+    if entry is not None and entry["mode"] == "unknown":
+        return json_error(
+            400,
+            f"{server.profile} 는 환경(dev/stage/prod)에 따라 {port} 의 주소가 다릅니다."
+            " 이 작업에는 환경 정보가 없어 주소를 정할 수 없습니다"
+            " — 설치/구성 작업에서 열어주세요",
+        )
 
     try:
         forward = await request.app[keys.FORWARDS].open(
-            host=host, address=address, port=port
+            host=host, address=server.ansible_host, port=port
         )
     except ForwardError as exc:
         return json_error(400, str(exc))

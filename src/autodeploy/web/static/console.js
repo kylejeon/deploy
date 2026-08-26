@@ -415,7 +415,7 @@ function renderJob() {
   $("#jReject")?.addEventListener("click", () => act(`/api/jobs/${job.id}/reject`, "적용을 거부했습니다 (번들은 유지)"));
   $("#jRetryFailed")?.addEventListener("click", () => retry(job, failedHosts));
   $("#jRetryAll")?.addEventListener("click", () => retry(job, hostsOf(job)));
-  $("#jForward")?.addEventListener("click", () => forwardModal(hostsOf(job)));
+  $("#jForward")?.addEventListener("click", () => forwardModal(hostsOf(job), job.env));
   paintLog();
 }
 
@@ -766,19 +766,24 @@ function confirmDelete(host) {
 }
 
 /* ── 포트포워딩 ───────────────────────────────────────
- * 타겟(사내망)의 UI 포트는 밖에서 직접 못 연다. 맥미니는 사내망 안에 있으면서
- * Tailscale 로 밖에서 닿으므로, 맥미니에 중계를 열어 이어준다.
+ * 포트마다 갈 곳이 다르다. 규칙은 서버가 정한다 (프로파일 × 환경) — 화면이
+ * 들고 있으면 주소가 바뀔 때 두 군데를 고쳐야 하고, API 로는 여전히 뚫린다.
  *
- * 열린 주소의 호스트는 **지금 이 콘솔에 접속한 그 주소**를 그대로 쓴다.
- * 서버가 자기 주소를 추측해 알려주면 (0.0.0.0 바인드·다중 인터페이스에서)
- * 보는 사람이 못 쓰는 주소가 나온다.
+ *   relay   맥미니가 사이트로 중계 (onprem 전부, hybrid 의 8002)
+ *   cloud   중앙 주소로 바로 (hybrid 의 8000/8001/8003)
+ *   unknown hybrid 인데 이 작업에 환경 정보가 없어 주소를 못 정함
+ *
+ * 중계 주소의 호스트는 location.hostname 을 쓴다. 서버가 자기 주소를 추측해
+ * 알려주면 0.0.0.0 바인드나 다중 인터페이스에서 못 쓰는 주소가 나온다.
  */
-async function forwardModal(hosts) {
+async function forwardModal(hosts, env) {
   state.forwardHosts = hosts;
+  state.forwardEnv = env || null;
   modal(`<h2>포트포워딩</h2>
-    <p class="note">맥미니가 중계합니다. 연 주소는 <b>지금 이 콘솔에 접속한 것과 같은 주소</b>의
-    다른 포트라, Tailscale 로 들어와 있으면 그대로 열립니다.
-    한동안 아무도 쓰지 않으면 자동으로 닫힙니다.</p>
+    <p class="note">사이트에 있는 것은 <b>맥미니가 중계</b>합니다 — 연 주소는 지금 이 콘솔에
+    접속한 것과 같은 주소의 다른 포트라, Tailscale 로 들어와 있으면 그대로 열립니다.
+    한동안 아무도 쓰지 않으면 자동으로 닫힙니다.
+    중앙(hybrid)에 있는 것은 중계 없이 공인 주소로 바로 갑니다.</p>
     <div id="fwdRows" class="stack gap-8"></div>`, { confirm: false });
   await paintForwards();
 }
@@ -786,32 +791,52 @@ async function forwardModal(hosts) {
 async function paintForwards() {
   const el = $("#fwdRows");
   if (!el) return;
-  let data;
+  const hosts = state.forwardHosts || [];
+  const env = state.forwardEnv;
+
+  let blocks;
   try {
-    data = await api("/api/forwards");
+    blocks = await Promise.all(hosts.map(async (host) => {
+      const q = `/api/forwards?host=${encodeURIComponent(host)}` +
+                (env ? `&env=${encodeURIComponent(env)}` : "");
+      const data = await api(q);
+      const open = new Map(data.forwards.map((f) => [f.key, f]));
+      return { host, profile: data.profile, entries: data.entries, open };
+    }));
   } catch (e) {
     el.innerHTML = `<div class="note">${esc(e.message)}</div>`;
     return;
   }
-  const open = new Map(data.forwards.map((f) => [f.key, f]));
-  const hosts = state.forwardHosts || [];
-  el.innerHTML = hosts.map((host) => {
-    const rows = Object.entries(data.ports).map(([port, label]) => {
-      const f = open.get(`${host}:${port}`);
-      const url = f ? `http://${location.hostname}:${f.listen_port}` : null;
-      const target = f
-        ? `<a class="mono" href="${esc(url)}" target="_blank" rel="noopener">${esc(url)}</a>`
-        : `<span class="dim">닫힘</span>`;
-      return `<div class="fwd">
-        <span class="mono">${esc(port)}</span>
-        <span class="fwd__label">${esc(label)}</span>
-        <span class="fwd__url">${target}</span>
-        <button class="btn btn--xs${f ? " btn--ghost-danger" : ""}"
-          data-fwd="${f ? "close" : "open"}" data-fwd-host="${esc(host)}" data-fwd-port="${esc(port)}"
-        >${f ? "닫기" : "열기"}</button>
-      </div>`;
+
+  el.innerHTML = blocks.map(({ host, profile, entries, open }) => {
+    const rows = entries.map((entry) => {
+      const f = open.get(`${host}:${entry.port}`);
+      let right;
+      if (entry.mode === "cloud") {
+        right = `<span class="fwd__url"><a class="mono" href="${esc(entry.url)}"
+          target="_blank" rel="noopener">${esc(entry.url)}</a></span>
+          <span class="tag">중앙</span>`;
+      } else if (entry.mode === "unknown") {
+        right = `<span class="fwd__url dim">환경(dev/stage/prod)을 알 수 없어 주소를 정할 수 없습니다</span>
+          <span class="tag">–</span>`;
+      } else if (f) {
+        const url = `http://${location.hostname}:${f.listen_port}`;
+        right = `<span class="fwd__url"><a class="mono" href="${esc(url)}"
+          target="_blank" rel="noopener">${esc(url)}</a></span>
+          <button class="btn btn--xs btn--ghost-danger" data-fwd="close"
+            data-fwd-host="${esc(host)}" data-fwd-port="${entry.port}">닫기</button>`;
+      } else {
+        right = `<span class="fwd__url dim">닫힘</span>
+          <button class="btn btn--xs" data-fwd="open"
+            data-fwd-host="${esc(host)}" data-fwd-port="${entry.port}">열기</button>`;
+      }
+      return `<div class="fwd"><span class="mono">${entry.port}</span>
+        <span class="fwd__label">${esc(entry.label)}</span>${right}</div>`;
     }).join("");
-    return hosts.length > 1 ? `<div class="fwd__host mono dim">${esc(host)}</div>${rows}` : rows;
+    const head = hosts.length > 1 || profile
+      ? `<div class="fwd__host mono dim">${esc(host)} · ${esc(profile || "")}${env ? ` · ${esc(env)}` : ""}</div>`
+      : "";
+    return head + rows;
   }).join("");
 }
 
@@ -1023,7 +1048,12 @@ document.addEventListener("click", async (e) => {
   btn.disabled = true;
   try {
     if (fwd === "open") {
-      await api("/api/forwards", { method: "POST", body: { host, port: Number(port) } });
+      // env 도 함께 보낸다. 서버가 프로파일×환경으로 다시 판정하므로,
+      // 화면이 버튼을 안 보여주는 것과 별개로 API 단에서도 걸러진다.
+      await api("/api/forwards", {
+        method: "POST",
+        body: { host, port: Number(port), env: state.forwardEnv || undefined },
+      });
     } else {
       await api(`/api/forwards/${encodeURIComponent(`${host}:${port}`)}`, { method: "DELETE" });
     }

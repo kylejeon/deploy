@@ -212,6 +212,29 @@ tailnet 밖에서는 이 주소가 아예 라우팅되지 않는다 — 그래�
 `열기` 를 누르면 맥미니에 리스너가 하나 열리고 주소가 표시된다. 그 주소의 호스트는
 **지금 콘솔에 접속한 것과 같은 주소**다. Tailscale 로 들어와 있으면 그대로 열린다.
 
+#### 포트마다 갈 곳이 다르다 (프로파일 × 환경)
+
+`hybrid` 는 앱이 사이트가 아니라 중앙에 있다. 중계할 대상이 사이트에 없으므로
+중계 버튼 대신 **공인 주소 링크**가 뜬다. 판정은 서버가 한다 — 화면이 규칙을
+들고 있으면 주소가 바뀔 때 두 군데를 고쳐야 하고, API 로는 여전히 뚫린다.
+
+| 포트 | onprem | hybrid dev | hybrid stage | hybrid prod |
+|---|---|---|---|---|
+| 8000 프론트 | 중계 | `dev-gateway.connecteve.com` | `stage-gateway.connecteve.com` | `hub.connecteve.com` |
+| 8001 Temporal | 중계 | `dev-temporal-web.…` | `stage-temporal-web.…` | `temporal-web.…` |
+| 8002 WebPACS | 중계 | **중계** | **중계** | **중계** |
+| 8003 Grafana | 중계 | `dev-grafana.…` | `stage-grafana.…` | `grafana.…` |
+
+`8002` 만 hybrid 에서도 중계다. 영상은 병원 안에 남기 때문이다.
+
+주소를 바꾸려면 `src/autodeploy/web/forwards.py` 의 `CLOUD_URLS` 한 곳만 고치면
+된다. 화면과 API 검증이 같은 표를 본다.
+
+**환경을 모르면 열지 않는다.** `verify` · `clean` 처럼 `-e ENV` 를 받지 않는
+작업에서 연 화면이면 hybrid 의 중앙 포트는 주소를 정할 수 없다. 그때는 중계를
+내주는 대신 이유를 표시한다 — 중계해봐야 사이트 traefik 이 404 를 돌려줘
+사람을 헷갈리게 할 뿐이다. 설치/구성 작업 화면에서 열면 된다.
+
 #### 무엇을 막아두었나
 
 이 기능은 콘솔이 병원망으로 내는 길이라 범위를 좁게 잠가두었다.

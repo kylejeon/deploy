@@ -32,6 +32,59 @@ ALLOWED_PORTS: dict[int, str] = {
     8003: "Grafana",
 }
 
+# hybrid 프로파일은 앱이 사이트가 아니라 중앙(클라우드)에 있다. 그쪽은 이미 공인
+# 주소로 열려 있으므로 중계할 것이 없고, 중계해봐야 사이트의 traefik 이 404 를
+# 돌려줄 뿐이다. 그래서 환경별 실제 주소로 보낸다.
+#
+# 8002(WebPACS)는 hybrid 에서도 사이트에 있다 — 영상은 병원 안에 남는다. 그래서
+# 여기 없고, 프로파일과 무관하게 중계한다.
+CLOUD_URLS: dict[str, dict[int, str]] = {
+    "dev": {
+        8000: "https://dev-gateway.connecteve.com",
+        8001: "https://dev-temporal-web.connecteve.com",
+        8003: "https://dev-grafana.connecteve.com",
+    },
+    "stage": {
+        8000: "https://stage-gateway.connecteve.com",
+        8001: "https://stage-temporal-web.connecteve.com",
+        8003: "https://stage-grafana.connecteve.com",
+    },
+    "prod": {
+        8000: "https://hub.connecteve.com",
+        8001: "https://temporal-web.connecteve.com",
+        8003: "https://grafana.connecteve.com",
+    },
+}
+
+# hybrid 에서 중앙으로 가는 포트들. 어느 환경이든 목록은 같다.
+HYBRID_CLOUD_PORTS: frozenset[int] = frozenset().union(*(m for m in CLOUD_URLS.values()))
+
+
+def is_hybrid(profile: str) -> bool:
+    return profile.startswith("hybrid")
+
+
+def plan(*, profile: str, env: str | None) -> list[dict]:
+    """포트별로 무엇을 해야 하는지. 화면이 규칙을 들고 있지 않도록 서버가 정한다.
+
+    mode 는 셋 중 하나다.
+      relay   — 맥미니가 사이트로 중계한다 (onprem 전부, hybrid 의 8002)
+      cloud   — 중앙 주소로 바로 간다 (hybrid)
+      unknown — hybrid 인데 작업에 env 가 없어 어느 환경인지 모른다.
+                verify/clean 처럼 `-e ENV` 를 받지 않는 작업에서 생긴다.
+                이때 중계를 내주면 사이트 traefik 이 404 를 돌려줘 사람을 헷갈리게 한다.
+    """
+    entries = []
+    for port, label in sorted(ALLOWED_PORTS.items()):
+        if is_hybrid(profile) and port in HYBRID_CLOUD_PORTS:
+            url = CLOUD_URLS.get(env or "", {}).get(port)
+            mode = "cloud" if url else "unknown"
+        else:
+            url, mode = None, "relay"
+        entries.append({"port": port, "label": label, "mode": mode, "url": url})
+    return entries
+
+
 IDLE_TIMEOUT = 30 * 60.0   # 무사용 자동 종료
 REAP_INTERVAL = 30.0
 CONNECT_TIMEOUT = 5.0
