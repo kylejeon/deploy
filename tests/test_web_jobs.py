@@ -61,6 +61,30 @@ if [ -n "$FAKE_EXIT" ]; then exit "$FAKE_EXIT"; fi
 exit 0
 """
 
+# beta 만 죽고 나머지는 계속 돈다. 도는 도중의 호스트별 상태를 보기 위한 것.
+PARTIAL_FAIL_HUBCTL = r"""#!/bin/bash
+echo 'PLAY [Bootstrap (host -> empty k0s)] ****'
+echo 'TASK [Gathering Facts] ****'
+echo 'ok: [alpha]'
+echo 'fatal: [beta]: FAILED! =>'
+echo '    msg: 죽었습니다'
+touch "$FAKE_STARTED"
+sleep 60
+"""
+
+# 위와 같은데 ansible 이 그 실패를 무시한 경우 (ignore_errors). `...ignoring` 은
+# **호스트 이름이 없는 줄**로 나온다 — 실제 ansible 출력 그대로다.
+IGNORED_FAIL_HUBCTL = r"""#!/bin/bash
+echo 'PLAY [Bootstrap (host -> empty k0s)] ****'
+echo 'TASK [Gathering Facts] ****'
+echo 'ok: [alpha]'
+echo 'fatal: [beta]: FAILED! =>'
+echo '    msg: 무시되는 실패'
+echo '...ignoring'
+touch "$FAKE_STARTED"
+sleep 60
+"""
+
 SLOW_HUBCTL = r"""#!/bin/bash
 echo "ARGS: $*"
 echo 'PLAY [hubctl verify] ****'
@@ -731,3 +755,91 @@ async def test_deleting_requires_a_session(temp_db, tmp_path):
         assert (await c.delete("/api/jobs", json={"all": True})).status == 401
     finally:
         await c.close()
+
+
+# ── 도는 도중의 호스트별 상태 ───────────────────────────────────────
+
+
+async def host_states(client, job_id) -> dict[str, str]:
+    body = await (await client.get(f"/api/jobs/{job_id}")).json()
+    return {h["host"]: h["status"] for h in body["hosts"]}
+
+
+async def wait_until(check, *, timeout=10.0):
+    async def poll():
+        while True:
+            got = await check()
+            if got is not None:
+                return got
+            await asyncio.sleep(0.05)
+
+    return await asyncio.wait_for(poll(), timeout)
+
+
+async def test_a_host_that_dies_shows_failed_before_the_job_ends(temp_db, tmp_path):
+    """한 대가 죽으면 **그 자리에서** 실패로 보여야 한다.
+
+    PLAY RECAP 은 맨 끝에만 온다. 그것만 보면 40분짜리 설치에서 한 대가 5분 만에
+    죽었는데도 목록이 끝까지 '실행 중' 이다. 여러 대를 한 작업으로 돌릴 때
+    서버마다 줄을 나눠 보여주는 의미가 여기에 있다.
+    """
+    started = tmp_path / "started"
+    c = await make_client(
+        temp_db, tmp_path, script=PARTIAL_FAIL_HUBCTL, env={"FAKE_STARTED": str(started)}
+    )
+    try:
+        job_id = (await (await post(
+            c, "/api/jobs", {"kind": "verify", "hosts": ["alpha", "beta"]}
+        )).json())["id"]
+
+        async def beta_failed():
+            states = await host_states(c, job_id)
+            return states if states.get("beta") == "failed" else None
+
+        states = await wait_until(beta_failed)
+        assert states["alpha"] == "running", "죽지 않은 서버까지 끌고 내려가면 안 된다"
+
+        # 작업 자체는 아직 돌고 있다 — 그게 이 테스트의 요점이다.
+        job = await (await c.get(f"/api/jobs/{job_id}")).json()
+        assert job["status"] == "running"
+    finally:
+        await c.close()
+
+
+async def test_an_ignored_failure_does_not_mark_the_host(temp_db, tmp_path):
+    """`ignore_errors` 로 무시한 실패까지 빨갛게 칠하면 안 된다.
+
+    ansible 은 fatal 줄 바로 뒤에 `...ignoring` 을 낸다. 그 줄에는 **호스트
+    이름이 없어서** 로그 파서만으로는 어느 서버 얘기인지 알 수 없다.
+    직전에 실패로 찍은 호스트를 되돌리는 것으로 처리한다.
+    """
+    started = tmp_path / "started"
+    c = await make_client(
+        temp_db, tmp_path, script=IGNORED_FAIL_HUBCTL, env={"FAKE_STARTED": str(started)}
+    )
+    try:
+        job_id = (await (await post(
+            c, "/api/jobs", {"kind": "verify", "hosts": ["alpha", "beta"]}
+        )).json())["id"]
+        for _ in range(200):
+            if started.exists():
+                break
+            await asyncio.sleep(0.05)
+        await asyncio.sleep(0.5)   # flush 가 몇 번 돌 시간
+
+        states = await host_states(c, job_id)
+        assert states["beta"] == "running", f"무시된 실패로 실패 처리됐다: {states}"
+        assert states["alpha"] == "running"
+    finally:
+        await c.close()
+
+
+async def test_the_recap_still_has_the_last_word(client):
+    """도는 동안의 표시는 임시다 — 최종 판정은 여전히 PLAY RECAP 이 한다."""
+    job_id = (await (await post(
+        client, "/api/jobs", {"kind": "verify", "hosts": ["alpha", "beta"]}
+    )).json())["id"]
+    await wait_finished(client, job_id)
+
+    states = await host_states(client, job_id)
+    assert states == {"alpha": "succeeded", "beta": "failed"}

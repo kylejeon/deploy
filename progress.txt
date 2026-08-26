@@ -2066,3 +2066,51 @@ Tailscale ACL(맥미니→타겟 22·8000~8003), 타겟 방화벽, 타겟이 tai
 - `test_a_tailnet_target_is_relayed_like_any_other` — sites.yml 에 100.101.102.103
   호스트를 넣고 중계가 그 주소로 열리는지.
 - 776 → 782 passed.
+
+--------------------------------------------------------------------------------
+## 2026-08-26 (이어서) — 여러 대 작업을 목록에서 서버별 줄로 나눔
+
+### 요청
+"-l a,b,c 로 한 번에 도는 건 알겠고, 대시보드 목록에서는 서버별로 나눠서
+진행 상태를 보고 싶다."
+
+### 정한 것 (물어봄)
+행만 나눈다. 작업 번호는 공유(`#33` 이 줄마다 같음).
+번호까지 나누려면 DB 에 서버마다 작업 행이 필요한데, 로그도 프로세스도 하나라
+형제 작업이 같은 로그를 가리켜야 하고 하나를 취소하면 전부 멈춘다 —
+보이는 것과 실제가 어긋난다. 용혁님도 "행만" 선택.
+
+### 먼저 확인한 제약
+`job_hosts.status` 는 시작할 때 전부 running 으로 한꺼번에 바뀌고(jobs.py:282)
+끝의 PLAY RECAP 에서야 갈린다. 즉 **그냥 나누면 도는 동안 세 줄이 똑같이 보인다.**
+로그 파서가 줄마다 host 를 알고 있어서(ParsedLine.host) 거기서 뽑기로 함.
+
+### 서버 쪽
+`LogSink.feed` 에서 ERROR+host 를 모아 flush 때 한 번에
+`UPDATE job_hosts SET status='failed' WHERE status='running' AND host IN (...)`.
+- 줄마다 DB 를 때리지 않는다 — 기존 배치 flush(0.15초)에 얹었다.
+- `status='running'` 인 것만 — 이미 결말 난 호스트를 덮지 않는다.
+- 최종 판정은 여전히 `_finalize` 의 RECAP.
+
+**`...ignoring` 함정**: ansible 은 ignore_errors 실패를 fatal 줄 + `...ignoring`
+으로 낸다. 그런데 `...ignoring` 에는 **호스트 이름이 없다** (파서가 host=None 으로
+분류). `ignoring: [host]` 형태만 처리하면 실제 출력에서는 안 걸린다.
+→ 직전에 실패로 찍은 호스트(`_last_error_host`)를 되돌리는 것으로 처리.
+hub-provisioning 의 ignore_errors 는 7곳, 전부 patch_apply/rollback (설치 경로 아님).
+
+### 화면 쪽
+- `jobRows(job)` — 호스트 2대 이상이면 `jobRow(job, hostRow, first, last)` 로 나눔.
+  1대 이하는 지금 그대로.
+- 체크박스는 **묶음 첫 줄에만**. 삭제 단위는 작업이다.
+- 줄 클릭 → `go("job", id, {host})` → 그 서버로 필터된 로그. `go` 에 host 옵션 추가.
+- `recentCount` 가 줄 수와 작업 수가 다르면 "작업 2건 · 서버 4대" 로 말한다.
+- CSS: 묶음 안쪽 가로선 제거 + 왼쪽 레일 + 이어지는 줄의 작업번호 흐리게.
+
+### 테스트
+- `test_a_host_that_dies_shows_failed_before_the_job_ends` — beta 만 죽이고
+  sleep 하는 가짜 hubctl. 작업이 아직 running 인 동안 beta=failed, alpha=running.
+  **`if failed:` 를 꺼서 실제로 빨간불 확인함.**
+- `test_an_ignored_failure_does_not_mark_the_host` — `...ignoring` 실제 출력 형태.
+- `test_the_recap_still_has_the_last_word` — 최종은 RECAP.
+- jobRows 는 원문에서 뽑아 node 로 표 모양 확인 (1대/3대).
+- 782 → 785 passed.

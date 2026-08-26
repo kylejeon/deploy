@@ -161,11 +161,13 @@ const state = {
 /* push=false 는 "브라우저가 이미 그 항목을 만들었다"는 뜻이다 — 뒤로가기/앞으로,
    주소창 입력, 첫 진입. 그때 또 밀어넣으면 항목이 두 겹으로 쌓여 뒤로가기를
    두 번 눌러야 한 화면 움직인다. */
-function go(view, id, { push = true } = {}) {
+function go(view, id, { push = true, host = null } = {}) {
   closeStream();
   clearInterval(state.pollTimer); state.pollTimer = null;
   state.view = view;
-  if (id !== undefined) { state.jobId = id; state.hostFilter = ""; state.autoscroll = true; }
+  // host 를 받으면 그 서버로 필터해서 연다 (목록에서 서버 줄을 눌렀을 때).
+  // 비우면 syncHostFilter 가 첫 대상으로 맞춘다.
+  if (id !== undefined) { state.jobId = id; state.hostFilter = host || ""; state.autoscroll = true; }
   for (const v of ["dash", "job", "srv", "new", "clean"]) $("#view-" + v).hidden = v !== view;
   for (const b of $("#nav").children) {
     b.dataset.go === view ? b.setAttribute("aria-current", "page") : b.removeAttribute("aria-current");
@@ -229,12 +231,17 @@ function renderDash() {
   $("#tiles").innerHTML = tiles.map(([n, v, c]) =>
     `<div class="tile ${c ? "tile--" + c : ""}"><span class="lbl">${esc(n)}</span><span class="tile__v">${v}</span></div>`).join("");
 
-  $("#recentCount").textContent = `${jobs.length}건`;
-  $("#rows").innerHTML = jobs.length ? jobs.map(jobRow).join("")
+  // 줄 수와 작업 수가 다를 수 있으므로(여러 대 작업) 둘 다 말한다.
+  const servers = jobs.reduce((n, j) => n + Math.max(1, (j.hosts || []).length), 0);
+  $("#recentCount").textContent = servers === jobs.length
+    ? `${jobs.length}건` : `작업 ${jobs.length}건 · 서버 ${servers}대`;
+
+  $("#rows").innerHTML = jobs.length ? jobs.map(jobRows).join("")
     : `<tr><td colspan="9" class="dim" style="text-align:center; padding:24px">아직 실행한 작업이 없습니다.</td></tr>`;
   $$("#rows tr[data-open]").forEach((tr) => tr.addEventListener("click", (e) => {
     if (e.target.closest("[data-nogo]")) return;   // 체크박스 칸은 상세로 넘기지 않는다
-    go("job", Number(tr.dataset.open));
+    // 그 서버 줄을 눌렀으면 상세도 그 서버로 필터해서 연다.
+    go("job", Number(tr.dataset.open), { host: tr.dataset.host || null });
   }));
   syncJobPicks();
 }
@@ -313,19 +320,41 @@ function stepLabel(job, key) {
   return found ? found[1] : key;
 }
 
-function jobRow(job) {
+/* 한 작업에 서버가 여럿이면 **줄을 나눠 그린다.**
+ *
+ * 실행은 그대로 하나다 (`hubctl -l a,b,c`, 프로세스 하나, 로그 하나). 나누는
+ * 것은 화면뿐이다 — 그래서 작업 번호는 줄마다 같다. 같은 실행이라는 사실을
+ * 숨기면 취소·재시도가 왜 전부에 걸리는지 설명할 수 없게 된다.
+ *
+ * 체크박스는 **묶음의 첫 줄에만** 둔다. 삭제 단위는 서버가 아니라 작업이다.
+ */
+function jobRows(job) {
+  const hosts = job.hosts || [];
+  if (hosts.length <= 1) return jobRow(job);
+  return hosts.map((h, i) => jobRow(job, h, i === 0, i === hosts.length - 1)).join("");
+}
+
+function jobRow(job, hostRow = null, first = true, last = true) {
   /* 진행 중인 작업은 고를 수 없다 — 러너가 그 job_id 로 로그를 쓰는 중이라
      행을 지우면 다음 INSERT 가 외래키에서 죽고 실행이 통째로 넘어간다.
      서버도 같은 이유로 거절하지만, 애초에 못 고르게 하는 편이 낫다. */
-  const pick = ACTIVE.includes(job.status)
-    ? `<span class="dim" title="진행 중인 작업은 지울 수 없습니다">·</span>`
-    : `<input type="checkbox" class="jchk" data-id="${job.id}" aria-label="#${job.id} 선택">`;
-  return `<tr data-open="${job.id}">
+  const pick = !first ? ""
+    : ACTIVE.includes(job.status)
+      ? `<span class="dim" title="진행 중인 작업은 지울 수 없습니다">·</span>`
+      : `<input type="checkbox" class="jchk" data-id="${job.id}" aria-label="#${job.id} 선택">`;
+
+  // 묶음 줄은 그 서버의 결말을 보여준다. 작업 전체 상태(한 대라도 실패하면 실패)
+  // 로는 어느 서버가 죽었는지 알 수 없다 — 그걸 보려고 나눈 것이다.
+  const status = hostRow ? hostRow.status : job.status;
+  const server = hostRow ? esc(hostRow.host) : esc(hostLabel(job));
+  const grouped = hostRow ? ` tr--grp${first ? " tr--grp-first" : ""}${last ? " tr--grp-last" : ""}` : "";
+
+  return `<tr class="${grouped.trim()}" data-open="${job.id}"${hostRow ? ` data-host="${esc(hostRow.host)}"` : ""}>
     <td class="col-chk" data-nogo>${pick}</td>
     <td><span class="jobid">#${job.id}</span> ${kindTag(job)}</td>
-    <td><span class="tag">${esc(hostLabel(job))}</span></td>
+    <td><span class="tag">${server}</span></td>
     <td>${job.env ? `<span class="env">${esc(job.env)}</span> ` : ""}<span class="mono dim">${esc(job.ref || "")}</span></td>
-    <td>${pill(job.status)}</td>
+    <td>${pill(status)}</td>
     <td class="dim">${esc(stepLabel(job, job.current_step))}</td>
     <td class="mono">${esc(duration(job))}</td>
     <td class="mono dim">${esc(shortTime(job.created_at))}</td>

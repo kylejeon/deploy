@@ -151,6 +151,14 @@ table{width:100%; border-collapse:collapse; font-size:13.5px; min-width:860px}
 thead th{text-align:left; font:500 11px/1.7 "IBM Plex Mono",monospace; letter-spacing:.1em; text-transform:uppercase; color:var(--ink-3); padding:4px 12px 11px; white-space:nowrap}
 tbody td{padding:14px 12px; line-height:1.6; border-top:1px solid var(--line-soft); vertical-align:middle}
 tbody tr[data-open]{cursor:pointer}
+/* 여러 대를 한 번에 돌린 작업 — 서버마다 줄을 나누되 한 묶음으로 보이게 한다.
+   묶음 안쪽 가로선을 지우고 왼쪽에 레일을 세운다. 작업 번호는 첫 줄만 또렷하게
+   두고 이어지는 줄은 흐리게 — 같은 실행이라는 것이 한눈에 읽히도록. */
+.tr--grp td{border-top:none}
+.tr--grp-first td{border-top:1px solid var(--line-soft)}
+.tr--grp td:nth-child(2){box-shadow:inset 2px 0 0 var(--line)}
+.tr--grp .jobid{opacity:.4}
+.tr--grp-first .jobid{opacity:1}
 /* 최근 작업 선택 칸 */
 .col-chk{width:36px; text-align:center; padding-right:0}
 .col-chk input{accent-color:var(--accent); cursor:pointer; margin:0; vertical-align:middle}

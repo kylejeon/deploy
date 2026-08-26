@@ -23,7 +23,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from autodeploy import repository
-from autodeploy.ansible_log import ParsedLine, host_status
+from autodeploy.ansible_log import LineKind, ParsedLine, host_status
 from autodeploy.db import connect
 from autodeploy.hubctl import CLEAN_MODES, ENVS, HubctlError, HubctlRunner, build_command
 from autodeploy.inventory import load_inventory
@@ -485,7 +485,7 @@ class _LogSink:
     """줄을 모아 DB 에 적재하고, 커밋 뒤에 방송한다."""
 
     __slots__ = ("_service", "_job_id", "_step", "_buffer", "_task", "_closed",
-                 "_db_lines", "_overflow", "_lock")
+                 "_db_lines", "_overflow", "_lock", "_newly_failed", "_last_error_host")
 
     def __init__(self, service: JobService, job_id: int, step: str) -> None:
         self._service = service
@@ -497,6 +497,9 @@ class _LogSink:
         self._db_lines = 0
         self._overflow = None
         self._lock = asyncio.Lock()
+        # 실패한 것이 확인된 호스트 중 아직 DB 에 못 적은 것.
+        self._newly_failed: set[str] = set()
+        self._last_error_host: str | None = None
 
     async def start(self) -> None:
         async with connect(self._service.db_path) as db:
@@ -509,6 +512,22 @@ class _LogSink:
     def feed(self, stream: str, parsed: ParsedLine) -> None:
         self._buffer.append(_Buffered(stream, parsed))
         self._step = parsed.step or self._step
+        # 호스트별 실패를 **그 자리에서** 잡는다. PLAY RECAP 은 맨 끝에만 오므로
+        # 그것만 보면 한 대가 이미 죽었는데도 목록에서 40분 내내 '실행 중' 이다.
+        # 여기서는 표시만 바꾼다 — 최종 판정은 여전히 RECAP 이 한다(_finalize).
+        if parsed.host:
+            if parsed.kind is LineKind.ERROR:
+                self._newly_failed.add(parsed.host)
+                self._last_error_host = parsed.host
+            elif parsed.kind is LineKind.WARN:
+                self._newly_failed.discard(parsed.host)   # `ignoring: [host]` 변종
+        elif self._last_error_host and parsed.text.lstrip().startswith("...ignoring"):
+            # ignore_errors 가 걸린 태스크에서 ansible 이 내는 줄이다. **호스트
+            # 이름이 없고** 바로 앞 fatal 줄에 붙어 나오므로, 직전에 실패로 찍은
+            # 호스트의 표시를 되돌린다. 이걸 안 하면 무시하기로 한 실패 때문에
+            # 목록에서 멀쩡한 서버가 빨갛게 보인다.
+            self._newly_failed.discard(self._last_error_host)
+            self._last_error_host = None
 
     async def _loop(self) -> None:
         try:
@@ -520,9 +539,10 @@ class _LogSink:
 
     async def flush(self) -> None:
         async with self._lock:
-            if not self._buffer:
+            if not self._buffer and not self._newly_failed:
                 return
             batch, self._buffer = self._buffer, []
+            failed, self._newly_failed = self._newly_failed, set()
 
             events: list[dict] = []
             async with connect(self._service.db_path) as db:
@@ -558,11 +578,28 @@ class _LogSink:
                             f"로그가 {MAX_DB_LINES}줄을 넘어 이후는 파일에만 기록합니다:"
                             f" {self._overflow_path()}",
                         )
+                if failed:
+                    await self._mark_failed(db, failed)
                 await db.commit()
 
             # 커밋한 뒤에 방송한다. 끊긴 구독자가 after= 로 재연결했을 때
             # 방송된 줄이 DB 에 이미 있어야 정확히 이어붙는다.
             self._service.broker.publish_many(self._job_id, events)
+
+    async def _mark_failed(self, db, hosts: set[str]) -> None:
+        """도는 동안 죽은 호스트를 목록에서 바로 실패로 보이게 한다.
+
+        `status='running'` 인 것만 건드린다 — 이미 결말이 난 호스트를 덮어쓰지
+        않기 위해서다. 최종 판정은 여전히 `_finalize` 가 PLAY RECAP 으로 다시
+        쓴다. 여기서 하는 것은 40분짜리 작업에서 한 대가 5분 만에 죽었는데도
+        목록이 끝까지 '실행 중' 으로 보이는 것을 막는 일이다.
+        """
+        holes = ",".join("?" * len(hosts))
+        await db.execute(
+            f"UPDATE job_hosts SET status='failed'"
+            f" WHERE job_id=? AND status='running' AND host IN ({holes})",
+            (self._job_id, *sorted(hosts)),
+        )
 
     def _overflow_path(self) -> Path:
         return self._service.log_dir / f"job-{self._job_id}.log"
