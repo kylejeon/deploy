@@ -167,3 +167,51 @@ def _row_to_job(row: aiosqlite.Row) -> Job:
         script_commit_sha=row["script_commit_sha"],
         error_message=row["error_message"],
     )
+
+
+# ── v2: server_meta (sites.yml 에 없는 웹 전용 부가정보) ────────────────
+
+async def get_server_meta(db: aiosqlite.Connection) -> dict[str, dict[str, str | None]]:
+    """host -> {"memo": ..., "key_installed_at": ...}"""
+    async with db.execute("SELECT host, memo, key_installed_at FROM server_meta") as cur:
+        rows = await cur.fetchall()
+    return {
+        r["host"]: {"memo": r["memo"], "key_installed_at": r["key_installed_at"]}
+        for r in rows
+    }
+
+
+async def set_server_memo(db: aiosqlite.Connection, host: str, memo: str | None) -> None:
+    await db.execute(
+        """INSERT INTO server_meta (host, memo, updated_at)
+           VALUES (?, ?, CURRENT_TIMESTAMP)
+           ON CONFLICT(host) DO UPDATE SET memo=excluded.memo, updated_at=CURRENT_TIMESTAMP""",
+        (host, memo),
+    )
+    await db.commit()
+
+
+async def mark_key_installed(db: aiosqlite.Connection, host: str) -> None:
+    """F9 성공 시각 기록. 설치 시작 전 게이트가 이 값을 본다."""
+    await db.execute(
+        """INSERT INTO server_meta (host, key_installed_at, updated_at)
+           VALUES (?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+           ON CONFLICT(host) DO UPDATE SET
+             key_installed_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP""",
+        (host,),
+    )
+    await db.commit()
+
+
+async def clear_key_installed(db: aiosqlite.Connection, host: str) -> None:
+    """초기화(uninstall) 등으로 키 상태를 신뢰할 수 없게 됐을 때."""
+    await db.execute(
+        "UPDATE server_meta SET key_installed_at=NULL, updated_at=CURRENT_TIMESTAMP WHERE host=?",
+        (host,),
+    )
+    await db.commit()
+
+
+async def delete_server_meta(db: aiosqlite.Connection, host: str) -> None:
+    await db.execute("DELETE FROM server_meta WHERE host=?", (host,))
+    await db.commit()

@@ -149,6 +149,13 @@ async def _run() -> int:
 
 
 def main() -> int:
+    # 서브커맨드가 있으면 CLI(계정 관리), 없으면 데몬.
+    from autodeploy import cli
+
+    argv = sys.argv[1:]
+    if argv:
+        return cli.main(argv)
+
     try:
         return asyncio.run(_run())
     except KeyboardInterrupt:

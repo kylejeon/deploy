@@ -763,3 +763,225 @@ APP_INSTALL 단계 안에서 deploy-applications-onpremise.sh → freeze-offline
 3. **gateway-infra-next에 freeze-offline.sh이 실제로 있어야 함** — 없으면
    on-premise install이 APP_INSTALL 단계에서 실패. 본 봇은 config가 가리키는
    스크립트가 타깃에 존재한다고 가정함.
+
+---
+
+## 2026-08-24 — 웹 콘솔 프로토타입 (hubctl 기준으로 방향 전환)
+
+### 배경
+용혁 요청: "진행상태를 쉽게 보고 싶어서 설치 웹사이트를 만들고 싶어."
+Slack이 유일한 창구였는데 웹 대시보드를 추가하기로. 코드는 아직 안 건드림 —
+프로토타입(Artifact)만 3회 반복해서 화면 합의 진행 중.
+
+### 확정된 요구사항 (인터뷰)
+- 접근: 지금은 사내 LAN, 추후 외부 고정 IP (→ HTTPS 리버스 프록시 전제)
+- 기능: 조회 + 설치 시작 + 취소 + 재시도 + 초기화까지 전부 웹에서
+- 인증: 계정 기반(현재 2명). users 테이블 + `autodeploy adduser` CLI, scrypt 해시
+- 실행: 기존 launchd 데몬에 aiohttp 내장 (새 의존성 없음 — aiohttp 이미 있음)
+- 진행 방식: 개발지시서 1장 쓰고 바로 구현
+
+### ★ 중대한 방향 전환 — hubctl 채택
+용혁이 runbook.md(= hub-provisioning / QA 설치 가이드)를 추가하며 확정:
+1. 초기화는 `hubctl clean`을 맥미니에서 실행 (봇이 hubctl 래핑)
+2. **설치 자체도 곧 hubctl 기반으로 전환 예정**
+3. 서버 목록은 웹에서 추가·편집까지 (inventory/sites.yml을 봇이 씀)
+4. Vault 인증은 ~/.zshrc의 VAULT_TOKEN 사용
+
+즉 기존 "SSH → gateway-infra-next의 setup-*.sh 8단계" 구조는 수명이 끝나가고,
+새 콘솔은 hubctl(Ansible) 래퍼로 설계해야 함.
+
+| | 기존 AutoDeploy | hubctl 기준 |
+|---|---|---|
+| 실행 | 맥미니 → 타겟 SSH → .sh | 맥미니에서 ansible-playbook |
+| 대상 | IP 직접 입력 | inventory/sites.yml의 서버 이름 (-l) |
+| 타입 | on-premise / hybrid-* | profile: onprem / hybrid-with-ai / hybrid-without-ai |
+| 단계 | 고정 8단계 | preflight→bootstrap→configure→verify (+ TASK 단위 로그, PLAY RECAP)
+| 환경 | 없음 | -e dev/stage/prod (Vault 금고) |
+| 버전 | git branch dev | hub_deploy_ref (브랜치/태그) |
+| 명령 | install/retry/register | install/configure/patch/rollback/verify/clean/preflight |
+
+### 프로토타입 현황 (v3)
+Artifact: https://claude.ai/code/artifact/feb4c815-30be-4e68-8518-c1f5ccd47e6d
+- 화면: 로그인 / 대시보드 / 작업 상세 / 서버(인벤토리) / 새 설치 / 서버 초기화
+- 대시보드: preflight 3항목(Vault·AWS·Bitbucket) 상태 스트립 + 진행 중 카드 + 통계 + 최근 작업 표
+- 작업 상세: 단계 타임라인 + Ansible 로그 콘솔(TASK/ok/changed/fatal/PLAY RECAP 색 구분) + 결과
+- 서버: sites.yml 목록 표 + 추가/편집/삭제 모달 + YAML 미리보기 + 행별 액션(설치/patch/verify/초기화)
+- 새 설치: 서버 선택 + -e 환경 + hub_deploy_ref(+tag 체크) + 실행 명령 미리보기 + 확인 모달
+- 초기화: runbook §3-2의 reset / reset --keep-data / --uninstall 3방식,
+  방식별로 실행 안 되는 단계는 취소선, **서버 이름 직접 타이핑해야 실행 버튼 활성화**
+- patch: runbook의 "변경 앱 요약 [y/N]"을 앱 버전 diff 표 모달로 구현
+- 취소: 확인 모달 → 로그 2줄 + 상태 '취소됨'. 시뮬레이션도 실제로 멈춤
+- 디자인: IBM Plex Sans KR + IBM Plex Mono, 티얼 액센트, 라이트/다크 양쪽 대응,
+  로그 콘솔만 항상 어두운 터미널 색
+
+### 다음에 해야 할 것
+1. **막힌 것 — 확인 필요**
+   - hub-provisioning 저장소가 맥미니에 클론돼 있는지 / 경로 / RUNBOOK-hubctl.md 내용
+   - `-K`(BECOME 비밀번호)를 비대화형으로 주입하는 방법 (hubctl이 지원하는 옵션 확인)
+   - site_register / product_register(현 6·8단계)를 hubctl 전환 후에도 유지하는지
+   - 결과 URL 포트 8000/8001/8002가 hub-deploy에서도 동일한지
+   - sites.yml을 봇이 수정한 뒤 git 커밋을 누가 하는지
+2. 화면 확정되면 `docs/specs/dev-spec-web-console-*.md` 1장 작성
+3. 구현: aiohttp 서버 내장 + users 테이블/CLI + hubctl runner + SSE 로그 스트리밍
+
+## 2026-08-26 — hub-provisioning 실측: 막힌 5건 해소 + 신규 제약 2건 발견
+
+소스 위치: `/Users/yonghyuk/hub-provisioning` (bin/hubctl 24KB bash, ansible-core 2.21.1)
+
+### 확인된 사실
+- CLI: bootstrap/configure/install/verify/preflight/patch(create|apply)/status/rollback/clean
+  - install = site.yml(bootstrap+cluster), configure = cluster.yml, 둘 다 `-e env=<dev|stage|prod>` 필수
+  - `--` 뒤 인자는 ansible-playbook으로 그대로 전달 (PASSTHROUGH)
+  - patch/rollback/clean 은 `-e ENV` 를 명시적으로 거부
+- **-K 비대화형 해결**: `ANSIBLE_BECOME_PASSWORD_FILE` (ansible-core 2.12+, 설치본 2.21.1 지원 확인).
+  파일이 실행가능하면 stdout을 비밀번호로 사용 → -K 없이 실행 가능
+- **포트 확인**: roles/platform_component/vars/values/traefik.yml — hostPort 8000(hub/frontend)
+  / 8001(temporal-web) / 8002(web-pacs). 기존 프로토타입 값이 맞음
+- **sites.yml 은 .gitignore 대상** ("실 사이트 인벤토리 — sites.example.yml만 추적")
+  → 웹에서 편집해도 git 충돌 없음. 커밋 주체 논의 불필요
+- sites.yml 실제 스키마: host / ansible_host / ansible_user / site_name / profile 5개뿐.
+  runbook.md의 `inference:` 필드는 실제 인벤토리에 없음 (앱 구성은 group_vars의 profile로 결정)
+- 클러스터는 **k0s** (k3s 아님). kubeconfig=/var/lib/k0s/pki/admin.conf
+- preflight 점검 항목 4개: Vault(ADDR+토큰+PKI정책) / hvac / AWS(ECR) / Bitbucket 토큰
+- 현재 등록 서버 1대: yonseiwa 192.168.100.224 hybrid-with-ai
+
+### ★ 신규 제약 2건 (봇이 그대로 못 돌림)
+1. **clean 은 대화형 확인 필수** — `read -r confirm_input` 로 호스트명을 직접 받고,
+   못 읽으면 "비대화 환경?" 로 exit 2. `-y` 는 명시 거부.
+   → 우회: (a) stdin 파이프 주입 (b) `ansible-playbook clean.yml -e confirm=<host> -e level=.. -e keep_data=..` 직접 실행
+   웹에서 이미 호스트명 타이핑 확인을 받으므로 그 값을 그대로 넘기면 됨
+2. **patch 원샷은 [y/N] 프롬프트** → 봇은 `patch create` / `patch apply` 2단계로 분리 실행.
+   웹에 '승인 대기' 상태를 만들어 사람이 승인하면 apply 실행 (프로토타입 v4에 반영)
+
+### 추가 운영 이슈
+- launchd 데몬은 ~/.zshrc 를 읽지 않음 → VAULT_TOKEN/AWS/HUB_DEPLOY_GIT_TOKEN 이 안 보임.
+  해결: hubctl 을 `zsh -lc` 로 실행하거나 plist EnvironmentVariables/.env 로 주입
+- `hubctl status` 는 컨트롤러 KUBECONFIG 기준이라 원격 서버엔 무의미 → 웹은 verify 사용
+
+### 프로토타입 v4 (실측 반영)
+- k3s→k0s, preflight 4항목, sites.yml 5필드(inference 제거), 실제 role 이름 로그
+- patch = 번들 생성 → **승인 대기** 상태 → 승인 시 apply → verify (신규 상태 'awaiting')
+- 명령 미리보기를 실제 인자 규칙대로 (-K 제거, clean 은 stdin 주입 형태)
+
+### 다음
+docs/specs/dev-spec-web-console-*.md 작성 → 구현
+
+## 2026-08-26 (이어서) — 프로토타입 v5 + 개발지시서 작성
+
+### 프로토타입 v5 (용혁 요청 2건 반영)
+- **"마지막 출력 이후 N초"** 표시 — 콘솔 헤더. 60초 경과 시 노랑, 120초 경과 시
+  "긴 작업 진행 중일 수 있습니다" 문구 추가. ansible이 TASK 단위로만 출력해서
+  긴 TASK 중엔 수 분간 정적인 게 정상이라 불안 방지용
+- **여러 대 동시 설치** — 체크박스 다중 선택 + 전체 선택. `hubctl -l a,b,c` 한 번
+  실행으로 ansible 병렬 처리 (프로세스 N개 안 띄움 — 컨트롤러 zarf/ECR 충돌 방지)
+  - 딸려온 UI: 호스트별 상태 목록, 콘솔 호스트 필터 칩, 부분 실패 시
+    "실패한 N대만 재시도"(기본) + "전체 재시도"(보조), 서버별 결과 URL
+
+### 실측 3건 (모두 근거 확보)
+1. **ansible 출력은 파이프에서도 줄 단위 즉시 flush** — pty/PYTHONUNBUFFERED 불필요.
+   단 갱신 단위는 TASK (TASK 헤더=시작 시, ok:/changed:=완료 시)
+2. **`--limit` 부분 집합 동작 확인** — `-l a`=1대, `-l a,b`=2대, 생략=인벤토리 전체,
+   오타=`leaves us with no hosts to target` 에러로 아무것도 실행 안 됨
+   → 웹은 전체 선택이어도 `-l`에 전부 나열 (나중에 추가된 서버 딸려가는 것 방지)
+3. **부분 실패 동작 재현** — hostA 실패 시 hostB는 다음 play까지 계속 진행되고
+   실패 호스트는 이후 play에서 자동 제외. PLAY RECAP이 호스트별로 출력됨
+   → 화면의 "호스트별 상태"와 "실패한 N대만 재시도"가 실제 출력에 대응
+
+### 개발지시서
+`docs/specs/dev-spec-web-console-20260826.md` (450줄, v1.0 초안)
+- F1 인증(scrypt+세션+CLI) / F2 sites.yml 관리 / F3 hubctl Runner /
+  F4 로그 스트리밍(SSE) / F5 단계 판정(PLAY 이름) / F6 다중 호스트 /
+  F7 Slack 유지 / F8 화면
+- DB: users·sessions·job_hosts·server_meta 신규, jobs 확장(kind/env/ref/clean_mode/exit_code),
+  script_logs.host 추가, jobs.status에 'awaiting' 추가(테이블 재생성 필요)
+- 신규 모듈 10개 / 기존 6개 변경, API 17개, AC 14개, 구현 Phase A~E
+- 결정 필요 D1~D8
+
+### 다음에 해야 할 것
+1. **용혁 컨펌**: D1(Slack 경로 전환 시점) / D2(clean을 playbook 직접 호출) /
+   D6(동시 실행 1개 제한) 이 셋이 구현 방향을 가름
+2. 컨펌 후 Phase A 착수: 스키마 마이그레이션 + inventory.py + cli.py(계정)
+3. 커밋 안 함 — progress.txt / runbook.md / dev-spec 모두 미커밋 상태
+
+## 2026-08-26 (밤) — SSH 키 등록 자동화 추가 (F9)
+
+### 배경
+용혁이 runbook §1-1(SSH 키 등록)을 설치 흐름에 넣어달라고 요청.
+원문 요청은 "설치되는 서버에서 ssh-keygen, 맥미니에서 ssh-copy-id" 였는데
+동작상 keygen은 컨트롤러(맥미니)에서 해야 맞음 — 확인 결과 용혁 의도는
+"타겟에 ~/.ssh 디렉터리를 만들려는 것"이었음.
+→ 타겟에서 ssh-keygen 안 함. `mkdir -p ~/.ssh && chmod 700` 으로 대체.
+   (납품 서버에 쓰지도 않을 개인키를 남기지 않기 위함)
+
+### 실측
+- 맥미니에 `~/.ssh/id_ed25519(.pub)` 이미 존재 → keygen 단계는 실제로 skip됨
+- `/usr/bin/ssh-copy-id` 존재하나 사용 안 함 (비대화형 어려움)
+- `.env` 에 SSH_PASSWORD 설정돼 있음. 단 D9에서 "매번 입력" 으로 결정 —
+  서버마다 비밀번호가 다를 수 있어 .env 값을 자동으로 쓰지 않음
+- 기존 `AsyncSSHClient` 가 이미 `known_hosts=None` + password 지원 →
+  ssh-copy-id / sshpass 없이 asyncssh 만으로 구현 가능 (새 의존성 0)
+
+### F9 설계 (dev-spec v1.1 에 반영)
+서버 1대당 한 번:
+1. 컨트롤러 키 확인 (없으면 ssh-keygen -t ed25519 -N "" 자동 생성)
+2. 타겟에 비밀번호로 접속 (웹 폼에서 1회 입력, 메모리에만)
+3. `mkdir -p ~/.ssh && chmod 700` → `grep -qxF` 로 중복 확인 후 authorized_keys append
+   → chmod 600  (재실행해도 줄 안 늘어남 = 멱등)
+4. **비밀번호를 끄고 키 인증만으로 재접속해 검증** — 여기 성공해야 등록 인정
+5. `server_meta.key_installed_at` 기록
+
+연동: 서버 목록에 SSH 키 컬럼 + '키 등록' 버튼 / 키 미등록 서버가 선택되면
+새 설치 시작을 **차단** (30분 돌리고 SSH로 죽는 것 방지)
+
+### 산출물 갱신
+- `docs/specs/dev-spec-web-console-20260826.md` v1.1 (506줄)
+  - F9 신설, ssh_keys.py 모듈 추가, server_meta.key_installed_at,
+    API `POST /api/servers/{host}/ssh-key`, 엣지케이스 4건, AC-15/16, D9
+- 프로토타입 v6: 서버 표 SSH 키 컬럼, 키 등록 모달(비밀번호+4단계 설명),
+  새 설치에서 미등록 서버 경고 + 시작 차단. 데모용 미등록 서버 seoul-node1 추가
+
+### 다음
+D1(Slack 전환 시점) / D2(clean playbook 직접 호출) / D6(동시 실행 1개) 컨펌 후
+Phase A 착수 (스키마 + inventory.py + ssh_keys.py + 계정 CLI)
+
+## 2026-08-26 (Phase A 완료) — 스키마 + 인벤토리 + SSH 키 + 계정 CLI
+
+D1/D2/D6 확정 (Slack 유지·설치는 웹 / clean은 playbook 직접 호출 / 동시 1개+대기 큐)
+후 Phase A 구현. **399/399 테스트 통과** (기존 316 → +83).
+
+### 신규 파일
+- `src/autodeploy/inventory.py` — sites.yml 읽기/쓰기. 원자적 교체(os.replace),
+  쓰기 전 백업(.bak-타임스탬프, 10개 유지), mtime_ns 낙관적 잠금, 5필드 검증
+- `src/autodeploy/accounts.py` — scrypt(n=2^14) 해시 + users CRUD.
+  없는 아이디도 더미 scrypt 1회 → 타이밍으로 계정 존재 여부 노출 안 함.
+  비밀번호 변경 시 기존 세션 전부 삭제
+- `src/autodeploy/ssh_keys.py` — F9. ensure_controller_key(기존 키 절대 안 덮어씀) /
+  build_install_command(grep -qxF 멱등, shlex.quote) / install_public_key /
+  verify_key_auth(preferred_auth=publickey 로 비밀번호 폴백 차단) / register_key
+- `src/autodeploy/cli.py` — adduser/passwd/deluser/users. 비밀번호는 프롬프트로만
+
+### 기존 파일 변경
+- `schema.sql` v2 — users/sessions/job_hosts/server_meta 신규, jobs 재설계
+  (kind/env/ref/ref_type/clean_mode/exit_code/cancel_by, status에 awaiting,
+   legacy 컬럼 nullable), script_logs.host
+- `db.py` — _migrate: ALTER로 컬럼 추가 후, 구 jobs면 테이블 재생성
+  (CHECK/NOT NULL은 ALTER 불가). **재생성 전 DB 파일 자동 백업** + foreign_key_check
+- `repository.py` — server_meta CRUD (memo / key_installed_at)
+- `settings.py` — resolve_db_path() 분리 (CLI가 Slack 토큰 없이 DB 경로만 얻도록)
+- `__main__.py` — 인자 있으면 CLI, 없으면 데몬
+
+### 검증한 것
+- v1 스키마 DB를 직접 만들어 마이그레이션 테스트 9건: 데이터 보존 / 백업 생성 /
+  3회 실행해도 백업 1개(멱등) / awaiting 수용 / legacy NULL 허용 / bogus 거부 /
+  host 컬럼 / cascade 유지
+- 실제 `~/hub-provisioning/inventory/sites.yml`·`sites.example.yml` 파싱 성공
+- 실제 맥미니 공개키를 건드리지 않고 읽어옴
+- CLI로 계정 2개 생성 후 DB에서 평문 비밀번호 검색 → 0건
+- 셸 주입 테스트: 공개키에 `'; rm -rf / #` 를 넣고 shlex.split 으로 토큰 분해 검증
+
+### 다음 (Phase B)
+`hubctl.py`(명령 조립·서브프로세스·취소) + `ansible_log.py`(라인 분류·호스트 추출·
+PLAY/RECAP 파싱) + `queue.py`(동시 1개). 목표: 실서버에 verify 1회 성공.
+
+### 커밋 안 함
+미커밋: progress.txt, runbook.md, dev-spec, 신규 4개 모듈 + 테스트 6개, 기존 5개 변경

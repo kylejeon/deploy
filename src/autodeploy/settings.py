@@ -11,6 +11,15 @@ class SettingsError(RuntimeError):
     pass
 
 
+DEFAULT_DB_PATH = "~/Library/Application Support/autodeploy/state.db"
+
+
+def resolve_db_path(env: Mapping[str, str] | None = None) -> Path:
+    """DB 경로만 필요한 진입점(CLI 등)이 Slack 토큰 검증 없이 쓰기 위한 헬퍼."""
+    e = env if env is not None else os.environ
+    return Path(e.get("AUTODEPLOY_DB_PATH", DEFAULT_DB_PATH)).expanduser()
+
+
 def _expand_remote_home(path: str, ssh_user: str) -> str:
     """원격 서버 기준 `~` 확장. shlex.quote로 감싸도 안전한 절대경로로 만든다.
 
@@ -76,7 +85,6 @@ def load_settings(env: Mapping[str, str] | None = None) -> Settings:
     allowed_raw = e.get("AUTODEPLOY_ALLOWED_USERS", "")
     allowed = frozenset(u.strip() for u in allowed_raw.split(",") if u.strip())
 
-    db_raw = e.get("AUTODEPLOY_DB_PATH", "~/Library/Application Support/autodeploy/state.db")
     cfg_raw = e.get("AUTODEPLOY_CONFIG_PATH", "config/deployment_types.yaml")
 
     ssh_user = e.get("SSH_USER", "connecteve").strip() or "connecteve"
@@ -92,7 +100,7 @@ def load_settings(env: Mapping[str, str] | None = None) -> Settings:
         ssh_password=required("SSH_PASSWORD"),
         bitbucket_user=e.get("BITBUCKET_USER", "youngwoochon").strip() or "youngwoochon",
         bitbucket_app_password=required("BITBUCKET_APP_PASSWORD"),
-        db_path=Path(db_raw).expanduser(),
+        db_path=resolve_db_path(e),
         config_path=Path(cfg_raw).expanduser(),
         repo_host_path=e.get(
             "AUTODEPLOY_REPO_HOST_PATH",
