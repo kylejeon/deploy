@@ -587,7 +587,7 @@ async def post_ssh_key(request: web.Request) -> web.Response:
         return json_error(429, f"시도가 너무 많습니다. {int(remaining) + 1}초 후 다시 시도하세요")
 
     try:
-        await register_key(
+        registration = await register_key(
             host=server.ansible_host,
             username=server.ansible_user,
             password=password,
@@ -604,8 +604,16 @@ async def post_ssh_key(request: web.Request) -> web.Response:
     async with connect(request.app[keys.DB_PATH]) as db:
         await repository.mark_key_installed(db, host)
         meta = await repository.get_server_meta(db)
+    if not registration.sleep_masked:
+        log.warning("절전 타겟 mask 실패 (%s): %s", host, registration.sleep_error)
     return json_response(
-        {"host": host, "key_installed_at": (meta.get(host) or {}).get("key_installed_at")}
+        {
+            "host": host,
+            "key_installed_at": (meta.get(host) or {}).get("key_installed_at"),
+            # 키는 됐는데 절전만 안 걸린 경우를 화면이 구분해 말할 수 있게 한다.
+            "sleep_masked": registration.sleep_masked,
+            "sleep_error": registration.sleep_error,
+        }
     )
 
 

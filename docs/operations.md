@@ -516,9 +516,26 @@ launchctl kickstart -k gui/$(id -u)/com.connecteve.autodeploy
 
 ### 서버가 설치 도중 잠들면
 
-`sudo systemctl mask sleep.target suspend.target hibernate.target hybrid-sleep.target`
-을 타겟에서 한 번 실행해 둔다 (멱등). 설치 중 절전으로 들어가면 SSH 가 끊겨
-작업이 죽는다.
+**`SSH 키 등록` 이 이걸 같이 해준다.** 키를 심는 김에
+
+```
+sudo systemctl mask sleep.target suspend.target hibernate.target hybrid-sleep.target
+```
+
+를 돌린다 (멱등, 재부팅해도 유지). 그 단계는 이미 sudo 를 쓸 수 있는 비밀번호를
+쥐고 타겟에 붙어 있어서 자리가 맞다. 웹 콘솔은 hubctl 을 돌릴 뿐이고 playbook 도
+절전을 건드리지 않으므로, **자동으로 걸리는 자리는 여기뿐이다.**
+
+**절전 끄기가 실패해도 키 등록은 성공시킨다.** 키가 없으면 설치를 아예 못 하는데
+부수적인 설정 때문에 그걸 막을 이유가 없다. 대신 그때는 토스트가
+"키 등록 완료 — 다만 절전 끄기는 실패했습니다" 라고 알리고 직접 실행할 명령을
+보여준다. 보통 원인은 그 계정의 sudo 권한이다.
+
+비밀번호는 **명령줄이 아니라 표준입력으로** 보낸다. `printf ... | sudo -S` 로
+만들면 그 줄이 타겟의 `ps` 에 그대로 보이기 때문이다.
+
+키를 이미 등록해 둔 서버(이 기능 이전)는 걸려 있지 않다. 타겟에서 위 명령을 한 번
+실행하거나, 서버 화면에서 키를 다시 등록하면 된다.
 
 ---
 

@@ -62,7 +62,9 @@ class SSHError(RuntimeError):
 class SSHClient(Protocol):
     async def __aenter__(self) -> "SSHClient": ...
     async def __aexit__(self, exc_type, exc, tb) -> None: ...
-    async def exec(self, command: str, on_line: LineCallback | None = None) -> int: ...
+    async def exec(
+        self, command: str, on_line: LineCallback | None = None, *, stdin: str | None = None
+    ) -> int: ...
 
 
 async def _invoke(cb: LineCallback | None, line: StreamLine) -> None:
@@ -134,11 +136,23 @@ class AsyncSSHClient:
             await self._conn.wait_closed()
             self._conn = None
 
-    async def exec(self, command: str, on_line: LineCallback | None = None) -> int:
+    async def exec(
+        self, command: str, on_line: LineCallback | None = None, *, stdin: str | None = None
+    ) -> int:
+        """`stdin` 은 비밀번호처럼 **명령줄에 실으면 안 되는 값**을 넘기는 통로다.
+
+        `printf '%s\n' <비번> | sudo -S ...` 로 만들면 타겟의 `ps` 에 그대로
+        보인다. 같은 서버에 로그인한 누구나 볼 수 있다는 뜻이다. `sudo -S` 는
+        어차피 표준입력에서 읽으므로, 명령줄은 깨끗하게 두고 여기로 보낸다.
+        """
         if self._conn is None:
             raise SSHError("not connected")
         process = await self._conn.create_process(command)
         try:
+            if stdin is not None:
+                process.stdin.write(stdin)
+                process.stdin.write_eof()
+
             async def reader(name: str, stream: Any) -> None:
                 async for raw in stream:
                     await _invoke(on_line, StreamLine(name, raw.rstrip("\r\n")))
@@ -158,6 +172,7 @@ class FakeSSHClient:
     def __init__(self, *, fail_connect: bool = False) -> None:
         self.connected = False
         self.executed: list[str] = []
+        self.stdins: list[str | None] = []
         self._responses: list[tuple[str, list[StreamLine], int, bool]] = []
         self._fail_connect = fail_connect
 
@@ -181,8 +196,13 @@ class FakeSSHClient:
     async def __aexit__(self, exc_type, exc, tb) -> None:
         self.connected = False
 
-    async def exec(self, command: str, on_line: LineCallback | None = None) -> int:
+    async def exec(
+        self, command: str, on_line: LineCallback | None = None, *, stdin: str | None = None
+    ) -> int:
         self.executed.append(command)
+        # 명령줄과 표준입력을 따로 기록한다. "비밀번호가 명령줄에 안 실렸는지" 를
+        # 검사하려면 둘을 구분해서 볼 수 있어야 한다.
+        self.stdins.append(stdin)
         if not self.connected:
             raise SSHError("not connected")
         for i, (pattern, lines, code, repeat) in enumerate(self._responses):

@@ -120,17 +120,14 @@ async def disable_sleep_targets(
     setup-*.sh / deploy-applications-*.sh가 도는 동안 서버가 절전으로 들어가
     SSH 세션이 끊기고 워크플로우가 timeout으로 죽는 것을 막는다. 첫 .sh 실행 전에
     호출.
+
+    구현은 ssh_keys 쪽 하나만 둔다 — 웹 콘솔의 키 등록도 같은 일을 하므로,
+    두 벌로 두면 한쪽만 고치는 사고가 난다. 그쪽은 비밀번호를 명령줄이 아니라
+    표준입력으로 보낸다 (타겟 `ps` 노출 방지).
     """
-    inner = (
-        "systemctl mask sleep.target suspend.target "
-        "hibernate.target hybrid-sleep.target"
-    )
-    sudo_prefix = "sudo"
-    if sudo_password:
-        pw_q = shlex.quote(sudo_password)
-        sudo_prefix = f"printf '%s\\n' {pw_q} | sudo -S -p ''"
-    cmd = f"{sudo_prefix} bash -c {shlex.quote(inner)}"
-    return await ssh.exec(cmd, on_line=on_line)
+    from autodeploy.ssh_keys import mask_sleep_targets
+
+    return await mask_sleep_targets(ssh, sudo_password=sudo_password, on_line=on_line)
 
 
 async def install_missing_tools(

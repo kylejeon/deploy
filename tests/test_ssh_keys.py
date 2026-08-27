@@ -11,6 +11,9 @@ from autodeploy.ssh_keys import (
     build_install_command,
     ensure_controller_key,
     install_public_key,
+    KeyRegistration,
+    build_mask_command,
+    mask_sleep_targets,
     register_key,
     verify_key_auth,
 )
@@ -152,7 +155,7 @@ async def test_register_key_happy_path(tmp_path):
     async def fake_connect(host, **kw):
         return _FakeConn()
 
-    pub = await register_key(
+    result = await register_key(
         host="10.0.0.9",
         username="connecteve",
         password="secret",
@@ -160,7 +163,7 @@ async def test_register_key_happy_path(tmp_path):
         ssh_factory=lambda h, p: ssh,
         connect_fn=fake_connect,
     )
-    assert pub.startswith("ssh-ed25519 ")
+    assert result.pubkey.startswith("ssh-ed25519 ")
     assert "authorized_keys" in ssh.executed[0]
 
 
@@ -200,3 +203,93 @@ async def test_password_never_appears_in_remote_command(tmp_path):
         connect_fn=fake_connect,
     )
     assert all("sup3r-s3cret-pw" not in c for c in ssh.executed)
+
+
+# ── 절전 끄기 ─────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_registering_a_key_also_masks_sleep(tmp_path):
+    """설치 중 서버가 잠들면 SSH 가 끊겨 작업이 죽는다.
+
+    웹 콘솔 경로에서 이걸 자동으로 걸어주는 자리는 여기뿐이다 — 콘솔은 hubctl 을
+    돌릴 뿐이고 playbook 도 절전을 건드리지 않는다.
+    """
+    ssh = FakeSSHClient()
+    ssh.enqueue("authorized_keys", [], 0)
+    ssh.enqueue("systemctl mask", [], 0)
+
+    async def fake_connect(host, **kw):
+        return _FakeConn()
+
+    result = await register_key(
+        host="10.0.0.9", username="connecteve", password="secret",
+        key_path=tmp_path / "id_ed25519",
+        ssh_factory=lambda h, p: ssh, connect_fn=fake_connect,
+    )
+    assert result.sleep_masked is True
+    masked = next(c for c in ssh.executed if "systemctl mask" in c)
+    for target in ("sleep.target", "suspend.target", "hibernate.target", "hybrid-sleep.target"):
+        assert target in masked
+
+
+@pytest.mark.asyncio
+async def test_the_sudo_password_goes_to_stdin_not_the_command_line(tmp_path):
+    """비밀번호를 `printf ... | sudo -S` 로 만들면 타겟의 `ps` 에 그대로 보인다.
+
+    같은 서버에 로그인한 누구나 볼 수 있다는 뜻이다. sudo -S 는 어차피 표준
+    입력에서 읽으므로 명령줄은 깨끗하게 두고 stdin 으로 보낸다.
+    """
+    ssh = FakeSSHClient()
+    ssh.connected = True
+    ssh.enqueue("systemctl mask", [], 0)
+
+    await mask_sleep_targets(ssh, sudo_password="sup3r-s3cret-pw")
+
+    assert "sup3r-s3cret-pw" not in ssh.executed[0], ssh.executed[0]
+    assert ssh.stdins[0] == "sup3r-s3cret-pw\n"
+    assert "sup3r-s3cret-pw" not in build_mask_command()
+
+
+@pytest.mark.asyncio
+async def test_a_failed_mask_does_not_fail_the_registration(tmp_path):
+    """키 등록이 막히면 설치를 아예 못 한다. 부수적인 절전 설정으로 그걸 막지 않는다.
+
+    대신 무엇이 안 됐는지는 돌려줘서 화면이 말할 수 있게 한다.
+    """
+    ssh = FakeSSHClient()
+    ssh.enqueue("authorized_keys", [], 0)
+    ssh.enqueue("systemctl mask", [], 1)      # sudo 권한 없음 등
+
+    async def fake_connect(host, **kw):
+        return _FakeConn()
+
+    result = await register_key(
+        host="10.0.0.9", username="connecteve", password="secret",
+        key_path=tmp_path / "id_ed25519",
+        ssh_factory=lambda h, p: ssh, connect_fn=fake_connect,
+    )
+    assert isinstance(result, KeyRegistration)
+    assert result.pubkey.startswith("ssh-ed25519 "), "키 등록 자체는 성공해야 한다"
+    assert result.sleep_masked is False
+    assert "exit 1" in result.sleep_error
+
+
+@pytest.mark.asyncio
+async def test_a_mask_that_blows_up_does_not_fail_the_registration(tmp_path):
+    """연결이 끊기는 등 예외가 나도 마찬가지다."""
+    ssh = FakeSSHClient()
+    ssh.enqueue("authorized_keys", [], 0)
+    # systemctl mask 응답을 안 넣어둔다 → FakeSSHClient 가 예외를 던진다
+
+    async def fake_connect(host, **kw):
+        return _FakeConn()
+
+    result = await register_key(
+        host="10.0.0.9", username="connecteve", password="secret",
+        key_path=tmp_path / "id_ed25519",
+        ssh_factory=lambda h, p: ssh, connect_fn=fake_connect,
+    )
+    assert result.pubkey.startswith("ssh-ed25519 ")
+    assert result.sleep_masked is False
+    assert result.sleep_error

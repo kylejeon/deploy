@@ -833,12 +833,12 @@ async def test_workflow_cancellation_marks_db_and_notifies(temp_db):
             self.entered_hang = asyncio.Event()
             self._release = asyncio.Event()
 
-        async def exec(self, command, on_line=None):
+        async def exec(self, command, on_line=None, *, stdin=None):
             if self._hang_on in command:
                 self.entered_hang.set()
                 await self._release.wait()  # never released → cancel로만 빠져나옴
                 return 0
-            return await super().exec(command, on_line)
+            return await super().exec(command, on_line, stdin=stdin)
 
     fake = _HangingSSHClient(hang_on="setup-site.sh")
     fake.enqueue("systemctl mask", [])

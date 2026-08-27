@@ -10,7 +10,7 @@ from aiohttp.test_utils import TestClient, TestServer
 from autodeploy.accounts import create_user
 from autodeploy.db import connect
 from autodeploy.inventory import load_inventory
-from autodeploy.ssh_keys import SSHKeyError
+from autodeploy.ssh_keys import KeyRegistration, SSHKeyError
 from autodeploy.web import api, create_app
 from autodeploy.web.auth import CSRF_HEADER
 
@@ -319,7 +319,8 @@ async def test_ssh_key_registration_marks_the_server(client, monkeypatch, temp_d
 
     async def fake_register(*, host, username, password, **kw):
         calls.append((host, username, password))
-        return "ssh-ed25519 AAAA... autodeploy@macmini"
+        return KeyRegistration(pubkey="ssh-ed25519 AAAA... autodeploy@macmini",
+                               sleep_masked=True)
 
     monkeypatch.setattr(api, "register_key", fake_register)
 
@@ -331,9 +332,28 @@ async def test_ssh_key_registration_marks_the_server(client, monkeypatch, temp_d
     assert calls == [("192.0.2.10", "connecteve", "target-pw")]
 
 
+async def test_the_response_says_whether_sleep_was_masked(client, monkeypatch):
+    """키는 됐는데 절전만 실패한 경우를 화면이 구분해 말할 수 있어야 한다.
+
+    뭉뚱그리면 긴 설치가 한밤중에 SSH 끊김으로 죽고, 원인을 로그에서 찾을 수 없다.
+    """
+    async def fake_register(**kw):
+        return KeyRegistration(pubkey="ssh-ed25519 AAAA...", sleep_masked=False,
+                               sleep_error="systemctl mask 가 exit 1 로 끝났습니다")
+
+    monkeypatch.setattr(api, "register_key", fake_register)
+    resp = await send(client, "POST", "/api/servers/alpha/ssh-key", {"password": "pw"})
+
+    assert resp.status == 200, "절전 실패로 키 등록까지 막으면 설치를 못 한다"
+    body = await resp.json()
+    assert body["key_installed_at"] is not None
+    assert body["sleep_masked"] is False
+    assert "exit 1" in body["sleep_error"]
+
+
 async def test_ssh_key_registration_opens_the_install_gate(client, monkeypatch):
     async def fake_register(**kw):
-        return "ssh-ed25519 AAAA..."
+        return KeyRegistration(pubkey="ssh-ed25519 AAAA...", sleep_masked=True)
 
     monkeypatch.setattr(api, "register_key", fake_register)
     before = await (await client.get("/api/servers")).json()

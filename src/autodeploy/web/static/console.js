@@ -1022,7 +1022,9 @@ function sshKeyModal(host) {
   const s = state.servers.find((x) => x.host === host);
   modal(`<h2>SSH 키 등록 — ${esc(host)}</h2>
     <p class="note">맥미니의 공개키를 <span class="mono">${esc(s.ansible_user)}@${esc(s.ansible_host)}</span> 의
-    <span class="mono">~/.ssh/authorized_keys</span> 에 추가합니다. 이후 hubctl 이 비밀번호 없이 접속합니다.</p>
+    <span class="mono">~/.ssh/authorized_keys</span> 에 추가합니다. 이후 hubctl 이 비밀번호 없이 접속합니다.<br>
+    같이 <b>절전을 꺼둡니다</b> — 설치 중 서버가 잠들면 SSH 가 끊겨 작업이 죽습니다.
+    (<span class="mono">systemctl mask sleep.target …</span>, sudo 필요·재부팅해도 유지)</p>
     <div class="field"><label for="m-pw">타겟 서버 비밀번호</label>
       <input class="input mono" id="m-pw" type="password" autocomplete="off"></div>
     <p class="note">비밀번호는 이 등록에만 쓰이고 저장되지 않습니다. 같은 키가 이미 있으면 줄이 늘지 않습니다.</p>`,
@@ -1031,8 +1033,16 @@ function sshKeyModal(host) {
       const password = $("#m-pw").value;
       if (!password) { toast("비밀번호를 입력하세요", "warn"); throw new Error("empty"); }
       try {
-        await api(`/api/servers/${encodeURIComponent(host)}/ssh-key`, { method: "POST", body: { password } });
-        toast(`${host} 키 등록 완료`);
+        const r = await api(`/api/servers/${encodeURIComponent(host)}/ssh-key`, { method: "POST", body: { password } });
+        // 키는 됐는데 절전만 실패한 경우를 뭉뚱그리지 않는다. 그대로 두면 긴 설치가
+        // 한밤중에 SSH 끊김으로 죽고, 원인을 로그에서 찾을 수 없다.
+        if (r.sleep_masked === false) {
+          toast(`${host} 키 등록 완료 — 다만 절전 끄기는 실패했습니다. ` +
+                `타겟에서 sudo systemctl mask sleep.target suspend.target ` +
+                `hibernate.target hybrid-sleep.target 를 직접 실행하세요.`, "warn");
+        } else {
+          toast(`${host} 키 등록 완료 (절전 꺼둠)`);
+        }
         await showServers();
       } catch (e) { toast(e.message, "danger"); throw e; }
     });

@@ -14,6 +14,7 @@ import shlex
 import socket
 import subprocess
 from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
 
 import asyncssh
@@ -79,6 +80,33 @@ def build_install_command(pubkey: str) -> str:
     )
 
 
+# 절전으로 들어가면 SSH 가 끊기고 돌던 설치가 timeout 으로 죽는다. 재부팅해도
+# 유지되는 설정이라 서버당 한 번만 걸면 된다.
+SLEEP_TARGETS: tuple[str, ...] = (
+    "sleep.target", "suspend.target", "hibernate.target", "hybrid-sleep.target",
+)
+
+
+def build_mask_command() -> str:
+    """절전 타겟 mask 명령. **비밀번호는 여기 들어가지 않는다.**
+
+    `printf '%s\n' <비번> | sudo -S ...` 로 만들면 그 줄이 타겟의 `ps` 에 그대로
+    보인다. `sudo -S` 는 표준입력에서 읽으므로 비밀번호는 exec 의 stdin 으로 보낸다.
+    `-p ''` 는 프롬프트를 지워 출력에 섞이지 않게 한다.
+    """
+    return f"sudo -S -p '' systemctl mask {' '.join(SLEEP_TARGETS)}"
+
+
+async def mask_sleep_targets(
+    ssh: SSHClient, *, sudo_password: str = "", on_line: LineCallback | None = None
+) -> int:
+    """systemd 절전 타겟을 mask. 멱등 (이미 mask 면 아무 일도 안 한다)."""
+    return await ssh.exec(
+        build_mask_command(), on_line=on_line,
+        stdin=f"{sudo_password}\n" if sudo_password else None,
+    )
+
+
 async def install_public_key(
     ssh: SSHClient, pubkey: str, on_line: LineCallback | None = None
 ) -> None:
@@ -121,6 +149,18 @@ async def verify_key_auth(
         await conn.wait_closed()
 
 
+@dataclass(frozen=True, slots=True)
+class KeyRegistration:
+    """등록 결과.
+
+    `sleep_masked` 가 False 여도 등록은 성공한 것이다 — 아래 참조.
+    """
+
+    pubkey: str
+    sleep_masked: bool
+    sleep_error: str | None = None
+
+
 async def register_key(
     *,
     host: str,
@@ -131,8 +171,18 @@ async def register_key(
     ssh_factory: Callable[..., SSHClient] | None = None,
     connect_fn: Callable[..., object] | None = None,
     on_line: LineCallback | None = None,
-) -> str:
-    """F9 전체 흐름. 성공 시 설치된 공개키 텍스트를 반환, 실패하면 SSHKeyError."""
+) -> KeyRegistration:
+    """F9 전체 흐름. 실패하면 SSHKeyError.
+
+    키를 심는 김에 **절전 타겟도 mask 한다.** 설치 중 서버가 잠들면 SSH 가 끊겨
+    작업이 죽는데, 그걸 막는 유일한 자동 경로가 여기다 — 웹 콘솔은 hubctl 을
+    돌릴 뿐이고 playbook 도 절전을 건드리지 않는다. 이 단계에서는 이미 sudo 를
+    쓸 수 있는 비밀번호를 손에 쥐고 타겟에 붙어 있으므로 자리가 맞다.
+
+    **mask 가 실패해도 등록은 성공시킨다.** 키 등록이 막히면 설치를 아예 못 하는데,
+    부수적인 절전 설정 때문에 그걸 막을 이유가 없다. 대신 결과를 돌려줘서
+    화면이 "키는 됐고 절전은 안 됐다" 를 말할 수 있게 한다.
+    """
     pubkey = ensure_controller_key(key_path)
 
     if ssh_factory is None:
@@ -141,8 +191,17 @@ async def register_key(
         def ssh_factory(h: str, p: int) -> SSHClient:  # type: ignore[misc]
             return AsyncSSHClient(h, username=username, password=password, port=p)
 
+    masked, mask_error = False, None
     async with ssh_factory(host, port) as ssh:
         await install_public_key(ssh, pubkey, on_line=on_line)
+        try:
+            rc = await mask_sleep_targets(ssh, sudo_password=password, on_line=on_line)
+            masked = rc == 0
+            if not masked:
+                mask_error = f"systemctl mask 가 exit {rc} 로 끝났습니다 (sudo 권한 확인)"
+        except Exception as exc:   # 연결이 끊겨도 키 등록 결과는 지키다
+            mask_error = f"{type(exc).__name__}: {exc}"
+            log.info("절전 타겟 mask 실패 (%s): %s", host, mask_error)
 
     ok = await verify_key_auth(
         host, port=port, username=username, key_path=key_path, connect_fn=connect_fn
@@ -152,4 +211,4 @@ async def register_key(
             "공개키는 넣었지만 키 인증 접속이 되지 않습니다 — "
             "타겟의 sshd 설정(PubkeyAuthentication)이나 홈 디렉터리 권한을 확인하세요."
         )
-    return pubkey
+    return KeyRegistration(pubkey=pubkey, sleep_masked=masked, sleep_error=mask_error)
