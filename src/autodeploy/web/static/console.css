@@ -52,7 +52,9 @@ button{font:inherit; color:inherit}
 .login{min-height:100vh; display:grid; place-items:center; padding:24px}
 .login__card{width:100%; max-width:392px; background:var(--surface); border:1px solid var(--line-soft); border-radius:10px; padding:32px; box-shadow:var(--shadow)}
 .brand{display:flex; align-items:center; gap:10px}
-.brand__mark{width:26px;height:26px;border-radius:6px;background:var(--accent);color:var(--accent-ink);display:grid;place-items:center;font:600 13px/1 "IBM Plex Mono",monospace;flex:none}
+/* 앱 아이콘. PNG 안에 둥근 모서리와 배경이 들어 있어 여기서 다시 입히지 않는다
+   — border-radius 를 겹쳐 주면 이미 둥근 모서리를 한 번 더 깎는다. */
+.brand__mark{width:26px; height:26px; flex:none; display:block}
 .brand__name{font-weight:600; letter-spacing:-.015em}
 .brand__sub{font:500 10.5px/1 "IBM Plex Mono",monospace; letter-spacing:.1em; text-transform:uppercase; color:var(--ink-3); margin-top:3px}
 .field{display:flex; flex-direction:column; gap:6px}

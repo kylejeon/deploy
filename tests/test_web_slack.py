@@ -286,7 +286,7 @@ async def test_login_page_is_served_without_a_session(ui_client):
     assert "/static/console.css" in body
 
 
-FAVICONS = ("favicon-32.png", "favicon-16.png", "apple-touch-icon.png")
+FAVICONS = ("favicon-32.png", "favicon-16.png", "icon-180.png")
 
 
 async def test_favicons_are_served_without_a_session(ui_client):
@@ -305,6 +305,18 @@ async def test_favicons_are_served_without_a_session(ui_client):
         body = await (await ui_client.get(page)).text()
         for name in FAVICONS:
             assert f"/static/{name}" in body, f"{page} / {name}"
+
+
+async def test_brand_mark_uses_the_app_icon(ui_client):
+    """로그인 화면과 사이드바의 마크가 탭 아이콘과 같아야 한다.
+
+    예전에는 `AD` 두 글자를 CSS 로 그린 사각형이었다. 지금은 같은 PNG 를 쓴다 —
+    한쪽만 바뀌면 탭과 화면 안의 로고가 서로 달라진다.
+    """
+    for page in ("/login", "/"):
+        body = await (await ui_client.get(page)).text()
+        assert '<img class="brand__mark" src="/static/icon-180.png"' in body, page
+        assert ">AD<" not in body, f"{page} 에 옛 글자 마크가 남아 있다"
 
 
 async def test_stylesheet_is_public(ui_client):
