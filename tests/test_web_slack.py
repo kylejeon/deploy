@@ -12,6 +12,7 @@ from pathlib import Path
 import pytest
 from aiohttp.test_utils import TestClient, TestServer
 
+from autodeploy import __version__
 from autodeploy.accounts import create_user
 from autodeploy.db import connect
 from autodeploy.repository import get_job_detail, mark_key_installed
@@ -317,6 +318,30 @@ async def test_brand_mark_uses_the_app_icon(ui_client):
         body = await (await ui_client.get(page)).text()
         assert '<img class="brand__mark" src="/static/icon-180.png"' in body, page
         assert ">AD<" not in body, f"{page} 에 옛 글자 마크가 남아 있다"
+
+
+async def test_version_is_shown_on_both_screens(ui_client):
+    """로그인·콘솔 둘 다 버전을 띄운다.
+
+    로그인 화면은 세션이 없어 `/api/me` 를 못 부르므로 공개 엔드포인트에서
+    받아야 한다. 한쪽만 되면 어느 버전이 도는지 로그인 전에는 알 수 없다.
+    """
+    health = await (await ui_client.get("/healthz")).json()
+    assert health["version"] == __version__
+
+    for page in ("/login", "/"):
+        body = await (await ui_client.get(page)).text()
+        assert 'id="brandVer"' in body, page
+
+
+def test_the_two_version_declarations_agree():
+    """`__init__.py` 와 `pyproject.toml` 이 갈라지면 화면과 패키지가 다른 말을 한다."""
+    root = Path(__file__).resolve().parents[1]
+    declared = re.search(
+        r'^version\s*=\s*"([^"]+)"', (root / "pyproject.toml").read_text(), re.M
+    )
+    assert declared is not None, "pyproject.toml 에서 version 을 못 찾았다"
+    assert declared.group(1) == __version__
 
 
 async def test_stylesheet_is_public(ui_client):

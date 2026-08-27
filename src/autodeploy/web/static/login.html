@@ -17,7 +17,7 @@
   <form class="login__card stack gap-20" id="loginForm">
     <div class="brand">
       <img class="brand__mark" src="/static/icon-180.png" alt="" width="26" height="26" decoding="async">
-      <div><div class="brand__name">AutoDeploy</div><div class="brand__sub">설치 콘솔</div></div>
+      <div><div class="brand__name">AutoDeploy</div><div class="brand__sub">설치 콘솔<span class="brand__ver" id="brandVer"></span></div></div>
     </div>
     <div class="stack gap-12">
       <div class="field"><label for="u">아이디</label>
@@ -34,6 +34,13 @@
 </div>
 <script>
 "use strict";
+/* 로그인 화면은 세션이 없어 /api/me 를 못 부른다. 버전은 공개 엔드포인트에서
+   받는다. 실패해도 자리만 비고 로그인에는 지장이 없다. */
+fetch("/healthz", { credentials: "same-origin" })
+  .then((r) => r.json())
+  .then((d) => { if (d.version) document.getElementById("brandVer").textContent = `v${d.version}`; })
+  .catch(() => {});
+
 const form = document.getElementById("loginForm");
 const errBox = document.getElementById("err");
 const errText = document.getElementById("errText");

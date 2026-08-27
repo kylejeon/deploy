@@ -1472,6 +1472,7 @@ window.addEventListener("hashchange", routeFromHash);
   $("#whoName").textContent = state.me.username;
   $("#whoAv").textContent = (state.me.username[0] || "·").toUpperCase();
   $("#whoSub").textContent = state.me.last_login_at ? `최근 ${shortTime(state.me.last_login_at)}` : "";
+  if (state.me.version) $("#brandVer").textContent = `v${state.me.version}`;
   try { await loadServers(); } catch { /* 화면에서 다시 알린다 */ }
   routeFromHash();
 })();

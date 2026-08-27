@@ -13,7 +13,7 @@ from pathlib import Path
 
 from aiohttp import web
 
-from autodeploy import repository
+from autodeploy import __version__, repository
 from autodeploy.db import connect
 from autodeploy.hubctl import HubctlRunner, build_preflight_command
 from autodeploy.inventory import (
@@ -144,6 +144,8 @@ async def get_me(request: web.Request) -> web.Response:
             "username": session.user.username,
             "csrf_token": session.csrf_token,
             "last_login_at": session.user.last_login_at,
+            # 콘솔은 이미 /api/me 를 부른다. 버전 하나 때문에 요청을 더 만들지 않는다.
+            "version": __version__,
         }
     )
 
@@ -830,7 +832,9 @@ async def login_page(request: web.Request) -> web.Response:
 
 @routes.get("/healthz")
 async def healthz(request: web.Request) -> web.Response:
-    return json_response({"ok": True})
+    # 버전을 여기 싣는다. 로그인 화면은 세션이 없어 /api/me 를 못 부르는데,
+    # 화면에 버전을 띄우려면 인증 없이 받을 곳이 하나는 있어야 한다.
+    return json_response({"ok": True, "version": __version__})
 
 
 def _page(request: web.Request, name: str) -> web.Response:

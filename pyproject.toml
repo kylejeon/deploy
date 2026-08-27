@@ -1,6 +1,6 @@
 [project]
 name = "autodeploy"
-version = "0.1.0"
+version = "1.0.0"
 description = "AutoDeploy — 병원 납품 서버 자동 설치 및 Slack 진행상황 공유 봇"
 requires-python = ">=3.11"
 dependencies = [
