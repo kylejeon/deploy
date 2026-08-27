@@ -21,6 +21,7 @@
       <button class="nav__item" data-go="dash"><span class="nav__glyph" aria-hidden="true">▦</span>대시보드<span class="nav__badge" id="navBadge" hidden></span></button>
       <button class="nav__item" data-go="srv"><span class="nav__glyph" aria-hidden="true">▤</span>서버</button>
       <button class="nav__item" data-go="new"><span class="nav__glyph" aria-hidden="true">＋</span>새 설치</button>
+      <button class="nav__item" data-go="patch"><span class="nav__glyph" aria-hidden="true">◈</span>패치</button>
       <button class="nav__item nav__item--danger" data-go="clean"><span class="nav__glyph" aria-hidden="true">⌫</span>서버 초기화</button>
     </nav>
     <div class="rail__foot">
@@ -92,6 +93,28 @@
           <div><span class="lbl">실행 명령</span><div class="cmd" id="cmdPrev" style="margin-top:9px"></div></div>
           <div id="newWarn"></div>
           <button class="btn btn--primary btn--block" type="submit" id="newSubmit">설치 시작</button>
+        </aside>
+      </form>
+    </section>
+
+    <section id="view-patch" hidden>
+      <div class="topline"><h1>패치</h1><span class="chip" id="patchChip">hubctl patch</span></div>
+      <form class="form-grid" id="patchForm">
+        <div class="card"><div class="card__body stack gap-20">
+          <div class="field"><span class="lbl">적용 대상 서버 <span class="dim" style="text-transform:none; letter-spacing:0">— 번들은 컨트롤러에서 만들고, 승인해야 이 서버들에 반영됩니다</span></span>
+            <div class="pickall"><label class="row gap-8" style="gap:7px; cursor:pointer"><input type="checkbox" id="pAll"> <span style="font-size:13px">전체 선택</span></label>
+              <span class="count push" id="pCount">0대 선택</span></div>
+            <div class="servers" id="pSrvList"></div></div>
+          <div class="field"><label for="p-ref">hub-deploy ref <span class="dim">— 번들에 담을 버전 (필수)</span></label>
+            <input class="input mono" id="p-ref" placeholder="v1.2.1 / main / feature/obs-stack"></div>
+          <label class="type"><input type="checkbox" id="p-reftag">
+            <span><span class="type__n">태그로 지정</span><span class="type__d">ref가 브랜치가 아니라 태그일 때 체크 — 체크하지 않으면 <span class="mono">patch_create</span>가 경고를 냅니다</span></span></label>
+        </div></div>
+        <aside class="preview">
+          <div><span class="lbl">실행 단계</span><div class="plan" id="patchPlan" style="margin-top:9px"></div></div>
+          <div><span class="lbl">실행 명령</span><div class="cmd" id="patchCmd" style="margin-top:9px"></div></div>
+          <div id="patchWarn"></div>
+          <button class="btn btn--primary btn--block" type="submit" id="patchSubmit">번들 만들기</button>
         </aside>
       </form>
     </section>

@@ -8,16 +8,22 @@ from __future__ import annotations
 
 import asyncio
 import json
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 import pytest
 from aiohttp.test_utils import TestClient, TestServer
 
 from autodeploy.accounts import create_user
+from autodeploy.ansible_log import LineKind, ParsedLine
 from autodeploy.db import connect
+from autodeploy.queue import JobQueue
 from autodeploy.repository import mark_key_installed
 from autodeploy.web import create_app, keys
+from autodeploy.web import jobs as jobs_module
 from autodeploy.web.auth import CSRF_HEADER
+from autodeploy.web.jobs import JobService, _LogSink
+from autodeploy.web.sse import SseBroker
 
 USERNAME = "yonghyuk"
 PASSWORD = "correct-horse-battery"
@@ -420,7 +426,11 @@ async def test_cancel_unknown_job_is_404(client):
 
 async def test_patch_create_stops_at_awaiting(client):
     """AC-10: 번들 생성 후 멈추고, 승인해야 apply 가 돈다."""
-    resp = await post(client, "/api/jobs", {"kind": "patch", "ref": "v1.0.2", "ref_type": "tag"})
+    resp = await post(
+        client,
+        "/api/jobs",
+        {"kind": "patch", "ref": "v1.0.2", "ref_type": "tag", "hosts": ["alpha"]},
+    )
     assert resp.status == 201
     job_id = (await resp.json())["id"]
 
@@ -431,24 +441,55 @@ async def test_patch_create_stops_at_awaiting(client):
     assert "ARGS: patch create -- -e hub_deploy_ref=v1.0.2 -e hub_deploy_ref_type=tag" in text
 
 
-async def test_patch_create_rejects_hosts(client):
-    resp = await post(client, "/api/jobs", {"kind": "patch", "ref": "v1", "hosts": ["alpha"]})
-    assert resp.status == 400
+async def test_patch_create_never_passes_a_limit(client):
+    """대상은 미리 고르지만 `patch create` 는 컨트롤러 로컬 실행이라 `-l` 을 못 받는다.
 
-
-async def test_patch_approve_runs_apply(client, temp_db):
+    화면에서 서버를 고른다고 그 목록이 생성 단계 명령까지 따라가면 hubctl 이 거부한다.
+    """
     job_id = (await (await post(
-        client, "/api/jobs", {"kind": "patch", "ref": "v1.0.2"}
+        client, "/api/jobs", {"kind": "patch", "ref": "v1", "hosts": ["alpha", "beta"]}
     )).json())["id"]
     await wait_finished(client, job_id)
 
-    # apply 대상은 승인 시점에 정해진다 — 생성 단계에는 호스트가 없다.
-    async with connect(temp_db) as db:
-        await db.execute(
-            "INSERT INTO job_hosts (job_id, host, status) VALUES (?, 'alpha', 'queued')",
-            (job_id,),
-        )
-        await db.commit()
+    text = await (await client.get(f"/api/jobs/{job_id}/log")).text()
+    assert "ARGS: patch create -- -e hub_deploy_ref=v1" in text
+    assert "-l" not in text.split("ARGS:", 1)[1].splitlines()[0]
+
+
+async def test_patch_records_its_apply_targets_up_front(client):
+    """적용 대상은 번들을 만들 때 정해 job_hosts 에 남는다 (승인 화면은 확인만 한다).
+
+    승인 단계에서 정하면 번들을 다 만든 뒤에야 "키가 없는 서버" 를 알게 된다.
+    """
+    job_id = (await (await post(
+        client, "/api/jobs", {"kind": "patch", "ref": "v1", "hosts": ["alpha", "beta"]}
+    )).json())["id"]
+    job = await wait_finished(client, job_id)
+
+    assert [h["host"] for h in job["hosts"]] == ["alpha", "beta"]
+    # 번들만 만들었다 — 서버는 아직 아무것도 안 받았으므로 '대기' 여야 한다.
+    assert {h["status"] for h in job["hosts"]} == {"queued"}
+
+
+async def test_patch_checks_ssh_keys_before_building_the_bundle(client):
+    """AC-16 이 patch 에도 걸린다 — 번들을 다 만들고 나서 알게 되면 갈 곳이 없다."""
+    resp = await post(
+        client, "/api/jobs", {"kind": "patch", "ref": "v1", "hosts": ["alpha", "nokey"]}
+    )
+    assert resp.status == 400
+    assert "nokey" in (await resp.json())["error"]
+
+
+async def test_patch_requires_apply_targets(client):
+    resp = await post(client, "/api/jobs", {"kind": "patch", "ref": "v1"})
+    assert resp.status == 400
+
+
+async def test_patch_approve_runs_apply(client):
+    job_id = (await (await post(
+        client, "/api/jobs", {"kind": "patch", "ref": "v1.0.2", "hosts": ["alpha"]}
+    )).json())["id"]
+    await wait_finished(client, job_id)
 
     resp = await post(client, f"/api/jobs/{job_id}/approve")
     assert resp.status == 200
@@ -463,7 +504,7 @@ async def test_patch_approve_runs_apply(client, temp_db):
 
 async def test_patch_reject_leaves_the_server_untouched(client):
     job_id = (await (await post(
-        client, "/api/jobs", {"kind": "patch", "ref": "v1.0.2"}
+        client, "/api/jobs", {"kind": "patch", "ref": "v1.0.2", "hosts": ["alpha"]}
     )).json())["id"]
     await wait_finished(client, job_id)
 
@@ -598,7 +639,9 @@ async def test_stream_delivers_lines_while_the_job_runs(temp_db, tmp_path):
 
 async def test_awaiting_expires_after_the_ttl(client, temp_db):
     """승인 없이 남은 patch 는 24시간 뒤 취소된다. 번들은 컨트롤러에 남는다."""
-    job_id = (await (await post(client, "/api/jobs", {"kind": "patch", "ref": "v1"})).json())["id"]
+    job_id = (await (await post(
+        client, "/api/jobs", {"kind": "patch", "ref": "v1", "hosts": ["alpha"]}
+    )).json())["id"]
     assert (await wait_finished(client, job_id))["status"] == "awaiting"
 
     async with connect(temp_db) as db:
@@ -616,7 +659,9 @@ async def test_awaiting_expires_after_the_ttl(client, temp_db):
 
 
 async def test_recent_awaiting_is_left_alone(client):
-    job_id = (await (await post(client, "/api/jobs", {"kind": "patch", "ref": "v1"})).json())["id"]
+    job_id = (await (await post(
+        client, "/api/jobs", {"kind": "patch", "ref": "v1", "hosts": ["alpha"]}
+    )).json())["id"]
     await wait_finished(client, job_id)
 
     assert await client.app[keys.JOB_SERVICE].expire_awaiting(older_than_hours=24) == []
@@ -889,3 +934,60 @@ async def test_changing_a_servers_profile_does_not_rewrite_history(client):
     )).json())["id"]
     fresh = await (await client.get(f"/api/jobs/{new_id}")).json()
     assert fresh["hosts"][0]["profile"] == "hybrid-with-ai"
+
+
+# ── 로그 유실 (종료와 flush 가 겹칠 때) ─────────────────────────────
+
+
+async def test_closing_the_sink_mid_flush_keeps_every_line(temp_db, tmp_path, mocker):
+    """작업이 끝나는 순간 주기 flush 가 돌고 있어도 줄이 사라지면 안 된다.
+
+    flush 는 버퍼를 통째로 꺼낸 **뒤에** DB 를 기다린다. 그 사이에 close() 가
+    루프를 취소하면 꺼내둔 배치가 함께 없어진다 — 하필 그 시점이 작업이 끝나는
+    순간이라, 마지막 0.15초(대개 PLAY RECAP 과 오류 줄)가 조용히 유실된다.
+    """
+    service = JobService(
+        db_path=temp_db,
+        hubctl_repo=tmp_path,
+        inventory_path=tmp_path / "sites.yml",
+        queue=JobQueue(),
+        broker=SseBroker(),
+        log_dir=tmp_path / "joblogs",
+    )
+    async with connect(temp_db) as db:
+        cur = await db.execute(
+            "INSERT INTO jobs (kind, status, started_by) VALUES ('verify','running','web:t')"
+        )
+        job_id = int(cur.lastrowid)
+        await db.commit()
+
+    sink = _LogSink(service, job_id, "verify")
+    await sink.start()
+
+    # 주기 flush 를 DB 문 앞에 세운다 — 배치는 이미 버퍼에서 빠져나온 뒤다.
+    entered, release = asyncio.Event(), asyncio.Event()
+    real_connect = jobs_module.connect
+
+    @asynccontextmanager
+    async def blocked_connect(path):
+        entered.set()
+        await release.wait()
+        async with real_connect(path) as db:
+            yield db
+
+    mocker.patch.object(jobs_module, "connect", blocked_connect)
+    for text in ("PLAY RECAP ****", "alpha : ok=2 failed=0", "beta : ok=1 failed=1"):
+        sink.feed("stdout", ParsedLine(text=text, kind=LineKind.RECAP, host=None, step="verify"))
+
+    await asyncio.wait_for(entered.wait(), 5.0)
+    closing = asyncio.create_task(sink.close())
+    await asyncio.sleep(0.05)   # close() 가 루프를 세울 틈을 준다
+    release.set()
+    await asyncio.wait_for(closing, 5.0)
+
+    async with real_connect(temp_db) as db:
+        async with db.execute(
+            "SELECT line FROM script_logs WHERE job_id=? ORDER BY id", (job_id,)
+        ) as cur:
+            saved = [r["line"] for r in await cur.fetchall()]
+    assert saved == ["PLAY RECAP ****", "alpha : ok=2 failed=0", "beta : ok=1 failed=1"]

@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from contextlib import suppress
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -44,7 +45,9 @@ MAX_DB_LINES = 200_000
 # hubctl 을 쓰지 않는 종류. 여기서 실행하지 않는다.
 _NON_HUBCTL = frozenset({JobKind.SSH_KEY})
 
-# 대상 호스트가 필요한 종류. patch create 만 예외 (컨트롤러 로컬 실행).
+# 명령에 `-l` 을 싣지 않는 단계. patch create 만 그렇다 (컨트롤러 로컬 실행).
+# 대상을 안 받는다는 뜻이 아니다 — 적용 대상은 이때 정해 job_hosts 에 적어두고,
+# 승인 단계의 `patch apply` 가 그 목록을 `-l` 로 넘긴다.
 _HOSTLESS_PHASES = {("patch", "create")}
 
 
@@ -119,17 +122,22 @@ class JobService:
         phase = "create" if kind is JobKind.PATCH else None
         hosts = tuple(dict.fromkeys(h.strip() for h in req.hosts if h and h.strip()))
 
-        profiles: dict[str, str] = {}
-        if (kind.value, phase) not in _HOSTLESS_PHASES:
-            profiles = await self._check_hosts(kind, hosts, confirm=req.confirm)
-        elif hosts:
-            raise JobError("patch 는 번들 생성 후 승인 단계에서 대상을 지정합니다")
+        # 대상은 종류와 상관없이 여기서 검증하고 job_hosts 에 적어둔다. patch 의
+        # 번들 생성은 컨트롤러에서만 돌지만 **적용 대상은 이때 정한다** — 번들을
+        # 다 만들어 놓고 승인 단계에서 "키가 없는 서버" 를 만나면 그 번들은 갈
+        # 곳이 없다. 승인은 여기서 적어둔 대상에 그대로 적용한다.
+        profiles = await self._check_hosts(kind, hosts, confirm=req.confirm)
+
+        # 명령에 실을 대상. `patch create` 는 `-l` 을 받지 않는다 (컨트롤러 로컬
+        # 실행). 여기서 비워야 build_command 가 거부하지 않고, _execute 도
+        # job_hosts 를 건드리지 않아 서버들이 '대기' 인 채로 승인을 기다린다.
+        command_hosts = () if (kind.value, phase) in _HOSTLESS_PHASES else hosts
 
         # 명령을 먼저 조립한다 — env/ref/clean_mode 오류를 DB 에 흔적을 남기기 전에 잡는다.
         try:
             build_command(
                 kind,
-                hosts=hosts,
+                hosts=command_hosts,
                 env=req.env,
                 ref=req.ref,
                 ref_type=req.ref_type,
@@ -154,7 +162,7 @@ class JobService:
                 )
             await db.commit()
 
-        await self.queue.submit(job_id, self._make_runner(job_id, hosts, req, phase))
+        await self.queue.submit(job_id, self._make_runner(job_id, command_hosts, req, phase))
         log.info("작업 %d 생성 (%s, hosts=%s, by=%s)", job_id, kind.value, hosts, req.started_by)
         return job_id
 
@@ -224,7 +232,11 @@ class JobService:
         job = await self._require_awaiting(job_id)
         hosts = tuple(h["host"] for h in job["hosts"])
         if not hosts:
-            raise JobConflict("적용할 대상 서버가 기록돼 있지 않습니다")
+            # 이 화면이 생기기 전에 만들어진 patch 는 대상이 비어 있다.
+            raise JobConflict(
+                "적용할 대상 서버가 기록돼 있지 않습니다"
+                " — 패치 화면에서 대상을 골라 다시 만드세요 (번들은 컨트롤러에 남아 있습니다)"
+            )
 
         req = JobRequest(
             kind=JobKind.PATCH,
@@ -379,6 +391,15 @@ class JobService:
                         job_id,
                         host,
                     ),
+                )
+            if status in (JobStatus.FAILED, JobStatus.CANCELLED):
+                # 대상 없이 돈 단계(patch create)가 죽으면 위 루프가 job_hosts 를
+                # 건드리지 않는다. 작업은 실패인데 서버는 '대기' 로 남아 목록이
+                # 어긋나므로 남은 줄을 여기서 함께 닫는다.
+                await db.execute(
+                    "UPDATE job_hosts SET status=? WHERE job_id=?"
+                    " AND status IN ('queued','running')",
+                    ("failed" if status is JobStatus.FAILED else "cancelled", job_id),
                 )
             await db.commit()
 
@@ -540,12 +561,9 @@ class _LogSink:
             self._last_error_host = None
 
     async def _loop(self) -> None:
-        try:
-            while not self._closed:
-                await asyncio.sleep(FLUSH_INTERVAL)
-                await self.flush()
-        except asyncio.CancelledError:
-            raise
+        while not self._closed:
+            await asyncio.sleep(FLUSH_INTERVAL)
+            await self.flush()
 
     async def flush(self) -> None:
         async with self._lock:
@@ -622,13 +640,26 @@ class _LogSink:
         self._overflow.write(line + "\n")
 
     async def close(self) -> None:
+        """루프를 **취소하지 않고** 플래그로 세운다.
+
+        flush 는 배치를 버퍼에서 통째로 꺼낸 **뒤에** DB 를 기다린다. 그 사이에
+        cancel() 이 들어오면 꺼내둔 배치가 함께 사라진다 — 그리고 close() 가
+        불리는 시점이 정확히 작업이 끝나는 순간이라, 마지막 0.15초가 통으로
+        날아간다. 거기 있는 것이 하필 PLAY RECAP 과 오류 줄이다.
+
+        플래그로 세우면 루프가 하던 flush 를 끝내고 제 발로 나간다. 대신 최대
+        FLUSH_INTERVAL 만큼 늦게 끝난다 (0.15초).
+        """
         self._closed = True
         if self._task is not None:
-            self._task.cancel()
             try:
-                await self._task
-            except asyncio.CancelledError:
-                pass
+                # DB 가 걸려 close() 가 영영 안 끝나는 일은 막는다. 취소는
+                # 여기서만, 그것도 마지막 수단으로 쓴다.
+                await asyncio.wait_for(self._task, FLUSH_INTERVAL * 20)
+            except (TimeoutError, asyncio.CancelledError):
+                self._task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await self._task
         await self.flush()
         if self._overflow is not None:
             self._overflow.close()

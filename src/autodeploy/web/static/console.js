@@ -168,7 +168,7 @@ function go(view, id, { push = true, host = null } = {}) {
   // host 를 받으면 그 서버로 필터해서 연다 (목록에서 서버 줄을 눌렀을 때).
   // 비우면 syncHostFilter 가 첫 대상으로 맞춘다.
   if (id !== undefined) { state.jobId = id; state.hostFilter = host || ""; state.autoscroll = true; }
-  for (const v of ["dash", "job", "srv", "new", "clean"]) $("#view-" + v).hidden = v !== view;
+  for (const v of ["dash", "job", "srv", "new", "patch", "clean"]) $("#view-" + v).hidden = v !== view;
   for (const b of $("#nav").children) {
     b.dataset.go === view ? b.setAttribute("aria-current", "page") : b.removeAttribute("aria-current");
   }
@@ -180,14 +180,14 @@ function go(view, id, { push = true, host = null } = {}) {
     else history.replaceState(null, "", hash);
   }
   window.scrollTo({ top: 0 });
-  ({ dash: showDash, job: showJob, srv: showServers, new: showNew, clean: showClean })[view]();
+  ({ dash: showDash, job: showJob, srv: showServers, new: showNew, patch: showPatch, clean: showClean })[view]();
 }
 
 function routeFromHash() {
   const m = /^#job\/(\d+)$/.exec(location.hash);
   if (m) return go("job", Number(m[1]), { push: false });
   const view = (location.hash || "#dash").slice(1);
-  go(["dash", "srv", "new", "clean"].includes(view) ? view : "dash", undefined, { push: false });
+  go(["dash", "srv", "new", "patch", "clean"].includes(view) ? view : "dash", undefined, { push: false });
 }
 
 /* ══ 대시보드 ══════════════════════════════════════════ */
@@ -453,7 +453,8 @@ function renderJob() {
   const actions = [];
   if (ACTIVE.includes(job.status) && job.status !== "awaiting") actions.push(`<button class="btn btn--sm btn--ghost-danger" id="jCancel">작업 취소</button>`);
   if (job.status === "awaiting") {
-    actions.push(`<button class="btn btn--sm btn--primary" id="jApprove">적용 승인</button>`);
+    // 대상이 없으면 승인해도 서버에서 409 로 막힌다. 눌리지 않을 버튼은 안 그린다.
+    if (jobHosts.length) actions.push(`<button class="btn btn--sm btn--primary" id="jApprove">${jobHosts.length}대에 적용 승인</button>`);
     actions.push(`<button class="btn btn--sm btn--ghost-danger" id="jReject">적용 거부</button>`);
   }
   if (failedHosts.length) actions.push(`<button class="btn btn--sm btn--primary" id="jRetryFailed">실패한 ${failedHosts.length}대만 재시도</button>`);
@@ -469,9 +470,15 @@ function renderJob() {
     actions.push(`<a class="btn btn--sm" href="${esc(job.slack_permalink)}" target="_blank" rel="noopener">Slack 스레드 열기</a>`);
   }
 
+  /* 대상은 번들을 만들 때 정해 job_hosts 에 적어둔다. 여기서 다시 고르지 않고
+     무엇에 반영되는지만 못박는다 — 승인은 서버를 실제로 바꾸는 버튼이라
+     누르기 전에 대상이 눈에 보여야 한다. */
   const awaiting = job.status === "awaiting"
     ? `<div class="alert alert--warn"><span class="alert__g">!</span><p class="note" style="color:var(--ink-2)">
-        번들이 만들어졌습니다. <b>적용 승인</b>을 눌러야 타겟에 반영됩니다. 거부해도 번들은 컨트롤러에 남습니다.</p></div>` : "";
+        번들이 만들어졌습니다. ${jobHosts.length
+          ? `<b>적용 승인</b>을 눌러야 <b class="mono">${esc(jobHosts.join(", "))}</b> ${jobHosts.length}대에 반영됩니다.`
+          : `이 작업에는 <b>적용 대상이 기록돼 있지 않습니다</b> — <b>패치</b> 화면에서 대상을 골라 다시 만드세요.`}<br>
+        거부해도 번들은 컨트롤러에 남습니다. 승인 없이 24시간이 지나면 자동 취소되고, 이때도 번들은 남습니다.</p></div>` : "";
   const error = job.error_message && job.status === "failed"
     ? `<div class="alert"><span class="alert__g">✕</span><p class="note" style="color:var(--ink-2)">${esc(job.error_message)}</p></div>` : "";
 
@@ -539,7 +546,7 @@ function renderJob() {
     paintLog();
   }));
   $("#jCancel")?.addEventListener("click", () => confirmCancel(job.id));
-  $("#jApprove")?.addEventListener("click", () => act(`/api/jobs/${job.id}/approve`, "적용을 승인했습니다"));
+  $("#jApprove")?.addEventListener("click", () => confirmApprove(job, jobHosts));
   $("#jReject")?.addEventListener("click", () => act(`/api/jobs/${job.id}/reject`, "적용을 거부했습니다 (번들은 유지)"));
   $("#jRetryFailed")?.addEventListener("click", () => retry(job, failedHosts));
   $("#jRetryAll")?.addEventListener("click", () => retry(job, hostsOf(job)));
@@ -549,7 +556,7 @@ function renderJob() {
 
 /* 필터는 항상 대상 한 대를 가리킨다. 비어 있거나(막 열었을 때) 이 작업에 없는
    호스트를 가리키면(다른 작업을 보다 넘어왔을 때) 첫 대상으로 맞춘다.
-   대상이 없는 작업(patch 등)은 필터 없이 전부 보여준다. */
+   대상이 없는 작업(이 화면이 생기기 전의 patch)은 필터 없이 전부 보여준다. */
 function syncHostFilter(hosts) {
   if (!hosts.length) state.hostFilter = "";
   else if (!hosts.includes(state.hostFilter)) state.hostFilter = hosts[0];
@@ -763,6 +770,16 @@ async function act(path, okMessage) {
   } catch (e) {
     toast(e.message, "danger");
   }
+}
+
+/* 승인은 서버를 실제로 바꾸는 유일한 지점이다 (create 는 컨트롤러에만 남는다).
+   되돌리려면 rollback 을 따로 돌려야 하므로 한 번 물어본다. */
+function confirmApprove(job, hosts) {
+  modal(`<h2>${hosts.length}대에 번들을 적용할까요?</h2>
+    <p class="note">대상: <b class="mono">${esc(hosts.join(", "))}</b>${job.ref ? `<br>ref: <b class="mono">${esc(job.ref)}</b>` : ""}<br>
+    <span class="mono">hubctl patch apply</span> 가 실행되어 서버가 바뀝니다. 되돌리려면 <b>rollback</b> 을 따로 돌려야 합니다.</p>`,
+    { label: "적용 승인" },
+    () => act(`/api/jobs/${job.id}/approve`, "적용을 승인했습니다"));
 }
 
 function confirmCancel(id) {
@@ -1149,6 +1166,90 @@ $("#newForm").addEventListener("submit", (e) => {
         const created = await api("/api/jobs", {
           method: "POST",
           body: { kind: "install", hosts, env, ref: ref || null, ref_type: ref && $("#f-reftag").checked ? "tag" : null },
+        });
+        toast(`작업 #${created.id} 을(를) 시작했습니다`);
+        go("job", created.id);
+      } catch (e) { toast(e.message, "danger"); throw e; }
+    });
+});
+
+/* ══ 패치 ══════════════════════════════════════════════ */
+
+/* patch 는 두 번에 나눠 돈다 — 번들 생성(컨트롤러 로컬)과 적용(타겟).
+   `patch create` 는 `-l` 을 못 받지만 **적용 대상은 여기서 정한다**. 번들을
+   다 만들어 놓고 승인 단계에서 "키가 없는 서버" 를 만나면 그 번들이 갈 곳이
+   없기 때문이다. 대상은 job_hosts 에 적히고 승인이 그대로 `-l` 로 넘긴다. */
+async function showPatch() {
+  try { await loadServers(); } catch (e) { toast(e.message, "danger"); }
+  $("#pSrvList").innerHTML = state.servers.length ? state.servers.map((s) => {
+    const blocked = !s.key_installed_at;
+    return `<label class="srv" title="${blocked ? "SSH 키 등록이 필요합니다" : ""}">
+      <input type="checkbox" name="psrv" value="${esc(s.host)}"${blocked ? " disabled" : ""}>
+      <span><span class="mono" style="font-weight:600">${esc(s.host)}</span>
+        <span class="dim" style="font-size:12.5px"> ${esc(s.memo || s.site_name)}</span><br>
+        <span class="mono dim" style="font-size:12px">${esc(s.ansible_host)} · ${esc(s.profile)}</span></span>
+      <span>${blocked ? `<span class="tag" style="color:var(--err)">키 미등록</span>` : `<span class="tag">준비됨</span>`}</span>
+    </label>`;
+  }).join("") : `<p class="note">등록된 서버가 없습니다. <b>서버</b> 화면에서 먼저 추가하세요.</p>`;
+
+  $$('input[name="psrv"]').forEach((c) => c.addEventListener("change", drawPatchPlan));
+  $("#pAll").onchange = (e) => {
+    $$('input[name="psrv"]:not(:disabled)').forEach((c) => { c.checked = e.target.checked; });
+    drawPatchPlan();
+  };
+  $("#p-ref").oninput = drawPatchPlan;
+  $("#p-reftag").onchange = drawPatchPlan;
+  drawPatchPlan();
+}
+
+const patchHosts = () => $$('input[name="psrv"]:checked').map((c) => c.value);
+
+function drawPatchPlan() {
+  const hosts = patchHosts();
+  const ref = $("#p-ref").value.trim();
+  $("#pCount").textContent = `${hosts.length}대 선택`;
+
+  $("#patchPlan").innerHTML = PHASES.patch.map(([, label], i) =>
+    `<div class="plan__i"><b>${i + 1}</b><span>${esc(label)}${i ? ` — 승인해야 실행` : ""}</span></div>`).join("");
+
+  /* 두 명령을 다 보여준다. 한 번 누르면 위만 돌고 아래는 승인 뒤에 도는데,
+     위만 그리면 "-l 이 왜 없지" 로 읽히고 아래만 그리면 지금 뭐가 도는지 안 보인다.
+     `patch apply` 에 ref 를 싣지 않는 것도 여기서 그대로 드러난다 — 번들 메타가
+     SoT 라 불일치하면 playbook 이 죽는다. */
+  const tail = `${esc(ref || "<ref 없음>")}${$("#p-reftag").checked ? " -e hub_deploy_ref_type=tag" : ""}`;
+  const limit = esc(hosts.length ? hosts.join(",") : "<대상 없음>");
+  $("#patchCmd").innerHTML =
+    `./bin/hubctl patch create -- -e hub_deploy_ref=<b>${tail}</b>`
+    + `<br><span style="color:var(--console-dim)">↓ 적용 승인을 누르면</span><br>`
+    + `./bin/hubctl patch apply -l <b>${limit}</b>`;
+
+  const warn = [];
+  if (hosts.length > FORKS) warn.push(`선택한 ${hosts.length}대는 ansible 기본 forks(${FORKS})보다 많아 ${FORKS}대씩 나눠 진행됩니다.`);
+  $("#patchWarn").innerHTML = `<div class="alert alert--warn"><span class="alert__g" aria-hidden="true">!</span>
+    <p class="note" style="color:var(--ink-2)">번들을 만든 뒤 <b>승인 대기</b>에서 멈춥니다 — 작업 상세에서 <b>적용 승인</b>을 눌러야 서버에 반영됩니다.
+    승인 없이 24시간이 지나면 자동 취소되고, 이때도 번들은 컨트롤러에 남습니다.<br>
+    앱이 추가·제거되는 등 구조가 바뀌면 <span class="mono">패치 스코프 밖</span> 이라며 멈춥니다 — 서버는 그대로이고, 그때는 <b>새 설치</b>의 configure 로 반영합니다.
+    ${warn.map((w) => `<br>${esc(w)}`).join("")}</p></div>`;
+
+  $("#patchSubmit").disabled = hosts.length === 0 || !ref;
+}
+
+$("#patchForm").addEventListener("submit", (e) => {
+  e.preventDefault();
+  const hosts = patchHosts();
+  const ref = $("#p-ref").value.trim();
+  if (!hosts.length || !ref) return;
+  const isTag = $("#p-reftag").checked;
+  modal(`<h2>${hosts.length}대에 적용할 번들을 만들까요?</h2>
+    <p class="note">ref: <b class="mono">${esc(ref)}</b>${isTag ? " (태그)" : ""}<br>
+    적용 대상: <b class="mono">${esc(hosts.join(", "))}</b><br>
+    지금은 <b>번들만</b> 만듭니다. 서버에는 <b>적용 승인</b>을 눌러야 반영됩니다.</p>`,
+    { label: "번들 만들기" },
+    async () => {
+      try {
+        const created = await api("/api/jobs", {
+          method: "POST",
+          body: { kind: "patch", hosts, ref, ref_type: isTag ? "tag" : null },
         });
         toast(`작업 #${created.id} 을(를) 시작했습니다`);
         go("job", created.id);
