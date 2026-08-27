@@ -10,10 +10,13 @@ runbook §1-1 이 사람에게 시키던 작업을 봇이 대신한다:
 from __future__ import annotations
 
 import logging
+import re
+import secrets
 import shlex
 import socket
 import subprocess
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
+from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -149,6 +152,87 @@ async def verify_key_auth(
         await conn.wait_closed()
 
 
+# hybrid 사이트의 타겟은 사람이 앞에 앉는 데스크톱이라 원격 지원 준비가 필요하다.
+# 배포 내용과 무관한 기계 설정이므로 설치 때마다가 아니라 등록할 때 한 번 돈다.
+NODE_PREP_SCRIPT = Path(__file__).with_name("node_prep.sh")
+
+# 스크립트가 마지막에 뱉는 기계용 줄. 사람이 읽는 출력과 따로 둔다 —
+# 줄 모양이 바뀌면 파싱이 조용히 깨지기 때문이다.
+_ANYDESK_ID_RE = re.compile(r"^ANYDESK_ID=(\d+)\s*$")
+
+
+def is_desktop_profile(profile: str) -> bool:
+    """준비 스크립트를 돌릴 프로파일인가.
+
+    hybrid 사이트만이다 (`hybrid-with-ai` · `hybrid-without-ai`). onprem 은
+    폐쇄망 서버라 AnyDesk 저장소에 닿지도 않고, 사람이 앞에 앉지도 않는다.
+    """
+    return profile.startswith("hybrid")
+
+
+async def prepare_desktop(
+    ssh: SSHClient,
+    *,
+    sudo_password: str = "",
+    target_user: str = "connecteve",
+    anydesk_password: str = "",
+    weekly_reboot: bool = False,
+    weekly_reboot_cron: str = "0 4 * * 0",
+    on_line: LineCallback | None = None,
+) -> int:
+    """준비 스크립트를 타겟에서 root 로 실행한다.
+
+    **비밀번호를 명령줄에 싣지 않는다.** 두 번에 나눠 보내는 이유가 그것이다.
+      1) 스크립트를 표준입력으로 흘려 임시 파일에 쓴다 (mktemp 는 0600 이다)
+      2) sudo 로 그 파일을 실행하고, sudo 비밀번호는 표준입력으로 준다
+
+    한 번에 `sudo -S bash -s` 로 하면 sudo 와 bash 가 같은 표준입력을 두고
+    다투게 되고(비밀번호 한 줄만 먹고 나머지를 넘겨준다는 보장이 없다),
+    `sudo env VAR=... ` 로 값을 넘기면 그 줄이 타겟 `ps` 에 보인다.
+
+    AnyDesk 비밀번호는 스크립트 안에 들어간다. 파일은 0600 이고 끝나면 지운다 —
+    어차피 그 기계에 원격 접속 비밀번호를 심는 작업이라 무게가 맞는다.
+    """
+    body = NODE_PREP_SCRIPT.read_text(encoding="utf-8")
+    header = (
+        f"TARGET_USER={shlex.quote(target_user)}\n"
+        f"ANYDESK_PASSWORD={shlex.quote(anydesk_password)}\n"
+        f"WEEKLY_REBOOT={shlex.quote('true' if weekly_reboot else 'false')}\n"
+        f"WEEKLY_REBOOT_CRON={shlex.quote(weekly_reboot_cron)}\n"
+        "export TARGET_USER ANYDESK_PASSWORD WEEKLY_REBOOT WEEKLY_REBOOT_CRON\n"
+    )
+    remote = f"/tmp/.autodeploy-prep-{secrets.token_hex(8)}.sh"
+    q = shlex.quote(remote)
+
+    rc = await ssh.exec(f"umask 077 && cat > {q}", stdin=header + body)
+    if rc != 0:
+        raise SSHKeyError(f"준비 스크립트를 타겟에 쓰지 못했습니다 (exit {rc})")
+
+    try:
+        # 스크립트가 실패해도 임시 파일은 반드시 지운다.
+        return await ssh.exec(
+            f"sudo -S -p '' bash {q}; rc=$?; rm -f {q}; exit $rc",
+            on_line=on_line,
+            stdin=f"{sudo_password}\n" if sudo_password else None,
+        )
+    except Exception:
+        await _try_remove(ssh, remote)
+        raise
+
+
+async def _try_remove(ssh: SSHClient, remote: str) -> None:
+    with suppress(Exception):
+        await ssh.exec(f"rm -f {shlex.quote(remote)}")
+
+
+def parse_anydesk_id(lines: Sequence[str]) -> str | None:
+    for line in lines:
+        m = _ANYDESK_ID_RE.match(line.strip())
+        if m:
+            return m.group(1)
+    return None
+
+
 @dataclass(frozen=True, slots=True)
 class KeyRegistration:
     """등록 결과.
@@ -159,6 +243,12 @@ class KeyRegistration:
     pubkey: str
     sleep_masked: bool
     sleep_error: str | None = None
+    # hybrid 프로파일일 때만. prep_ran=False 는 "안 돌렸다"이고,
+    # prep_error 가 있으면 "돌렸는데 실패했다"다 — 둘은 다른 이야기다.
+    prep_ran: bool = False
+    prep_log: tuple[str, ...] = ()
+    prep_error: str | None = None
+    anydesk_id: str | None = None
 
 
 async def register_key(
@@ -171,8 +261,14 @@ async def register_key(
     ssh_factory: Callable[..., SSHClient] | None = None,
     connect_fn: Callable[..., object] | None = None,
     on_line: LineCallback | None = None,
+    prepare: bool = False,
+    anydesk_password: str = "",
+    weekly_reboot: bool = False,
+    weekly_reboot_cron: str = "0 4 * * 0",
 ) -> KeyRegistration:
     """F9 전체 흐름. 실패하면 SSHKeyError.
+
+    `prepare=True` 면 타겟 PC 준비 스크립트까지 돌린다 (hybrid 전용).
 
     키를 심는 김에 **절전 타겟도 mask 한다.** 설치 중 서버가 잠들면 SSH 가 끊겨
     작업이 죽는데, 그걸 막는 유일한 자동 경로가 여기다 — 웹 콘솔은 hubctl 을
@@ -192,6 +288,7 @@ async def register_key(
             return AsyncSSHClient(h, username=username, password=password, port=p)
 
     masked, mask_error = False, None
+    prep_ran, prep_error, prep_log = False, None, []
     async with ssh_factory(host, port) as ssh:
         await install_public_key(ssh, pubkey, on_line=on_line)
         try:
@@ -203,6 +300,29 @@ async def register_key(
             mask_error = f"{type(exc).__name__}: {exc}"
             log.info("절전 타겟 mask 실패 (%s): %s", host, mask_error)
 
+        if prepare:
+            def collect(line) -> None:
+                prep_log.append(line.line)
+                if on_line is not None:
+                    on_line(line)
+
+            prep_ran = True
+            try:
+                rc = await prepare_desktop(
+                    ssh,
+                    sudo_password=password,
+                    target_user=username,
+                    anydesk_password=anydesk_password,
+                    weekly_reboot=weekly_reboot,
+                    weekly_reboot_cron=weekly_reboot_cron,
+                    on_line=collect,
+                )
+                if rc != 0:
+                    prep_error = f"준비 스크립트가 exit {rc} 로 끝났습니다"
+            except Exception as exc:
+                prep_error = f"{type(exc).__name__}: {exc}"
+                log.info("타겟 준비 실패 (%s): %s", host, prep_error)
+
     ok = await verify_key_auth(
         host, port=port, username=username, key_path=key_path, connect_fn=connect_fn
     )
@@ -211,4 +331,8 @@ async def register_key(
             "공개키는 넣었지만 키 인증 접속이 되지 않습니다 — "
             "타겟의 sshd 설정(PubkeyAuthentication)이나 홈 디렉터리 권한을 확인하세요."
         )
-    return KeyRegistration(pubkey=pubkey, sleep_masked=masked, sleep_error=mask_error)
+    return KeyRegistration(
+        pubkey=pubkey, sleep_masked=masked, sleep_error=mask_error,
+        prep_ran=prep_ran, prep_log=tuple(prep_log), prep_error=prep_error,
+        anydesk_id=parse_anydesk_id(prep_log),
+    )

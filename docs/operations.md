@@ -36,6 +36,11 @@ SESSION_TTL_DAYS=14
 WEB_SECURE_COOKIE=false     # HTTPS 프록시 뒤에 둘 때만 true
 WEB_TRUST_FORWARDED=false   # 신뢰하는 프록시 뒤에 둘 때만 true
 WEB_PUBLIC_URL=http://100.116.199.41:8080   # Slack 메시지에 넣을 콘솔 주소
+
+# hybrid 타겟 PC 준비 (§7-1). onprem 에는 쓰이지 않는다.
+ANYDESK_PASSWORD=                          # 무인 접근 비밀번호. 비우면 그 단계만 건너뜀
+NODE_PREP_WEEKLY_REBOOT=false              # 주간 재부팅 크론. 기본 꺼짐
+NODE_PREP_WEEKLY_REBOOT_CRON=0 4 * * 0
 ```
 
 `.env` 는 `chmod 600` 으로 두고 저장소에 커밋하지 않는다.
@@ -536,6 +541,43 @@ sudo systemctl mask sleep.target suspend.target hibernate.target hybrid-sleep.ta
 
 키를 이미 등록해 둔 서버(이 기능 이전)는 걸려 있지 않다. 타겟에서 위 명령을 한 번
 실행하거나, 서버 화면에서 키를 다시 등록하면 된다.
+
+### 7-1. hybrid 타겟 PC 준비 (AnyDesk 등)
+
+`hybrid-with-ai` · `hybrid-without-ai` 로 등록한 서버는 **키 등록 때 준비
+스크립트도 함께 돈다** (`src/autodeploy/node_prep.sh`). onprem 은 폐쇄망 서버라
+해당 없다 — AnyDesk 저장소에 닿지도 않고 사람이 앞에 앉지도 않는다.
+
+하는 일:
+
+1. **GDM Wayland 끄기** (X11 강제). AnyDesk 는 Wayland 세션에서 화면 캡처가
+   제한된다. **재부팅해야 반영된다** — 재부팅은 자동으로 하지 않는다.
+2. **GNOME 절전·화면 잠금 해제.** 로그인 화면(gdm)과 사용자 세션(`connecteve`)은
+   별개 경로라 둘 다 처리한다.
+3. **AnyDesk 설치 + 무인 접근 설정.** 비밀번호는 `.env` 의 `ANYDESK_PASSWORD`.
+4. **주간 재부팅 크론.** 기본은 **꺼짐** — 병원 장비를 정기 재부팅시키는 것은
+   운영 정책이라 기본값으로 정할 일이 아니다.
+
+`.env`:
+
+```
+ANYDESK_PASSWORD=...                       # 없으면 무인 접근 설정만 건너뛴다
+NODE_PREP_WEEKLY_REBOOT=true               # 기본 false
+NODE_PREP_WEEKLY_REBOOT_CRON=0 4 * * 0     # 일요일 04:00
+```
+
+`ANYDESK_PASSWORD` 는 마스킹 목록에 들어 있어 로그에 평문으로 남지 않는다.
+
+**AnyDesk 접속 ID 는 서버 목록의 `메모` 칸에 자동으로 적힌다.** 메모와 따로
+저장하므로 사람이 쓴 메모를 덮어쓰지 않고, 다시 등록해도 겹쳐 쌓이지 않는다.
+실행이 끝나면 전체 로그가 창으로 뜬다 — 어느 단계를 건너뛰었는지가 거기 적혀 있다.
+
+**준비가 실패해도 키 등록은 성공시킨다.** 절전 끄기와 같은 이유다. 다시 등록하면
+스크립트도 다시 돈다 (전부 멱등이라 중복되지 않는다).
+
+비밀번호는 명령줄에 싣지 않는다. 스크립트를 표준입력으로 흘려 임시 파일
+(`umask 077`)에 쓰고, sudo 비밀번호는 실행할 때 표준입력으로 준다. 파일은 끝나면
+지운다 — 실패해도 지운다.
 
 ---
 

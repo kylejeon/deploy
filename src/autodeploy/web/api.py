@@ -26,7 +26,7 @@ from autodeploy.inventory import (
     validate_server,
 )
 from autodeploy.models import JobKind
-from autodeploy.ssh_keys import SSHKeyError, register_key
+from autodeploy.ssh_keys import SSHKeyError, is_desktop_profile, register_key
 from autodeploy.web import keys
 from autodeploy.web.forwards import ForwardError
 from autodeploy.web.forwards import plan as forward_plan
@@ -192,6 +192,7 @@ async def get_servers(request: web.Request) -> web.Response:
             "profile": s.profile,
             "memo": meta.get(s.host, {}).get("memo"),
             "key_installed_at": meta.get(s.host, {}).get("key_installed_at"),
+            "anydesk_id": meta.get(s.host, {}).get("anydesk_id"),
         }
         for s in inventory.servers
     ]
@@ -586,11 +587,19 @@ async def post_ssh_key(request: web.Request) -> web.Response:
     if remaining > 0:
         return json_error(429, f"시도가 너무 많습니다. {int(remaining) + 1}초 후 다시 시도하세요")
 
+    # hybrid 사이트의 타겟은 사람이 앞에 앉는 데스크톱이라 원격 지원 준비가 필요하다
+    # (Wayland 끄기 · 화면 잠금 해제 · AnyDesk). onprem 은 폐쇄망 서버라 해당 없다.
+    prep = request.app[keys.NODE_PREP]
+    prepare = is_desktop_profile(server.profile)
     try:
         registration = await register_key(
             host=server.ansible_host,
             username=server.ansible_user,
             password=password,
+            prepare=prepare,
+            anydesk_password=prep.anydesk_password,
+            weekly_reboot=prep.weekly_reboot,
+            weekly_reboot_cron=prep.weekly_reboot_cron,
         )
     except SSHKeyError as exc:
         throttle.record_failure(ip, host)
@@ -603,9 +612,19 @@ async def post_ssh_key(request: web.Request) -> web.Response:
     throttle.reset(ip, host)
     async with connect(request.app[keys.DB_PATH]) as db:
         await repository.mark_key_installed(db, host)
+        if registration.anydesk_id:
+            # 메모는 사람이 쓴 글이라 덮어쓰지 않는다. AnyDesk ID 는 따로 두고
+            # 화면의 메모 칸에 나란히 보여준다.
+            await repository.set_anydesk_id(db, host, registration.anydesk_id)
         meta = await repository.get_server_meta(db)
     if not registration.sleep_masked:
         log.warning("절전 타겟 mask 실패 (%s): %s", host, registration.sleep_error)
+    if registration.prep_error:
+        log.warning("타겟 준비 실패 (%s): %s", host, registration.prep_error)
+
+    # 스크립트 출력에는 AnyDesk 비밀번호가 섞일 수 있다. 화면으로 내보내기 전에
+    # 반드시 가린다 — 이 응답은 그대로 브라우저 콘솔에도 남는다.
+    masker = request.app[keys.MASKER]
     return json_response(
         {
             "host": host,
@@ -613,6 +632,10 @@ async def post_ssh_key(request: web.Request) -> web.Response:
             # 키는 됐는데 절전만 안 걸린 경우를 화면이 구분해 말할 수 있게 한다.
             "sleep_masked": registration.sleep_masked,
             "sleep_error": registration.sleep_error,
+            "prep_ran": registration.prep_ran,
+            "prep_error": registration.prep_error,
+            "prep_log": [masker(line) for line in registration.prep_log],
+            "anydesk_id": registration.anydesk_id,
         }
     )
 

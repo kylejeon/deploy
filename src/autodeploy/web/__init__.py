@@ -17,6 +17,7 @@ from aiohttp import web
 from autodeploy.db import connect
 from autodeploy.masking import SecretMasker
 from autodeploy.queue import JobQueue
+from autodeploy.settings import NodePrepConfig
 from autodeploy.web import api, keys
 from autodeploy.web.forwards import ForwardManager
 from autodeploy.web.jobs import JobService
@@ -108,12 +109,14 @@ def create_app(
     trust_forwarded: bool = False,
     static_dir: str | Path | None = None,
     forward_bind: str = "127.0.0.1",
+    node_prep: NodePrepConfig | None = None,
 ) -> web.Application:
     """콘솔 앱. 실행은 `run_web` 또는 호출자의 AppRunner 가 맡는다."""
     hubctl_repo = Path(hubctl_repo).expanduser()
     app = web.Application(
         middlewares=[session_middleware, require_auth_middleware, csrf_middleware]
     )
+    app[keys.NODE_PREP] = node_prep or NodePrepConfig()
     app[keys.DB_PATH] = Path(db_path).expanduser()
     app[keys.HUBCTL_REPO] = hubctl_repo
     app[keys.INVENTORY_PATH] = (

@@ -13,6 +13,9 @@ from autodeploy.ssh_keys import (
     install_public_key,
     KeyRegistration,
     build_mask_command,
+    is_desktop_profile,
+    parse_anydesk_id,
+    prepare_desktop,
     mask_sleep_targets,
     register_key,
     verify_key_auth,
@@ -293,3 +296,117 @@ async def test_a_mask_that_blows_up_does_not_fail_the_registration(tmp_path):
     assert result.pubkey.startswith("ssh-ed25519 ")
     assert result.sleep_masked is False
     assert result.sleep_error
+
+
+# ── hybrid 타겟 PC 준비 ────────────────────────────────────────────
+
+
+@pytest.mark.parametrize(
+    ("profile", "expected"),
+    [
+        ("hybrid-with-ai", True),
+        ("hybrid-without-ai", True),
+        ("onprem", False),
+    ],
+)
+def test_only_hybrid_targets_get_desktop_prep(profile, expected):
+    """onprem 은 폐쇄망 서버다 — AnyDesk 저장소에 닿지도 않고 사람이 앉지도 않는다."""
+    assert is_desktop_profile(profile) is expected
+
+
+@pytest.mark.asyncio
+async def test_the_prep_script_never_carries_a_password_on_the_command_line():
+    """스크립트도 sudo 비밀번호도 명령줄에 실리면 타겟 `ps` 에 보인다.
+
+    그래서 두 번에 나눈다 — 스크립트는 표준입력으로 임시 파일에 쓰고(mktemp 대신
+    umask 077), sudo 비밀번호는 실행할 때 표준입력으로 준다.
+    """
+    ssh = FakeSSHClient()
+    ssh.connected = True
+    ssh.enqueue("cat >", [], 0)
+    ssh.enqueue("sudo -S", [], 0)
+
+    await prepare_desktop(
+        ssh, sudo_password="sudo-pw", target_user="connecteve",
+        anydesk_password="anydesk-pw",
+    )
+
+    write_cmd, run_cmd = ssh.executed
+    for secret in ("sudo-pw", "anydesk-pw"):
+        assert secret not in write_cmd, write_cmd
+        assert secret not in run_cmd, run_cmd
+
+    # 스크립트 본문은 표준입력으로, sudo 비밀번호도 표준입력으로.
+    assert "anydesk-pw" in ssh.stdins[0], "스크립트에 값이 안 들어갔다"
+    assert "TARGET_USER=connecteve" in ssh.stdins[0]
+    assert ssh.stdins[1] == "sudo-pw\n"
+    assert "umask 077" in write_cmd, "임시 파일이 남들에게 읽히면 안 된다"
+
+
+@pytest.mark.asyncio
+async def test_the_prep_script_is_removed_even_when_it_fails():
+    """실패해도 비밀번호가 든 임시 파일을 타겟에 남기지 않는다."""
+    ssh = FakeSSHClient()
+    ssh.connected = True
+    ssh.enqueue("cat >", [], 0)
+    ssh.enqueue("sudo -S", [], 1)
+
+    rc = await prepare_desktop(ssh, sudo_password="pw", anydesk_password="x")
+    assert rc == 1
+    assert "rm -f" in ssh.executed[1], ssh.executed[1]
+
+
+def test_the_anydesk_id_is_read_from_a_fixed_marker_line():
+    """사람이 읽는 출력과 따로 둔 기계용 줄에서만 읽는다."""
+    assert parse_anydesk_id([
+        "  이 장비의 AnyDesk ID:",
+        "    123 456 789",
+        "ANYDESK_ID=123456789",
+    ]) == "123456789"
+    assert parse_anydesk_id(["    (조회 실패 - 서비스 기동 후 재시도)"]) is None
+
+
+@pytest.mark.asyncio
+async def test_registering_a_hybrid_server_runs_the_prep(tmp_path):
+    ssh = FakeSSHClient()
+    ssh.enqueue("authorized_keys", [], 0)
+    ssh.enqueue("systemctl mask", [], 0)
+    ssh.enqueue("cat >", [], 0)
+    ssh.enqueue("sudo -S -p '' bash", [StreamLine("stdout", "ANYDESK_ID=987654321")], 0)
+
+    async def fake_connect(host, **kw):
+        return _FakeConn()
+
+    result = await register_key(
+        host="10.0.0.9", username="connecteve", password="secret",
+        key_path=tmp_path / "id_ed25519",
+        ssh_factory=lambda h, p: ssh, connect_fn=fake_connect,
+        prepare=True, anydesk_password="ad-pw",
+    )
+    assert result.prep_ran is True
+    assert result.prep_error is None
+    assert result.anydesk_id == "987654321"
+
+
+@pytest.mark.asyncio
+async def test_a_failed_prep_does_not_fail_the_registration(tmp_path):
+    """준비가 실패해도 키는 심었다 — 설치는 할 수 있어야 한다."""
+    ssh = FakeSSHClient()
+    ssh.enqueue("authorized_keys", [], 0)
+    ssh.enqueue("systemctl mask", [], 0)
+    ssh.enqueue("cat >", [], 0)
+    ssh.enqueue("sudo -S -p '' bash", [StreamLine("stdout", "  !! 저장소 접근 실패")], 1)
+
+    async def fake_connect(host, **kw):
+        return _FakeConn()
+
+    result = await register_key(
+        host="10.0.0.9", username="connecteve", password="secret",
+        key_path=tmp_path / "id_ed25519",
+        ssh_factory=lambda h, p: ssh, connect_fn=fake_connect,
+        prepare=True,
+    )
+    assert result.pubkey.startswith("ssh-ed25519 ")
+    assert result.prep_ran is True
+    assert "exit 1" in result.prep_error
+    assert any("저장소 접근 실패" in line for line in result.prep_log)

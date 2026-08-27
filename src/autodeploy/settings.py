@@ -52,6 +52,9 @@ HUBCTL_SECRET_ENV: tuple[str, ...] = (
     "AWS_SECRET_ACCESS_KEY",
     "AWS_SESSION_TOKEN",
     "GRAFANA_ADMIN_PASSWORD",
+    # 타겟 PC 준비 스크립트가 AnyDesk 무인 접근 비밀번호로 쓴다. 이 목록에
+    # 없으면 스크립트 출력에 섞여 콘솔 로그·Slack·내려받은 로그에 평문으로 남는다.
+    "ANYDESK_PASSWORD",
 )
 
 
@@ -71,6 +74,38 @@ def _flag(env: Mapping[str, str], key: str, default: bool = False) -> bool:
     if not raw:
         return default
     return raw in ("1", "true", "yes", "on")
+
+
+@dataclass(frozen=True, slots=True)
+class NodePrepConfig:
+    """hybrid 타겟 PC 준비 스크립트에 넘길 값 (§7-1).
+
+    `SSH 키 등록` 직후에 쓰인다. 배포 내용과 무관한 기계 설정이라 설치 때마다가
+    아니라 등록할 때 한 번 돈다.
+    """
+
+    anydesk_password: str = ""
+    weekly_reboot: bool = False
+    weekly_reboot_cron: str = "0 4 * * 0"
+
+
+def resolve_node_prep(env: Mapping[str, str] | None = None) -> NodePrepConfig:
+    """주간 재부팅은 **기본이 꺼짐**이다.
+
+    병원 장비를 정기적으로 재부팅시키는 것은 운영 정책이라 기본값으로 정할
+    일이 아니다. 켜려면 `.env` 에서 명시적으로 켠다.
+    """
+    e = env if env is not None else os.environ
+    cron = e.get("NODE_PREP_WEEKLY_REBOOT_CRON", "").strip() or "0 4 * * 0"
+    if len(cron.split()) != 5:
+        raise SettingsError(
+            f"NODE_PREP_WEEKLY_REBOOT_CRON 은 5개 필드여야 합니다: {cron!r}"
+        )
+    return NodePrepConfig(
+        anydesk_password=e.get("ANYDESK_PASSWORD", "").strip(),
+        weekly_reboot=_flag(e, "NODE_PREP_WEEKLY_REBOOT", default=False),
+        weekly_reboot_cron=cron,
+    )
 
 
 def resolve_web_config(env: Mapping[str, str] | None = None) -> WebConfig:
@@ -179,6 +214,7 @@ class Settings:
         trust_forwarded=False,
         public_url="http://127.0.0.1:8080",
     )
+    node_prep: NodePrepConfig = NodePrepConfig()
 
 
 def load_settings(env: Mapping[str, str] | None = None) -> Settings:
@@ -246,4 +282,5 @@ def load_settings(env: Mapping[str, str] | None = None) -> Settings:
         hubctl_repo_path=resolve_hubctl_repo(e),
         become_password=resolve_become_password(e),
         web=resolve_web_config(e),
+        node_prep=resolve_node_prep(e),
     )

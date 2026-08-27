@@ -810,6 +810,18 @@ async function showServers() {
   renderServers();
 }
 
+/* 메모 칸에는 사람이 쓴 메모와 AnyDesk 접속 ID 가 함께 나온다. 저장은 따로 한다 —
+   준비 스크립트가 메모를 덮어쓰면 안 되고, 붙여 쓰면 다시 등록할 때마다 겹쳐 쌓인다. */
+function memoCell(s) {
+  const parts = [];
+  if (s.memo) parts.push(esc(s.memo));
+  if (s.anydesk_id) {
+    parts.push(`<span class="tag" title="AnyDesk 접속 ID — 키 등록 때 받아 적었습니다">`
+      + `AnyDesk ${esc(s.anydesk_id)}</span>`);
+  }
+  return parts.length ? parts.join(" ") : "–";
+}
+
 function renderServers() {
   const rows = state.servers.map((s) => {
     const key = s.key_installed_at
@@ -821,7 +833,7 @@ function renderServers() {
       <td class="mono dim">${esc(s.site_name)}</td>
       <td><span class="tag" title="${esc(PROFILES[s.profile] || "")}">${esc(s.profile)}</span></td>
       <td>${key}</td>
-      <td class="dim">${esc(s.memo || "–")}</td>
+      <td class="dim">${memoCell(s)}</td>
       <td style="text-align:right"><div class="row" style="justify-content:flex-end; flex-wrap:nowrap">
         <button class="btn btn--xs" data-edit="${esc(s.host)}">편집</button>
         <button class="btn btn--xs btn--ghost-danger" data-del="${esc(s.host)}">삭제</button></div></td></tr>`;
@@ -1044,8 +1056,32 @@ function sshKeyModal(host) {
           toast(`${host} 키 등록 완료 (절전 꺼둠)`);
         }
         await showServers();
+        // 준비 스크립트를 돌렸으면 결과를 보여준다. AnyDesk ID 처럼 사람이 읽어야
+        // 하는 값이 나오므로 토스트로는 부족하다.
+        if (r.prep_ran) prepResultModal(host, r);
       } catch (e) { toast(e.message, "danger"); throw e; }
     });
+}
+
+/* hybrid 타겟 준비 결과. 로그를 그대로 보여준다 — 어느 단계에서 건너뛰었는지가
+   전부 출력에 적혀 있고, 요약하면 그게 사라진다. */
+function prepResultModal(host, r) {
+  const failed = Boolean(r.prep_error);
+  const head = failed
+    ? `<div class="alert"><span class="alert__g">✕</span><p class="note" style="color:var(--ink-2)">
+        키 등록은 끝났지만 <b>PC 준비가 실패</b>했습니다 — ${esc(r.prep_error)}.<br>
+        아래 로그에서 어디까지 됐는지 확인하세요. 다시 등록하면 재실행됩니다.</p></div>`
+    : `<p class="note">${r.anydesk_id
+        ? `AnyDesk 접속 ID <b class="mono">${esc(r.anydesk_id)}</b> — 서버 목록의 메모 칸에 적어뒀습니다.`
+        : `AnyDesk ID 를 읽지 못했습니다. 서비스가 뜬 뒤 다시 등록하면 받아옵니다.`}<br>
+        <b>재부팅해야</b> Wayland 설정(X11 강제)이 반영됩니다.</p>`;
+  const lines = (r.prep_log || []).map((l) =>
+    `<div class="ln"><time></time><span class="tx">${esc(l)}</span></div>`).join("");
+  modal(`<h2>PC 준비 — ${esc(host)}</h2>${head}
+    <div class="console" style="margin-top:10px"><div class="console__bar"><span class="lbl">실행 로그</span></div>
+      <div class="console__body" style="height:320px">${lines || `<div class="ln"><time></time>
+        <span class="tx" style="color:var(--console-dim)">출력이 없습니다.</span></div>`}</div></div>`,
+    { confirm: false });
 }
 
 /* ══ 새 설치 ════════════════════════════════════════════ */

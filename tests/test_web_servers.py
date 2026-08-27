@@ -351,6 +351,83 @@ async def test_the_response_says_whether_sleep_was_masked(client, monkeypatch):
     assert "exit 1" in body["sleep_error"]
 
 
+async def test_only_hybrid_servers_get_the_desktop_prep(client, monkeypatch, inventory_path):
+    """onprem 은 폐쇄망 서버라 준비 스크립트를 돌리지 않는다."""
+    seen = {}
+
+    async def fake_register(**kw):
+        seen[kw["host"]] = kw["prepare"]
+        return KeyRegistration(pubkey="k", sleep_masked=True, prep_ran=kw["prepare"])
+
+    monkeypatch.setattr(api, "register_key", fake_register)
+    await send(client, "POST", "/api/servers/alpha/ssh-key", {"password": "pw"})
+    assert seen == {"192.0.2.10": False}, "onprem 인데 준비를 돌렸다"
+
+    # 같은 서버를 hybrid 로 바꾸면 돈다
+    inventory_path.write_text(
+        SITES_YML.replace("profile: onprem", "profile: hybrid-with-ai"), encoding="utf-8"
+    )
+    seen.clear()
+    await send(client, "POST", "/api/servers/alpha/ssh-key", {"password": "pw"})
+    assert seen == {"192.0.2.10": True}
+
+
+async def test_the_anydesk_id_lands_in_the_server_list(client, monkeypatch, inventory_path):
+    """접속 ID 는 사람이 읽어야 하는 값이라 목록에 남는다 — 메모는 건드리지 않는다."""
+    inventory_path.write_text(
+        SITES_YML.replace("profile: onprem", "profile: hybrid-with-ai"), encoding="utf-8"
+    )
+    await send(client, "PUT", "/api/servers/alpha", {
+        "ansible_host": "192.0.2.10", "ansible_user": "connecteve", "site_name": "alpha",
+        "profile": "hybrid-with-ai", "memo": "연세와병원",
+        "mtime_ns": await current_mtime(client),
+    })
+
+    async def fake_register(**kw):
+        return KeyRegistration(pubkey="k", sleep_masked=True, prep_ran=True,
+                               anydesk_id="123456789")
+
+    monkeypatch.setattr(api, "register_key", fake_register)
+    body = await (await send(client, "POST", "/api/servers/alpha/ssh-key",
+                             {"password": "pw"})).json()
+    assert body["anydesk_id"] == "123456789"
+
+    servers = (await (await client.get("/api/servers")).json())["servers"]
+    row = next(s for s in servers if s["host"] == "alpha")
+    assert row["anydesk_id"] == "123456789"
+    assert row["memo"] == "연세와병원", "사람이 쓴 메모를 덮어썼다"
+
+
+async def test_the_prep_log_is_masked_before_it_leaves_the_server(temp_db, tmp_path, inventory_path, monkeypatch):
+    """스크립트 출력에 AnyDesk 비밀번호가 섞여도 화면으로 나가면 안 된다."""
+    from autodeploy.masking import SecretMasker
+
+    async with connect(temp_db) as db:
+        await create_user(db, USERNAME, PASSWORD)
+    repo = tmp_path / "hub-provisioning"
+    repo.mkdir()
+    app = create_app(
+        db_path=temp_db, hubctl_repo=repo, inventory_path=inventory_path,
+        static_dir=tmp_path / "static", masker=SecretMasker(["ad-secret"]),
+    )
+    c = TestClient(TestServer(app))
+    await c.start_server()
+    try:
+        resp = await c.post("/api/login", json={"username": USERNAME, "password": PASSWORD})
+        c.csrf = (await resp.json())["csrf_token"]
+
+        async def fake_register(**kw):
+            return KeyRegistration(pubkey="k", sleep_masked=True, prep_ran=True,
+                                   prep_log=("설정값: ad-secret",))
+
+        monkeypatch.setattr(api, "register_key", fake_register)
+        body = await (await send(c, "POST", "/api/servers/alpha/ssh-key",
+                                 {"password": "pw"})).json()
+        assert "ad-secret" not in str(body), body
+    finally:
+        await c.close()
+
+
 async def test_ssh_key_registration_opens_the_install_gate(client, monkeypatch):
     async def fake_register(**kw):
         return KeyRegistration(pubkey="ssh-ed25519 AAAA...", sleep_masked=True)

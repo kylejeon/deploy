@@ -107,5 +107,8 @@ CREATE TABLE IF NOT EXISTS server_meta (
   host             TEXT PRIMARY KEY,
   memo             TEXT,        -- 병원명 등. sites.yml 스키마에 없는 웹 전용 값
   key_installed_at TIMESTAMP,   -- F9: 공개키 설치 + 키 인증 검증 성공 시각
+  -- 준비 스크립트가 읽어온 AnyDesk 접속 ID. memo 와 따로 둔다 — 사람이 쓴 메모를
+  -- 덮어쓰지 않고, 다시 등록해도 같은 값이 겹쳐 쌓이지 않게.
+  anydesk_id       TEXT,
   updated_at       TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );

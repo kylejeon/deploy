@@ -243,13 +243,35 @@ def _row_to_job(row: aiosqlite.Row) -> Job:
 # ── v2: server_meta (sites.yml 에 없는 웹 전용 부가정보) ────────────────
 
 async def get_server_meta(db: aiosqlite.Connection) -> dict[str, dict[str, str | None]]:
-    """host -> {"memo": ..., "key_installed_at": ...}"""
-    async with db.execute("SELECT host, memo, key_installed_at FROM server_meta") as cur:
+    """host -> {"memo": ..., "key_installed_at": ..., "anydesk_id": ...}"""
+    async with db.execute(
+        "SELECT host, memo, key_installed_at, anydesk_id FROM server_meta"
+    ) as cur:
         rows = await cur.fetchall()
     return {
-        r["host"]: {"memo": r["memo"], "key_installed_at": r["key_installed_at"]}
+        r["host"]: {
+            "memo": r["memo"],
+            "key_installed_at": r["key_installed_at"],
+            "anydesk_id": r["anydesk_id"],
+        }
         for r in rows
     }
+
+
+async def set_anydesk_id(db: aiosqlite.Connection, host: str, anydesk_id: str) -> None:
+    """준비 스크립트가 읽어온 AnyDesk 접속 ID.
+
+    **메모와 따로 둔다.** 메모는 사람이 쓴 글이라 덮어쓰면 안 되고, 붙여 쓰면
+    다시 등록할 때마다 같은 값이 겹겹이 쌓인다. 화면에서 메모 칸에 나란히 보인다.
+    """
+    await db.execute(
+        """INSERT INTO server_meta (host, anydesk_id, updated_at)
+           VALUES (?, ?, CURRENT_TIMESTAMP)
+           ON CONFLICT(host) DO UPDATE SET
+             anydesk_id=excluded.anydesk_id, updated_at=CURRENT_TIMESTAMP""",
+        (host, anydesk_id),
+    )
+    await db.commit()
 
 
 async def set_server_memo(db: aiosqlite.Connection, host: str, memo: str | None) -> None:

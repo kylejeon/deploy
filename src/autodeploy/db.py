@@ -109,6 +109,9 @@ async def _migrate(db: aiosqlite.Connection) -> None:
     if "profile" not in await _columns(db, "job_hosts"):
         await db.execute("ALTER TABLE job_hosts ADD COLUMN profile TEXT")
 
+    if "anydesk_id" not in await _columns(db, "server_meta"):
+        await db.execute("ALTER TABLE server_meta ADD COLUMN anydesk_id TEXT")
+
     if await _jobs_needs_rebuild(db):
         await _rebuild_jobs(db)
 
