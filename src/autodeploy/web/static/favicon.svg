@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" role="img" aria-label="AutoDeploy">
+  <title>AutoDeploy</title>
+  <style>
+    /* 탭바 테마를 따라간다. 값은 console.css 의 --accent / --accent-ink 와 같다. */
+    .tile { fill: #0B6E75; }
+    .glyph { fill: #FFFFFF; }
+    @media (prefers-color-scheme: dark) {
+      .tile { fill: #3FB5B0; }
+      .glyph { fill: #04201F; }
+    }
+  </style>
+  <rect class="tile" width="32" height="32" rx="7"/>
+  <g class="glyph">
+    <path d="M8 4 L24 4 L16 14 Z"/>
+    <rect x="6.5" y="16.5" width="19" height="4.5" rx="2.25"/>
+    <rect x="6.5" y="23" width="19" height="4.5" rx="2.25"/>
+  </g>
+  <!-- 상태 점. 막대를 파낸 자리를 타일 색으로 덮는다. -->
+  <circle class="tile" cx="10.6" cy="18.75" r="1.75"/>
+  <circle class="tile" cx="10.6" cy="25.25" r="1.75"/>
+</svg>

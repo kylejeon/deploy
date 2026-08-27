@@ -286,6 +286,28 @@ async def test_login_page_is_served_without_a_session(ui_client):
     assert "/static/console.css" in body
 
 
+async def test_favicons_are_served_without_a_session(ui_client):
+    """탭 아이콘은 로그인 전에도 받아야 한다 — 브라우저가 세션 없이 요청한다.
+
+    두 화면이 거는 링크와 실제 파일이 어긋나면 탭이 기본 지구본으로 돌아간다.
+    `pyproject.toml` 의 package-data 에서 빠져도 여기서 잡힌다.
+    """
+    for path, head in (
+        ("/static/favicon.svg", b"<svg"),
+        ("/static/favicon.png", b"\x89PNG"),
+        ("/static/apple-touch-icon.png", b"\x89PNG"),
+    ):
+        resp = await ui_client.get(path)
+        assert resp.status == 200, path
+        assert (await resp.read()).startswith(head), path
+
+    for page in ("/login", "/"):
+        # `/` 는 세션이 없으면 /login 으로 보낸다. 링크는 두 화면 모두에 있어야 한다.
+        body = await (await ui_client.get(page)).text()
+        assert '/static/favicon.svg' in body, page
+        assert '/static/favicon.png' in body, page
+
+
 async def test_stylesheet_is_public(ui_client):
     """로그인 화면도 스타일시트를 받아야 한다."""
     resp = await ui_client.get("/static/console.css")
