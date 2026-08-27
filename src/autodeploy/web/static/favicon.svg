@@ -1,5 +1,8 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" role="img" aria-label="AutoDeploy">
   <title>AutoDeploy</title>
+  <!-- 서버 랙(막대 2단 + 상태 점) 위로 쐐기가 내려앉는 모양 = "서버에 설치".
+       쐐기는 속을 채운다 — 속 빈 V 는 16px 에서 사선 획이 뭉개진다.
+       가장 가는 곳이 4.5 (= 16px 에서 2.25px). -->
   <style>
     /* 탭바 테마를 따라간다. 값은 console.css 의 --accent / --accent-ink 와 같다. */
     .tile { fill: #0B6E75; }
@@ -15,7 +18,7 @@
     <rect x="6.5" y="16.5" width="19" height="4.5" rx="2.25"/>
     <rect x="6.5" y="23" width="19" height="4.5" rx="2.25"/>
   </g>
-  <!-- 상태 점. 막대를 파낸 자리를 타일 색으로 덮는다. -->
+  <!-- 상태 점. 막대와 같은 자리에 타일 색으로 덮어 구멍처럼 보이게 한다. -->
   <circle class="tile" cx="10.6" cy="18.75" r="1.75"/>
   <circle class="tile" cx="10.6" cy="25.25" r="1.75"/>
 </svg>
