@@ -31,9 +31,11 @@ from autodeploy.hubctl import (
     ENVS,
     PATCH_CONFIRM_ANSWER,
     PATCH_CONFIRM_MARKER,
+    SYNC_BRANCH,
     HubctlError,
     HubctlRunner,
     build_command,
+    build_sync_command,
 )
 from autodeploy.inventory import load_inventory
 from autodeploy.masking import SecretMasker
@@ -53,6 +55,20 @@ MAX_DB_LINES = 200_000
 # hubctl 을 쓰지 않는 종류. 여기서 실행하지 않는다.
 _NON_HUBCTL = frozenset({JobKind.SSH_KEY})
 
+
+
+# 서버에 무언가를 새로 얹는 종류. 이들만 시작 직전에 hub-provisioning 을
+# 최신으로 맞추고, 맞추지 못하면 시작하지 않는다.
+#
+# verify(읽기 전용)·clean·rollback 은 뺐다. 복구·점검은 Bitbucket 이 죽었을 때
+# **오히려 더 필요한** 작업이라, 최신화 실패로 막아버리면 안 된다.
+_NEEDS_FRESH_REPO = frozenset({JobKind.INSTALL, JobKind.CONFIGURE, JobKind.PATCH})
+
+
+def _needs_fresh_repo(kind: JobKind, phase: str | None) -> bool:
+    # patch 의 apply 는 이미 만들어 둔 번들을 넣는 단계다. 그 번들은 생성 시점의
+    # playbook 으로 만들어졌으므로 여기서 저장소를 바꾸면 앞뒤가 어긋난다.
+    return kind in _NEEDS_FRESH_REPO and phase != "apply"
 
 
 class JobError(RuntimeError):
@@ -310,6 +326,28 @@ class JobService:
         self.broker.publish(job_id, {"type": "status", "status": "running", "step": step})
         await self._notify_started(job_id, req, hosts, command)
 
+        sink = _LogSink(self, job_id, step, current=first_step)
+        await sink.start()
+
+        # hub-provisioning 을 main 기준으로 맞춘 뒤에 시작한다. 작업은 한 번에
+        # 하나만 돌므로, 여기서 당겨도 도는 중인 다른 작업의 playbook 이 발밑에서
+        # 바뀌는 일은 없다 (작업 생성 시점에 당기면 그럴 수 있다).
+        if _needs_fresh_repo(req.kind, phase):
+            sync_rc = await self._sync_repo(ticket, sink)
+            if sync_rc != 0:
+                await sink.close()
+                if ticket.cancel_requested:
+                    await self._finalize_cancelled(job_id, by=None, reason="최신화 중 취소됨")
+                    return
+                await self._finalize(
+                    job_id, hosts, status=JobStatus.FAILED, exit_code=sync_rc,
+                    error=f"hub-provisioning({SYNC_BRANCH}) 최신화에 실패해 시작하지"
+                          " 않았습니다 — 타겟 서버는 그대로입니다. 위 로그에서 이유를"
+                          " 확인하고 다시 실행하세요.",
+                    recaps={},
+                )
+                return
+
         runner = HubctlRunner(
             self.hubctl_repo,
             become_password=self._become_password,
@@ -323,11 +361,9 @@ class JobService:
         if ticket.cancel_requested:
             # 큐에서 꺼낸 뒤 프로세스가 뜨기 전에 취소가 들어왔다.
             self._runners.pop(job_id, None)
+            await sink.close()
             await self._finalize_cancelled(job_id, by=None, reason="시작 전 취소됨")
             return
-
-        sink = _LogSink(self, job_id, step, current=first_step)
-        await sink.start()
         # 원샷 patch 는 번들을 만든 뒤 `[y/N]` 로 적용 여부를 묻는다. 화면에서
         # 시작 전에 이미 확인을 받았으므로 여기서 y 를 넣는다.
         auto_reply = (
@@ -368,6 +404,38 @@ class JobService:
             error=None if status is not JobStatus.FAILED else f"종료 코드 {result.exit_code}",
             recaps=result.recaps,
         )
+
+    async def _sync_repo(self, ticket: JobTicket, sink: _LogSink) -> int:
+        """hub-provisioning 을 최신으로 맞춘다. 0 이면 성공.
+
+        출력은 작업 로그에 그대로 남는다 — 마지막 줄에 어떤 커밋으로 설치했는지가
+        찍히므로, 나중에 "그때 뭐가 깔렸나" 를 로그만 보고 답할 수 있다.
+        """
+        runner = HubctlRunner(
+            self.hubctl_repo,
+            masker=self._masker,
+            env_overrides=self._hubctl_env,
+            login_shell=self._hubctl_shell,
+        )
+        ticket.bind_cancel(runner.cancel)
+        if ticket.cancel_requested:
+            return -1
+
+        sink.feed("stdout", ParsedLine(
+            f"── hub-provisioning 을 {SYNC_BRANCH} 최신으로 맞추는 중",
+            LineKind.TASK, None, None,
+        ))
+        try:
+            result = await runner.run(build_sync_command(), on_line=sink.feed)
+        except Exception as exc:
+            log.exception("hub-provisioning 최신화 실행 실패")
+            sink.feed("stderr", ParsedLine(
+                f"최신화를 실행할 수 없습니다: {exc}", LineKind.ERROR, None, None,
+            ))
+            return -1
+        if result.cancelled:
+            return -1
+        return result.exit_code
 
     async def _note_auto_apply(self, job_id: int, started_by: str) -> None:
         """적용 확인에 자동으로 답했다는 사실을 기록에 남긴다.

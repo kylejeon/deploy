@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import subprocess
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -136,12 +137,40 @@ sleep 60
 
 
 def write_repo(tmp_path: Path, script: str = FAKE_HUBCTL) -> Path:
+    """가짜 hub-provisioning. **진짜 git 저장소**로 만든다.
+
+    작업은 시작 직전에 `git fetch/checkout/merge` 로 저장소를 main 최신으로
+    맞춘다. 여기가 git 저장소가 아니면 그 단계에서 전부 막혀 실제 실행 경로를
+    검증할 수 없다. origin 을 자기 자신으로 걸어 네트워크 없이 성립시킨다.
+    """
     repo = tmp_path / "hub-provisioning"
     (repo / "bin").mkdir(parents=True)
     hubctl = repo / "bin" / "hubctl"
     hubctl.write_text(script, encoding="utf-8")
     hubctl.chmod(0o755)
+    git_init(repo)
     return repo
+
+
+def break_origin(repo: Path) -> None:
+    """origin 을 없는 경로로 돌려 `git fetch` 가 실패하게 만든다."""
+    subprocess.run(
+        ["git", "-C", str(repo), "remote", "set-url", "origin", "/nonexistent/x.git"],
+        check=True, capture_output=True,
+    )
+
+
+def git_init(repo: Path) -> None:
+    """origin 이 자기 자신인 main 저장소. 최신화 명령이 그대로 성립한다."""
+    who = ["-c", "user.email=t@example.com", "-c", "user.name=t",
+           "-c", "commit.gpgsign=false"]
+    run = lambda *a: subprocess.run(  # noqa: E731
+        ["git", "-C", str(repo), *a], check=True, capture_output=True
+    )
+    run("-c", "init.defaultBranch=main", "init", "-q")
+    run(*who, "add", "-A")
+    run(*who, "commit", "-qm", "init")
+    run("remote", "add", "origin", str(repo))
 
 
 async def make_client(temp_db, tmp_path, *, script: str = FAKE_HUBCTL, env=None, keys_for=("alpha", "beta")):
@@ -1118,4 +1147,88 @@ async def test_a_job_kind_is_never_written_as_a_step(temp_db, tmp_path):
     finally:
         await post(client, f"/api/jobs/{job_id}/cancel")
         await wait_finished(client, job_id)
+        await client.close()
+
+
+# ── 시작 전 hub-provisioning 최신화 ─────────────────────────────────
+
+
+async def test_install_updates_hub_provisioning_first(client):
+    """설치는 컨트롤러 저장소를 main 최신으로 맞춘 뒤에 시작한다.
+
+    마지막 줄에 어떤 커밋으로 깔았는지가 남아야 한다 — 나중에 "그때 뭐가
+    깔렸나" 를 로그만 보고 답할 수 있어야 한다.
+    """
+    job_id = (await (await post(
+        client, "/api/jobs", {"kind": "install", "hosts": ["alpha"], "env": "dev"}
+    )).json())["id"]
+    await wait_finished(client, job_id)
+
+    text = await (await client.get(f"/api/jobs/{job_id}/log")).text()
+    assert "hub-provisioning 을 main 최신으로 맞추는 중" in text
+    assert "hub-provisioning main @" in text, "설치에 쓰인 커밋이 로그에 남아야 한다"
+    # 최신화가 먼저다 — 그러고 나서 hubctl 이 돈다.
+    assert text.index("hub-provisioning main @") < text.index("ARGS:")
+
+
+async def test_install_stops_when_the_repo_cannot_be_updated(temp_db, tmp_path):
+    """최신화에 실패하면 **타겟을 손대기 전에** 멈춘다.
+
+    조용히 옛 버전으로 깔면 "최신으로 유지" 라는 목적 자체가 없어진다.
+    반쯤 된 상태가 안 남으므로 원인을 고치고 다시 실행하면 된다.
+    """
+    client = await make_client(temp_db, tmp_path)
+    try:
+        break_origin(tmp_path / "hub-provisioning")
+        job_id = (await (await post(
+            client, "/api/jobs", {"kind": "install", "hosts": ["alpha"], "env": "dev"}
+        )).json())["id"]
+        job = await wait_finished(client, job_id)
+
+        assert job["status"] == "failed"
+        assert "최신화" in (job["error_message"] or "")
+        text = await (await client.get(f"/api/jobs/{job_id}/log")).text()
+        assert "ARGS:" not in text, "hubctl 이 돌면 안 된다 — 타겟을 건드리기 전에 멈춰야 한다"
+    finally:
+        await client.close()
+
+
+@pytest.mark.parametrize("kind", ["verify", "rollback"])
+async def test_recovery_kinds_run_even_when_the_repo_is_stuck(temp_db, tmp_path, kind):
+    """점검·복구는 Bitbucket 이 죽었을 때 **오히려 더 필요하다.**
+
+    최신화 실패로 이것까지 막으면 정작 손쓸 방법이 없어진다.
+    """
+    client = await make_client(temp_db, tmp_path)
+    try:
+        break_origin(tmp_path / "hub-provisioning")
+        job_id = (await (await post(
+            client, "/api/jobs", {"kind": kind, "hosts": ["alpha"]}
+        )).json())["id"]
+        job = await wait_finished(client, job_id)
+
+        assert job["status"] == "succeeded"
+        text = await (await client.get(f"/api/jobs/{job_id}/log")).text()
+        assert "최신으로 맞추는 중" not in text
+    finally:
+        await client.close()
+
+
+async def test_patch_apply_does_not_update_the_repo(temp_db, tmp_path):
+    """번들은 생성 시점의 playbook 으로 만들어졌다.
+
+    적용 직전에 저장소를 바꾸면 번들과 playbook 의 앞뒤가 어긋난다.
+    """
+    client = await make_client(temp_db, tmp_path)
+    try:
+        break_origin(tmp_path / "hub-provisioning")
+        job_id = await seed_awaiting_patch(temp_db)
+        assert (await post(client, f"/api/jobs/{job_id}/approve")).status == 200
+        job = await wait_finished(client, job_id)
+
+        assert job["status"] == "succeeded"
+        text = await (await client.get(f"/api/jobs/{job_id}/log")).text()
+        assert "ARGS: patch apply -l alpha" in text
+        assert "최신으로 맞추는 중" not in text
+    finally:
         await client.close()

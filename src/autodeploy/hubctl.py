@@ -102,6 +102,9 @@ class HubctlError(RuntimeError):
 
 # 원샷 `hubctl patch` 가 적용 여부를 묻기 **직전에** 내는 줄 (bin/hubctl cmd_patch).
 # 프롬프트 자체는 개행이 없어 못 잡으므로 이 줄을 신호로 쓴다.
+# 설치 직전에 컨트롤러의 hub-provisioning 을 맞출 브랜치.
+SYNC_BRANCH = "main"
+
 PATCH_CONFIRM_MARKER = "이번에 적용될 내용입니다"
 PATCH_CONFIRM_ANSWER = "y\n"
 
@@ -139,6 +142,30 @@ def _passthrough(ref: str | None, ref_type: str | None) -> list[str]:
         # patch_create 가 경고를 띄우므로 지정된 값은 그대로 넘긴다.
         args += ["-e", f"hub_deploy_ref_type={ref_type}"]
     return args
+
+
+def build_sync_command(branch: str = SYNC_BRANCH) -> str:
+    """컨트롤러의 hub-provisioning 을 `origin/<branch>` 에 맞추는 명령.
+
+    `git pull` 한 방으로 하지 않는 이유가 셋 있다.
+
+    - **다른 브랜치에 있으면** pull 이 조용히 그 브랜치를 당긴다. 설치는 main
+      기준이라야 하므로 checkout 을 명시한다.
+    - **로컬 커밋이 얹혀 있으면** pull 이 병합 커밋을 만들어 버린다. `--ff-only`
+      면 대신 멈춘다 — 컨트롤러가 baseline 에서 벗어났다는 뜻이라 사람이 봐야 한다.
+    - fetch·checkout·merge 중 **어디서 깨졌는지**가 로그에 남는다.
+
+    마지막 줄은 어떤 버전으로 설치했는지를 기록으로 남기기 위한 것이다.
+    `inventory/sites.yml` 은 저장소의 `.gitignore` 에 있어 이 명령이 건드리지 않는다.
+    """
+    b = shlex.quote(branch)
+    fmt = shlex.quote(f"hub-provisioning {branch} @ %h  %ad  %s")
+    return (
+        f"git fetch origin {b}"
+        f" && git checkout {b}"
+        f" && git merge --ff-only origin/{b}"
+        f" && git --no-pager log -1 --date=short --format={fmt}"
+    )
 
 
 def build_command(

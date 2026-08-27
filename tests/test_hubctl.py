@@ -15,6 +15,7 @@ from pathlib import Path
 import pytest
 
 from autodeploy.hubctl import (
+    build_sync_command,
     CLEAN_MODES,
     HubctlError,
     HubctlRunner,
@@ -473,3 +474,24 @@ async def test_a_login_shell_does_not_read_zshrc(tmp_path):
     out, _ = await proc.communicate()
     # zshenv=1, zprofile=1, zshrc=0
     assert out.decode().strip() == "110"
+
+
+# ── 저장소 최신화 ───────────────────────────────────────────────────
+
+
+def test_sync_command_pins_the_branch_and_refuses_to_merge():
+    """`git pull` 한 방으로 하지 않는 이유가 명령에 드러나야 한다."""
+    cmd = build_sync_command()
+    assert cmd.index("git fetch origin main") < cmd.index("git checkout main")
+    assert cmd.index("git checkout main") < cmd.index("git merge --ff-only origin/main")
+    # 로컬 커밋이 얹혀 있으면 병합 커밋을 만들지 말고 멈춰야 한다.
+    assert "--ff-only" in cmd
+    assert "git pull" not in cmd
+    # 어떤 커밋으로 설치했는지가 로그에 남아야 한다.
+    assert "log -1" in cmd and "hub-provisioning main @" in cmd
+
+
+def test_sync_command_quotes_the_branch():
+    cmd = build_sync_command("release/1.2")
+    assert "origin/release/1.2" in cmd
+    assert ";" not in cmd and "&&" in cmd
