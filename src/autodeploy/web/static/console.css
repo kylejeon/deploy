@@ -176,7 +176,9 @@ tbody tr:hover{background:var(--surface-2)}
 .step{display:grid; grid-template-columns:24px 1fr auto; gap:10px; align-items:center; padding:8px 9px; border-radius:7px; border:1px solid transparent}
 .step__n{width:24px;height:24px;border-radius:50%; display:grid; place-items:center; font:600 11px/1 "IBM Plex Mono",monospace; background:var(--surface-2); color:var(--ink-3); border:1px solid var(--line-soft)}
 .step__name{font-size:13.5px; color:var(--ink-3)}
-.step__t{font:500 11.5px/1 "IBM Plex Mono",monospace; color:var(--ink-3); font-variant-numeric:tabular-nums}
+.step__t{display:flex; align-items:center; gap:7px; font:500 11.5px/1 "IBM Plex Mono",monospace; color:var(--ink-3); font-variant-numeric:tabular-nums}
+/* 오래 걸리는 단계에만 붙는 예상 비중. 눈에 띄되 단계 이름을 이기지 않는다. */
+.step__share{padding:2px 6px; border-radius:999px; background:var(--surface-2); color:var(--ink-3); font-size:10.5px}
 .step[data-state="done"] .step__n{background:var(--ok-soft); color:var(--ok); border-color:var(--ok-line)}
 .step[data-state="done"] .step__name{color:var(--ink-2)}
 .step[data-state="run"]{background:var(--accent-soft); border-color:var(--accent-line)}

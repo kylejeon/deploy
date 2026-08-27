@@ -381,6 +381,33 @@ SSH 로 닿기만 하면 나머지는 똑같다.
 - 연결이 끊겨도 브라우저가 마지막 줄 번호로 다시 붙어 이어서 받는다.
 - 전체 로그는 `로그 내려받기` 로 받는다.
 
+#### 진행 단계 (설치 9단계)
+
+| 단계 | 하는 일 | 실측 비중 |
+|---|---|---|
+| 사전 점검 | hubctl preflight 게이트 | 1% |
+| 서버 기본 구성 | os_base · tools_aqua · network · time · storage | 12% |
+| k0s 클러스터 | k0s | 1% |
+| 클러스터 스토리지 | cluster_storage · k0s_airgap_export | 1% |
+| **GitOps 적재** | zarf_init · gitops_publish · app_charts_fetch | **42%** |
+| Flux 설치 | flux_install | 2% |
+| **플랫폼 컴포넌트** | platform_secrets · shared_storage · platform_component · otel | **34%** |
+| 연동 | consul_seed · secrets_fetch · temporal_register · flux_wire | 5% |
+| 검증 | verify | 1% |
+
+비중은 실서버 설치 로그(20분, 1627줄)를 다시 흘려 잰 값이다. **균등하지 않다** —
+`GitOps 적재` 와 `플랫폼 컴포넌트` 가 합쳐서 76% 다. 앞 네 단계가 빨리 지나갔다고
+곧 끝나는 것이 아니라서, 오래 걸리는 단계에는 화면에 비중을 함께 표시한다.
+
+단계는 ansible 의 `TASK [<롤> : ...]` 줄에서 읽는다 (`ansible_log.ROLE_STEPS`).
+PLAY 는 install 에 둘(Bootstrap·Configuration)뿐이라 그것만으로는 큰 덩어리
+셋밖에 안 나왔다. **단계는 뒤로 가지 않는다** — 같은 롤이 뒤에서 또 돌아도
+표시가 되돌아가지 않는다.
+
+> 롤 이름은 hub-provisioning 것이라 그쪽에서 롤을 새로 만들거나 이름을 바꾸면
+> 그 구간이 이전 단계에 머문다. 진행이 멈춘 것처럼 보일 뿐 설치는 정상이며,
+> `ROLE_STEPS` 에 이름을 추가하면 된다.
+
 ### 5-3. 취소
 
 `작업 취소` 는 ansible 프로세스 그룹을 종료한다.

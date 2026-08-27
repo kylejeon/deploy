@@ -24,7 +24,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from autodeploy import repository
-from autodeploy.ansible_log import LineKind, ParsedLine, host_status
+from autodeploy.ansible_log import LineKind, ParsedLine, host_status, is_step
 from autodeploy.db import connect
 from autodeploy.hubctl import (
     CLEAN_MODES,
@@ -289,12 +289,16 @@ class JobService:
             phase=phase,
         )
         step = phase or req.kind.value
+        # `install` 같은 종류 이름은 단계 키가 아니다. 그대로 적으면 화면이
+        # 단계 목록에서 못 찾아 끝날 때까지 진행 표시가 멈춰 있다.
+        # 실제 단계는 로그가 알려주므로 그때까지는 비워둔다 (화면: "시작 중").
+        first_step = step if is_step(step) else None
 
         async with connect(self.db_path) as db:
             await db.execute(
                 "UPDATE jobs SET status='running', started_at=COALESCE(started_at,"
                 " CURRENT_TIMESTAMP), current_step=? WHERE id=?",
-                (step, job_id),
+                (first_step, job_id),
             )
             if hosts:
                 await db.execute(
@@ -322,7 +326,7 @@ class JobService:
             await self._finalize_cancelled(job_id, by=None, reason="시작 전 취소됨")
             return
 
-        sink = _LogSink(self, job_id, step)
+        sink = _LogSink(self, job_id, step, current=first_step)
         await sink.start()
         # 원샷 patch 는 번들을 만든 뒤 `[y/N]` 로 적용 여부를 묻는다. 화면에서
         # 시작 전에 이미 확인을 받았으므로 여기서 y 를 넣는다.
@@ -538,12 +542,16 @@ class _LogSink:
     """줄을 모아 DB 에 적재하고, 커밋 뒤에 방송한다."""
 
     __slots__ = ("_service", "_job_id", "_step", "_buffer", "_task", "_closed",
-                 "_db_lines", "_overflow", "_lock", "_newly_failed", "_last_error_host")
+                 "_db_lines", "_overflow", "_lock", "_newly_failed", "_last_error_host",
+                 "_current")
 
-    def __init__(self, service: JobService, job_id: int, step: str) -> None:
+    def __init__(self, service: JobService, job_id: int, step: str,
+                 *, current: str | None = None) -> None:
         self._service = service
         self._job_id = job_id
         self._step = step
+        # DB 의 jobs.current_step 에 마지막으로 적어둔 값. 바뀔 때만 쓴다.
+        self._current = current
         self._buffer: list[_Buffered] = []
         self._task: asyncio.Task | None = None
         self._closed = False
@@ -630,11 +638,32 @@ class _LogSink:
                         )
                 if failed:
                     await self._mark_failed(db, failed)
+                advanced = await self._advance_step(db)
                 await db.commit()
 
             # 커밋한 뒤에 방송한다. 끊긴 구독자가 after= 로 재연결했을 때
             # 방송된 줄이 DB 에 이미 있어야 정확히 이어붙는다.
             self._service.broker.publish_many(self._job_id, events)
+            if advanced:
+                # 화면이 단계 표시를 다시 그리게 한다. 이걸 안 보내면 다음
+                # 폴링(4초)까지 이전 단계에 머문다.
+                self._service.broker.publish(
+                    self._job_id, {"type": "status", "status": "running", "step": advanced}
+                )
+
+    async def _advance_step(self, db) -> str | None:
+        """진행 단계가 넘어갔으면 jobs.current_step 을 갱신한다.
+
+        예전에는 시작할 때 한 번만 적고 끝이라, 50분짜리 설치가 끝날 때까지
+        화면의 단계 표시가 한 칸도 안 움직였다. 파서가 이미 줄마다 단계를
+        붙이고 있으므로 여기서 바뀐 것만 반영한다.
+        """
+        step = self._step
+        if not is_step(step) or step == self._current:
+            return None
+        await db.execute("UPDATE jobs SET current_step=? WHERE id=?", (step, self._job_id))
+        self._current = step
+        return step
 
     async def _mark_failed(self, db, hosts: set[str]) -> None:
         """도는 동안 죽은 호스트를 목록에서 바로 실패로 보이게 한다.

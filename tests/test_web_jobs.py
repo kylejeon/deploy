@@ -113,6 +113,20 @@ echo 'alpha  : ok=2 changed=1 unreachable=0 failed=0 skipped=0 rescued=0 ignored
 exit 0
 """
 
+# 롤을 차례로 흘린 뒤 멈춰 선다. 도는 도중의 진행 단계를 보기 위한 것.
+STEPPING_HUBCTL = r"""#!/bin/bash
+echo 'PLAY [Bootstrap (host -> empty k0s)] ****'
+echo 'TASK [os_base : apt] ****'
+echo 'ok: [alpha]'
+echo 'TASK [k0s : install] ****'
+echo 'ok: [alpha]'
+echo 'PLAY [Configuration (empty k0s -> platform)] ****'
+echo 'TASK [gitops_publish : push] ****'
+echo 'ok: [alpha]'
+touch "$FAKE_STARTED"
+sleep 60
+"""
+
 SLOW_HUBCTL = r"""#!/bin/bash
 echo "ARGS: $*"
 echo 'PLAY [hubctl verify] ****'
@@ -1051,3 +1065,57 @@ async def test_closing_the_sink_mid_flush_keeps_every_line(temp_db, tmp_path, mo
         ) as cur:
             saved = [r["line"] for r in await cur.fetchall()]
     assert saved == ["PLAY RECAP ****", "alpha : ok=2 failed=0", "beta : ok=1 failed=1"]
+
+
+# ── 진행 단계 (도는 동안 갱신) ──────────────────────────────────────
+
+
+async def test_current_step_follows_the_log_while_the_job_runs(temp_db, tmp_path):
+    """단계가 로그를 따라 움직여야 한다.
+
+    예전에는 시작할 때 한 번 `install` 로 적고 끝이었다. `install` 은 단계 키가
+    아니라 화면이 단계 목록에서 못 찾았고, 50분짜리 설치가 끝날 때까지 진행
+    표시가 한 칸도 안 움직였다.
+    """
+    started = tmp_path / "started"
+    client = await make_client(
+        temp_db, tmp_path, script=STEPPING_HUBCTL, env={"FAKE_STARTED": str(started)}
+    )
+    try:
+        job_id = (await (await post(
+            client, "/api/jobs", {"kind": "install", "hosts": ["alpha"], "env": "dev"}
+        )).json())["id"]
+
+        async def wait_step(want):
+            while True:
+                body = await (await client.get(f"/api/jobs/{job_id}")).json()
+                if body["current_step"] == want:
+                    return body
+                await asyncio.sleep(0.05)
+
+        body = await asyncio.wait_for(wait_step("gitops"), 15.0)
+        assert body["status"] == "running", "아직 도는 중이어야 의미가 있다"
+    finally:
+        await post(client, f"/api/jobs/{job_id}/cancel")
+        await wait_finished(client, job_id)
+        await client.close()
+
+
+async def test_a_job_kind_is_never_written_as_a_step(temp_db, tmp_path):
+    """시작 직후에는 단계가 비어 있어야 한다 — `install` 을 적으면 안 된다."""
+    started = tmp_path / "started"
+    client = await make_client(
+        temp_db, tmp_path, script=SLOW_HUBCTL, env={"FAKE_STARTED": str(started)}
+    )
+    try:
+        job_id = (await (await post(
+            client, "/api/jobs", {"kind": "install", "hosts": ["alpha"], "env": "dev"}
+        )).json())["id"]
+        while not started.exists():
+            await asyncio.sleep(0.05)
+        body = await (await client.get(f"/api/jobs/{job_id}")).json()
+        assert body["current_step"] != "install"
+    finally:
+        await post(client, f"/api/jobs/{job_id}/cancel")
+        await wait_finished(client, job_id)
+        await client.close()

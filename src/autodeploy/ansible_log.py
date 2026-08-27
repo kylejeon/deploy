@@ -71,8 +71,11 @@ class LineKind(StrEnum):
 # ansible 은 `PLAY [<name>] ****` 로 출력하므로 접두 일치로 잡는다.
 STEP_MARKERS: tuple[tuple[str, str], ...] = (
     ("━━ Preflight", "preflight"),
-    ("PLAY [Bootstrap (host -> empty k0s)]", "bootstrap"),
-    ("PLAY [Configuration (empty k0s -> platform)]", "configure"),
+    # Bootstrap·Configuration PLAY 는 단계를 바꾸지 않는다. 바로 뒤에 오는 롤이
+    # 훨씬 정확하고, 여기서 한 번 바꾸면 롤이 잡히기 전까지 화면이 엉뚱한 단계를
+    # 가리킨다. 대신 시작 표시(step_started)를 위해 목록에는 남겨둔다.
+    ("PLAY [Bootstrap (host -> empty k0s)]", "preflight"),
+    ("PLAY [Configuration (empty k0s -> platform)]", "cluster"),
     ("PLAY [hubctl verify]", "verify"),
     ("PLAY [패치 번들 생성 (patch_create)]", "create"),
     ("PLAY [패치 번들 적용 (patch_apply)]", "apply"),
@@ -80,15 +83,66 @@ STEP_MARKERS: tuple[tuple[str, str], ...] = (
     ("PLAY [Clean (초기화 — reset|uninstall)]", "clean"),
 )
 
+# PLAY 는 install 에 둘(Bootstrap·Configuration)뿐이라 50분짜리 설치가 큰 덩어리
+# 셋으로만 보였다. 그 아래 **롤**을 단계로 쓴다 — `TASK [<롤> : ...]` 로 나온다.
+#
+# 묶음은 **실제 실행 순서 그대로**여야 한다. 순서를 건너뛰어 묶으면 화면의 단계가
+# 뒤로 돌아간다 (예: shared_storage 는 platform_secrets 뒤에 온다).
+# 아래 순서는 실제 설치 로그(job #33)에서 확인한 것이다.
+ROLE_STEPS: dict[str, str] = {
+    # ── bootstrap.yml
+    "preflight": "preflight",
+    "os_base": "os", "tools_aqua": "os", "network": "os", "time": "os", "storage": "os",
+    "k0s": "k0s",
+    # ── cluster.yml
+    "cluster_storage": "cluster", "k0s_airgap_export": "cluster",
+    "zarf_init": "gitops", "gitops_publish": "gitops", "app_charts_fetch": "gitops",
+    "flux_install": "flux",
+    "platform_secrets": "platform", "shared_storage": "platform",
+    "platform_component": "platform", "otel_instrumentation": "platform",
+    "consul_seed": "wire", "secrets_fetch": "wire",
+    "temporal_register": "wire", "flux_wire": "wire",
+    "verify": "verify",
+}
+
+# `TASK [flux_install : Install Flux]` / `TASK [flux_install]` 에서 롤 이름만 뽑는다.
+_TASK_ROLE_RE = re.compile(r"^TASK \[(?P<role>[^\]:]+?)\s*(?::[^\]]*)?\]")
+
+# 단계는 **뒤로 가지 않는다.** 같은 롤이 두 곳에서 돌거나 묶음 순서가 어긋나도
+# 화면의 진행 표시가 되돌아가면 사람이 "다시 하는 건가" 로 읽는다.
+STEP_ORDER: tuple[str, ...] = (
+    "preflight", "os", "k0s", "cluster", "gitops", "flux", "platform", "wire",
+    "verify", "create", "apply", "rollback", "clean",
+)
+_STEP_RANK = {key: i for i, key in enumerate(STEP_ORDER)}
+
+
+def is_step(key: str | None) -> bool:
+    """로그에서 실제로 나오는 단계 키인가.
+
+    작업 종류 이름(`install`)은 단계가 아니다. 그걸 current_step 에 적어두면
+    화면이 단계 목록에서 못 찾아 진행 표시가 통째로 멈춘다 — 실제로 그랬다.
+    """
+    return key in _STEP_RANK
+
 STEP_LABELS: dict[str, str] = {
     "preflight": "사전 점검",
-    "bootstrap": "부트스트랩",
-    "configure": "플랫폼 구성",
+    "os": "서버 기본 구성",
+    "k0s": "k0s 클러스터",
+    "cluster": "클러스터 스토리지",
+    "gitops": "GitOps 적재",
+    "flux": "Flux 설치",
+    "platform": "플랫폼 컴포넌트",
+    "wire": "연동 (Consul·Vault·Temporal)",
     "verify": "검증",
     "create": "번들 생성",
     "apply": "번들 적용",
     "rollback": "롤백",
     "clean": "초기화",
+    # 옛 기록에 남아 있는 값. 지난 작업 화면이 키를 그대로 노출하지 않게 남겨둔다.
+    "bootstrap": "부트스트랩",
+    "configure": "플랫폼 구성",
+    "install": "설치",
 }
 
 # `ok: [host]`, `ok: [host -> delegate]`, `fatal: [host]: FAILED! =>`
@@ -211,11 +265,23 @@ class AnsibleLogParser:
     def _advance_step(self, line: str) -> bool:
         for marker, key in STEP_MARKERS:
             if line.startswith(marker):
-                if self.step == key:
-                    return False
-                self.step = key
-                return True
+                return self._set_step(key)
+        role = _TASK_ROLE_RE.match(line)
+        if role is not None:
+            key = ROLE_STEPS.get(role.group("role").strip())
+            if key is not None:
+                return self._set_step(key)
         return False
+
+    def _set_step(self, key: str) -> bool:
+        """앞으로만 간다. 뒤로 가는 전환은 무시한다 (STEP_ORDER)."""
+        if self.step == key:
+            return False
+        here, there = _STEP_RANK.get(self.step), _STEP_RANK.get(key)
+        if here is not None and there is not None and there < here:
+            return False
+        self.step = key
+        return True
 
     def _close_continuation(self) -> None:
         self._cont_host = None

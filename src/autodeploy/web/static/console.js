@@ -15,11 +15,34 @@ const PROFILES = {
 };
 const FORKS = 5; /* ansible 기본 forks — 6대 이상은 5대씩 나눠 돈다 */
 
-/* 서버가 로그에서 뽑는 단계 키와 1:1. 없는 단계를 그리면 영원히 안 채워진다. */
+/* 서버가 로그에서 뽑는 단계 키와 1:1 (`ansible_log.ROLE_STEPS`).
+   없는 단계를 그리면 영원히 안 채워진다.
+
+   세 번째 값은 **실측 비중(%)** 이다 — 실제 설치 로그(#33, 20분)를 파서에 다시
+   흘려 잰 값이다. 균등하지 않다는 것을 숨기지 않는다: gitops 와 platform 이
+   합쳐서 76% 라, 나머지가 빨리 지나간다고 곧 끝나는 게 아니다. */
 const PHASES = {
-  install: [["preflight", "preflight 게이트"], ["bootstrap", "host → k0s (bootstrap.yml)"], ["configure", "플랫폼 · 앱 (cluster.yml)"]],
-  configure: [["preflight", "preflight 게이트"], ["configure", "플랫폼 · 앱 (cluster.yml)"]],
-  verify: [["verify", "verify role"]],
+  install: [
+    ["preflight", "사전 점검", 1],
+    ["os", "서버 기본 구성", 12],
+    ["k0s", "k0s 클러스터", 1],
+    ["cluster", "클러스터 스토리지", 1],
+    ["gitops", "GitOps 적재", 42],
+    ["flux", "Flux 설치", 2],
+    ["platform", "플랫폼 컴포넌트", 34],
+    ["wire", "연동 (Consul·Vault·Temporal)", 5],
+    ["verify", "검증", 1],
+  ],
+  configure: [
+    ["preflight", "사전 점검"],
+    ["cluster", "클러스터 스토리지"],
+    ["gitops", "GitOps 적재"],
+    ["flux", "Flux 설치"],
+    ["platform", "플랫폼 컴포넌트"],
+    ["wire", "연동 (Consul·Vault·Temporal)"],
+    ["verify", "검증"],
+  ],
+  verify: [["verify", "검증"]],
   patch: [["create", "번들 생성 (patch-create.yml)"], ["apply", "번들 적용 (patch-apply.yml)"]],
   rollback: [["rollback", "직전 패치 복귀 (patch-rollback.yml)"]],
   clean: [["clean", "초기화 (clean.yml)"]],
@@ -429,7 +452,7 @@ function renderJob() {
   const idx = phases.findIndex(([k]) => k === job.current_step);
   const finished = !ACTIVE.includes(job.status);
 
-  const steps = phases.map(([key, label], i) => {
+  const steps = phases.map(([key, label, share_ = 0], i) => {
     let s = "wait";
     if (job.status === "cancelled" && i === idx) s = "cancel";
     else if (job.status === "failed" && i === idx) s = "fail";
@@ -437,8 +460,11 @@ function renderJob() {
     else if (i === idx) s = job.status === "awaiting" ? "done" : "run";
     const mark = s === "done" ? "✓" : s === "fail" ? "✕" : s === "cancel" ? "–" : String(i + 1);
     const spin = s === "run" ? `<span class="spin" aria-hidden="true"></span>` : "";
+    /* 오래 걸리는 단계를 미리 알려준다. 균등하지 않아서, 이게 없으면 gitops 에서
+       10분 멈춰 있는 것이 고장으로 보인다. */
+    const share = share_ >= 10 ? `<span class="step__share">${share_}%</span>` : "";
     return `<div class="step" data-state="${s}"><span class="step__n">${mark}</span>
-      <span class="step__name">${esc(label)}</span><span class="step__t">${spin}</span></div>`;
+      <span class="step__name">${esc(label)}</span><span class="step__t">${share}${spin}</span></div>`;
   }).join("");
 
   const hosts = (job.hosts || []).map((h) => {

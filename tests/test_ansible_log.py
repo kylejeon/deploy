@@ -13,6 +13,7 @@ from autodeploy.ansible_log import (
     HostRecap,
     LineKind,
     host_status,
+    is_step,
 )
 
 REAL_OUTPUT = """
@@ -198,20 +199,88 @@ def test_hubctl_helper_prefixes(line, expected):
 
 
 def test_steps_advance_by_play_name(real):
+    """install 의 두 PLAY 는 단계 이름을 갖지 않는다 — 그 아래 롤이 정한다.
+
+    PLAY 는 Bootstrap·Configuration 둘뿐이라 50분짜리 설치가 큰 덩어리 셋으로만
+    보였다. PLAY 는 그 구간의 **첫 단계**로만 밀어두고, 실제 진행은 롤이 끈다.
+    """
     parser, lines = real
-    by_text = {p.text.split(" ")[0] + p.text[:30]: p.step for p in lines}
-    del by_text
     ok_alpha_first = next(p for p in lines if p.text == "ok: [alpha]")
-    assert ok_alpha_first.step == "bootstrap"
+    assert ok_alpha_first.step == "preflight"
     second_play = next(p for p in lines if p.text.startswith("TASK [second play task]"))
-    assert second_play.step == "configure"
-    assert parser.step == "configure"
+    assert second_play.step == "cluster"
+    assert parser.step == "cluster"
 
 
 def test_step_started_only_on_boundary(real):
     _, lines = real
     started = [p.step for p in lines if p.step_started]
-    assert started == ["bootstrap", "configure"]
+    assert started == ["preflight", "cluster"]
+
+
+# ── 롤 단위 단계 (실제 설치 로그 기준) ──────────────────────────────
+
+INSTALL_ROLES = (
+    "preflight", "os_base", "tools_aqua", "network", "time", "storage", "k0s",
+    "cluster_storage", "k0s_airgap_export", "zarf_init", "gitops_publish",
+    "app_charts_fetch", "flux_install", "platform_secrets", "shared_storage",
+    "platform_component", "otel_instrumentation", "consul_seed", "secrets_fetch",
+    "temporal_register", "flux_wire", "verify",
+)
+
+
+def test_install_roles_walk_the_nine_steps_in_order():
+    """실제 설치가 내는 롤 순서를 그대로 흘리면 9단계가 순서대로 나와야 한다.
+
+    롤 이름과 순서는 실서버 설치 로그(job #33, 1627줄)에서 확인한 것이다.
+    묶음이 순서를 건너뛰면 화면의 단계가 뒤로 돌아간다.
+    """
+    parser = AnsibleLogParser()
+    seen = []
+    for role in INSTALL_ROLES:
+        step = parser.feed(f"TASK [{role} : 무언가] ***").step
+        if not seen or seen[-1] != step:
+            seen.append(step)
+    assert seen == ["preflight", "os", "k0s", "cluster", "gitops", "flux",
+                    "platform", "wire", "verify"]
+
+
+def test_a_role_out_of_order_never_walks_the_step_back():
+    """같은 롤이 뒤에서 또 돌아도 진행 표시가 되돌아가면 안 된다.
+
+    되돌아가면 사람이 "처음부터 다시 하나" 로 읽는다.
+    """
+    parser = AnsibleLogParser()
+    parser.feed("TASK [platform_component : 설치] ***")
+    assert parser.step == "platform"
+    parser.feed("TASK [cluster_storage : 뒷정리] ***")
+    assert parser.step == "platform"
+
+
+def test_task_without_a_known_role_keeps_the_step():
+    """설명문 TASK(`TASK [한글 설명]`)는 단계를 흔들지 않는다."""
+    parser = AnsibleLogParser()
+    parser.feed("TASK [gitops_publish : push] ***")
+    parsed = parser.feed("TASK [앱 차트 fetch-once — 로컬 반입] ***")
+    assert parsed.step == "gitops"
+    assert parsed.step_started is False
+
+
+def test_role_name_without_a_task_suffix_is_matched():
+    parser = AnsibleLogParser()
+    assert parser.feed("TASK [flux_install] ***").step == "flux"
+
+
+def test_a_job_kind_is_not_a_step():
+    """`install` 은 종류지 단계가 아니다.
+
+    이걸 current_step 에 적어두는 바람에 화면이 단계 목록에서 못 찾아
+    진행 표시가 통째로 멈춰 있었다.
+    """
+    assert is_step("install") is False
+    assert is_step("bootstrap") is False   # 옛 키 — 표시용으로만 남겼다
+    assert is_step(None) is False
+    assert is_step("gitops") is True
 
 
 def test_hubctl_preflight_header_sets_step():
