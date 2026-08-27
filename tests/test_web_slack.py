@@ -286,19 +286,25 @@ async def test_login_page_is_served_without_a_session(ui_client):
     assert "/static/console.css" in body
 
 
-async def test_favicon_is_served_without_a_session(ui_client):
+FAVICONS = ("favicon-32.png", "favicon-16.png", "apple-touch-icon.png")
+
+
+async def test_favicons_are_served_without_a_session(ui_client):
     """탭 아이콘은 로그인 전에도 받아야 한다 — 브라우저가 세션 없이 요청한다.
 
-    SVG 하나만 둔다. Safari 는 26.0 부터, 나머지는 2020년부터 지원하고
-    이 컨트롤러는 Safari 26 이다. PNG 대체본은 쓸 곳이 없다.
+    링크와 실제 파일이 어긋나면 탭이 기본 지구본으로 돌아간다.
+    `pyproject.toml` 의 package-data(`web/static/*`)에서 빠져도 여기서 잡힌다.
     """
-    resp = await ui_client.get("/static/favicon.svg")
-    assert resp.status == 200
-    assert (await resp.read()).lstrip().startswith(b"<svg")
+    for name in FAVICONS:
+        resp = await ui_client.get(f"/static/{name}")
+        assert resp.status == 200, name
+        assert (await resp.read()).startswith(b"\x89PNG"), name
 
     for page in ("/login", "/"):
         # `/` 는 세션이 없으면 /login 으로 보낸다. 링크는 두 화면 모두에 있어야 한다.
-        assert "/static/favicon.svg" in await (await ui_client.get(page)).text(), page
+        body = await (await ui_client.get(page)).text()
+        for name in FAVICONS:
+            assert f"/static/{name}" in body, f"{page} / {name}"
 
 
 async def test_stylesheet_is_public(ui_client):
