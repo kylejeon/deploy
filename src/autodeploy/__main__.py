@@ -182,10 +182,22 @@ async def _run() -> int:
     if bot is None and web_runner is None:
         # 둘 다 없으면 이 프로세스가 할 일이 없다. 조용히 떠 있으면 KeepAlive 가
         # 살려두는 바람에 "돌고 있는데 아무 반응이 없는" 상태로 오래 남는다.
-        log.error(
-            "Slack 봇도 웹 콘솔도 켜져 있지 않습니다. "
-            "SLACK_ENABLED 나 WEB_ENABLED 중 하나는 true 여야 합니다."
-        )
+        if settings.web.enabled:
+            # 켜라고 했는데 못 떴다 = 설정이 아니라 기동이 실패한 것이다.
+            # WEB_HOST 를 특정 IP(예: tailnet 주소)로 묶어두면 그 인터페이스가
+            # 아직 안 올라온 부팅 직후에 여기로 온다. 종료 코드로 알리면
+            # launchd KeepAlive 가 ThrottleInterval 뒤에 다시 띄운다.
+            log.error(
+                "웹 콘솔(%s:%d)이 뜨지 못했습니다 — 위의 기동 실패 로그를 보세요."
+                " WEB_HOST 를 특정 IP 로 묶었다면 그 인터페이스가 아직 없을 수 있습니다"
+                " (재시도합니다).",
+                settings.web.host, settings.web.port,
+            )
+        else:
+            log.error(
+                "Slack 봇도 웹 콘솔도 켜져 있지 않습니다. "
+                "SLACK_ENABLED 나 WEB_ENABLED 중 하나는 true 여야 합니다."
+            )
         return 2
 
     loop = asyncio.get_running_loop()

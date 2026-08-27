@@ -462,7 +462,9 @@ function renderJob() {
     const spin = s === "run" ? `<span class="spin" aria-hidden="true"></span>` : "";
     /* 오래 걸리는 단계를 미리 알려준다. 균등하지 않아서, 이게 없으면 gitops 에서
        10분 멈춰 있는 것이 고장으로 보인다. */
-    const share = share_ >= 10 ? `<span class="step__share">${share_}%</span>` : "";
+    const share = share_ >= 10
+      ? `<span class="step__share" title="이 단계가 전체 설치 시간에서 차지하는 비중입니다 (실측). 진행률이 아닙니다.">${share_}%</span>`
+      : "";
     return `<div class="step" data-state="${s}"><span class="step__n">${mark}</span>
       <span class="step__name">${esc(label)}</span><span class="step__t">${share}${spin}</span></div>`;
   }).join("");
@@ -536,7 +538,9 @@ function renderJob() {
       </div></div>
       <div class="split">
         <div class="stack gap-12">
-          <div class="card"><div class="card__head"><h2>진행 단계</h2></div><div class="steps">${steps}</div>
+          <div class="card"><div class="card__head"><h2>진행 단계</h2>${
+            phases.some(([, , w = 0]) => w >= 10) ? `<span class="lbl push">소요 비중</span>` : ""
+          }</div><div class="steps">${steps}</div>
             ${hosts ? `<div class="hosts">${hosts}</div>` : ""}</div>
         </div>
         <div class="stack gap-12">
