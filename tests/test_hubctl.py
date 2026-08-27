@@ -94,10 +94,29 @@ def test_patch_apply_never_passes_ref():
     assert "hub_deploy_ref" not in cmd
 
 
-def test_patch_requires_explicit_phase():
-    """phase 없는 원샷은 [y/N] 프롬프트를 띄워 봇이 답할 수 없다."""
+def test_patch_one_shot_limits_to_the_chosen_servers():
+    """콘솔이 쓰는 형태. 원샷은 타겟에서 돌므로 `-l` 을 받는다.
+
+    `patch create` 와 달리 base 가 **지금 깔려 있는 release-config** 라
+    온라인 사이트에는 이쪽이 맞다 (patch-create.yml 헤더).
+    """
+    cmd = build_command(JobKind.PATCH, hosts=["a", "b"], ref="v1.0.2", ref_type="tag")
+    assert cmd == (
+        "./bin/hubctl patch -l a,b -- -e hub_deploy_ref=v1.0.2 -e hub_deploy_ref_type=tag"
+    )
+    assert " create " not in cmd and " apply " not in cmd
+
+
+def test_patch_one_shot_requires_hosts_and_ref():
+    with pytest.raises(HubctlError, match="호스트"):
+        build_command(JobKind.PATCH, ref="v1")
+    with pytest.raises(HubctlError, match="ref"):
+        build_command(JobKind.PATCH, hosts=["a"])
+
+
+def test_patch_rejects_an_unknown_phase():
     with pytest.raises(HubctlError, match="phase"):
-        build_command(JobKind.PATCH, hosts=["a"], ref="v1")
+        build_command(JobKind.PATCH, hosts=["a"], ref="v1", phase="rollback")
 
 
 @pytest.mark.parametrize(

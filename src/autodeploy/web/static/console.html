@@ -101,7 +101,7 @@
       <div class="topline"><h1>패치</h1><span class="chip" id="patchChip">hubctl patch</span></div>
       <form class="form-grid" id="patchForm">
         <div class="card"><div class="card__body stack gap-20">
-          <div class="field"><span class="lbl">적용 대상 서버 <span class="dim" style="text-transform:none; letter-spacing:0">— 번들은 컨트롤러에서 만들고, 승인해야 이 서버들에 반영됩니다</span></span>
+          <div class="field"><span class="lbl">적용 대상 서버 <span class="dim" style="text-transform:none; letter-spacing:0">— 이 서버들에서 번들을 만들고 곧바로 적용합니다 (hubctl patch -l a,b)</span></span>
             <div class="pickall"><label class="row gap-8" style="gap:7px; cursor:pointer"><input type="checkbox" id="pAll"> <span style="font-size:13px">전체 선택</span></label>
               <span class="count push" id="pCount">0대 선택</span></div>
             <div class="servers" id="pSrvList"></div></div>
@@ -114,7 +114,7 @@
           <div><span class="lbl">실행 단계</span><div class="plan" id="patchPlan" style="margin-top:9px"></div></div>
           <div><span class="lbl">실행 명령</span><div class="cmd" id="patchCmd" style="margin-top:9px"></div></div>
           <div id="patchWarn"></div>
-          <button class="btn btn--primary btn--block" type="submit" id="patchSubmit">번들 만들기</button>
+          <button class="btn btn--primary btn--block" type="submit" id="patchSubmit">패치 적용</button>
         </aside>
       </form>
     </section>

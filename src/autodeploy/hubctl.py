@@ -15,12 +15,34 @@ exit 2 로 죽는다. `-y` 도 명시적으로 거부한다(파괴적 작업이�
 그것을 그대로 쓴다. 웹이 이미 호스트명 타이핑 확인을 받고, 그 값을 `confirm=` 으로
 넘긴다 — 확인 절차가 사라지는 게 아니라 터미널에서 웹으로 옮겨올 뿐이다.
 
-## 왜 patch 를 create / apply 로 쪼개는가
+## 왜 patch 는 원샷(`hubctl patch`)을 쓰는가
 
-`cmd_patch()` 의 기본 분기는 생성 후 `[y/N]` 프롬프트를 띄운다. 봇에겐 답할 입이
-없다. `patch create` → (웹 승인) → `patch apply` 2단계로 나눈다.
-`patch apply` 에는 `-e hub_deploy_ref` 를 넘기지 않는다 —
-`roles/patch_apply/tasks/main.yml:180` 이 번들 메타를 SoT 로 보고 불일치하면 죽인다.
+`patch create` 와 원샷은 **같은 일을 하지 않는다.** `patch-create.yml` 헤더가
+그렇게 적고 있다.
+
+| | 원샷 `hubctl patch` | `hubctl patch create` |
+|---|---|---|
+| 어디서 | 타겟에서 (become 필요) | 컨트롤러 로컬 |
+| base | 지금 깔려 있는 live release-config | `-e patch_base=<ref>` 로 준 git ref |
+| 용도 | 온라인 | 폐쇄망 반입용 |
+
+우리 병원들은 온라인이므로 원샷이 맞다. `patch create` 는 `-e
+patch_create_hosts=localhost` 를 **run_playbook 인자로 하드코딩**하는데
+(`bin/hubctl` cmd_patch), 그것이 passthrough 뒤에 붙어 나중 `-e` 가 이기므로
+밖에서 덮을 수 없다 — 원샷 말고는 온라인 create 로 가는 길이 없다.
+
+create/apply 2단계 조립도 남겨둔다. 폐쇄망 반입은 여전히 그 길이고,
+`approve()` 가 `phase="apply"` 로 쓴다. `patch apply` 에는 `-e hub_deploy_ref`
+를 넘기지 않는다 — `roles/patch_apply/tasks/main.yml:180` 이 번들 메타를 SoT 로
+보고 불일치하면 죽인다.
+
+## 원샷 중간의 `[y/N]`
+
+원샷은 create 를 끝내고 `read -r` 로 적용 여부를 묻는다. 콘솔은 시작 전에 사람이
+확인한 뒤 실행하므로 여기에 `y` 를 자동으로 넣는다 (`PATCH_CONFIRM_MARKER`).
+
+프롬프트 줄(`... [y/N] `) 자체는 **개행이 없어** 줄 단위 펌프에 잡히지 않는다.
+개행으로 끝나는 바로 앞 줄을 신호로 쓴다.
 
 ## become 비밀번호
 
@@ -77,6 +99,12 @@ class HubctlError(RuntimeError):
 
 
 # ── 명령 조립 ────────────────────────────────────────────────────────
+
+# 원샷 `hubctl patch` 가 적용 여부를 묻기 **직전에** 내는 줄 (bin/hubctl cmd_patch).
+# 프롬프트 자체는 개행이 없어 못 잡으므로 이 줄을 신호로 쓴다.
+PATCH_CONFIRM_MARKER = "이번에 적용될 내용입니다"
+PATCH_CONFIRM_ANSWER = "y\n"
+
 
 def _check_hosts(hosts: Sequence[str], *, required: bool = True) -> tuple[str, ...]:
     clean = tuple(h.strip() for h in hosts if h and h.strip())
@@ -149,7 +177,14 @@ def build_command(
         argv = ["./bin/hubctl", "rollback", "-l", ",".join(targets)]
 
     elif kind is JobKind.PATCH:
-        if phase == "create":
+        if phase is None:
+            # 원샷 — 타겟에서 번들을 만들고(base=live release-config) 그대로 적용한다.
+            targets = _check_hosts(hosts)
+            if not ref:
+                raise HubctlError("patch 에는 ref 가 필요합니다")
+            argv = ["./bin/hubctl", "patch", "-l", ",".join(targets)]
+            argv += _passthrough(ref, ref_type)
+        elif phase == "create":
             # hubctl 이 `patch create` 에 -l 을 거부한다 — 컨트롤러 로컬 실행이다.
             if _check_hosts(hosts, required=False):
                 raise HubctlError("patch create 는 -l 을 받지 않습니다 (컨트롤러 로컬 실행)")
@@ -161,7 +196,9 @@ def build_command(
             # ref 를 넘기지 않는다 — 번들 메타가 SoT 라 불일치 시 playbook 이 죽는다.
             argv = ["./bin/hubctl", "patch", "apply", "-l", ",".join(targets)]
         else:
-            raise HubctlError(f"patch 는 phase='create' 또는 'apply' 가 필요합니다 (받은 값: {phase!r})")
+            raise HubctlError(
+                f"patch 의 phase 는 None(원샷)·'create'·'apply' 중 하나여야 합니다 (받은 값: {phase!r})"
+            )
 
     elif kind is JobKind.CLEAN:
         targets = _check_hosts(hosts)
@@ -254,7 +291,20 @@ class HubctlRunner:
 
     # -- 실행 --
 
-    async def run(self, command: str, *, on_line: LineHandler | None = None) -> RunResult:
+    async def run(
+        self,
+        command: str,
+        *,
+        on_line: LineHandler | None = None,
+        auto_reply: tuple[str, str] | None = None,
+        on_reply=None,
+    ) -> RunResult:
+        """`auto_reply=(마커, 응답)` 이면 마커가 든 줄을 처음 볼 때 응답을 stdin 에 쓴다.
+
+        원샷 `hubctl patch` 가 중간에 `read -r` 로 묻는 것을 답하기 위한 것이다.
+        **한 번만** 쓴다 — 같은 문구가 또 나와도 다시 답하지 않는다.
+        `on_reply()` 는 실제로 쓴 뒤에 불린다 (기록용).
+        """
         if self._proc is not None:
             raise HubctlError("HubctlRunner 는 재사용할 수 없습니다 (실행 1회당 1개)")
         if not self._repo_path.is_dir():
@@ -272,6 +322,10 @@ class HubctlRunner:
                 *self._login_shell,
                 command,
                 cwd=str(self._repo_path),
+                # stdin 을 열어둔다. 원샷 patch 는 여기로 답을 받는다. 파이프를
+                # 안 열면 자식이 부모의 stdin(launchd 에선 /dev/null)을 물려받아
+                # `read` 가 즉시 EOF 를 받고 "사용자 취소" 로 끝난다.
+                stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 env=self._child_env(pw_file),
@@ -280,17 +334,32 @@ class HubctlRunner:
                 start_new_session=True,
             )
             self._proc = proc
+            if auto_reply is None:
+                # 답할 것이 없으면 곧바로 닫는다. 열어둔 채 두면 stdin 을 읽는
+                # 명령(`hubctl clean` 의 호스트명 확인 등)이 영영 기다린다 —
+                # 예전처럼 EOF 를 받고 제 안내문과 함께 죽는 편이 낫다.
+                self._close_stdin()
             if self._cancelled:
                 # `cancel()` 이 기동과 겹쳐 들어왔다면 그때는 self._proc 이 None 이라
                 # 신호를 못 보냈다. 여기서 다시 확인해 놓친 취소를 집행한다.
                 await self.cancel()
 
+            pending_reply = auto_reply
+
             async def pump(stream: asyncio.StreamReader, name: str) -> None:
-                nonlocal count
+                nonlocal count, pending_reply
                 async for raw in _iter_lines(stream):
                     text = self._masker(raw.decode("utf-8", errors="replace"))
                     parsed = self.parser.feed(text)
                     count += 1
+                    if pending_reply is not None and pending_reply[0] in text:
+                        answer = pending_reply[1]
+                        pending_reply = None   # 한 번만 답한다
+                        await self._reply(answer)
+                        if on_reply is not None:
+                            result = on_reply(answer)
+                            if asyncio.iscoroutine(result):
+                                await result
                     if parsed.step_started and parsed.step and parsed.step not in steps:
                         steps.append(parsed.step)
                     if on_line is not None:
@@ -303,12 +372,16 @@ class HubctlRunner:
                 pump(proc.stdout, "stdout"),
                 pump(proc.stderr, "stderr"),
             )
+            # 자식이 stdout·stderr 를 닫았다 = 끝나는 중이다. 여기서 stdin 도
+            # 닫는다 — 아직 무언가를 기다리고 있다면 EOF 를 보고 빠져나가라는 뜻.
+            self._close_stdin()
             exit_code = await proc.wait()
         finally:
             if self._escalation is not None:
                 self._escalation.cancel()
                 with suppress(asyncio.CancelledError):
                     await self._escalation
+            self._close_stdin()
             _shred(pw_file)
 
         return RunResult(
@@ -347,6 +420,27 @@ class HubctlRunner:
             _signal_group(pgid, signal.SIGKILL)
 
     # -- 환경 --
+
+    async def _reply(self, answer: str) -> None:
+        """자식의 stdin 에 한 줄 쓴다. 이미 닫혔으면 조용히 넘어간다."""
+        proc = self._proc
+        if proc is None or proc.stdin is None or proc.stdin.is_closing():
+            return
+        try:
+            proc.stdin.write(answer.encode())
+            await proc.stdin.drain()
+        except (BrokenPipeError, ConnectionResetError, RuntimeError):
+            # 답하려는 순간 자식이 죽었다. 로그로 남기지 않는다 — 종료 코드가 말한다.
+            log.debug("stdin 응답 실패 (자식이 이미 종료)")
+        # 한 번 답하면 더 받을 것이 없다. 닫아서 그 뒤의 read 는 EOF 를 보게 한다.
+        self._close_stdin()
+
+    def _close_stdin(self) -> None:
+        proc = self._proc
+        if proc is None or proc.stdin is None or proc.stdin.is_closing():
+            return
+        with suppress(BrokenPipeError, ConnectionResetError, RuntimeError):
+            proc.stdin.close()
 
     def _child_env(self, pw_file: Path | None) -> dict[str, str]:
         env = dict(os.environ)

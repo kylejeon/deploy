@@ -218,11 +218,22 @@ async def test_permalink_is_exposed_to_the_console(client):
 
 
 async def test_patch_posts_start_once_across_create_and_apply(client, temp_db):
-    """create → 승인 → apply 는 한 작업이다. 스레드를 두 번 만들면 안 된다."""
-    job_id = await create_job(client, {"kind": "patch", "ref": "v1.0.2", "hosts": ["alpha"]})
-    job = await wait_finished(client, job_id)
-    assert job["status"] == "awaiting"
-    assert len(client.slack.posts) == 1, "승인 대기는 종료가 아니라 종료 메시지가 없어야 한다"
+    """승인 대기 → apply 는 한 작업이다. 스레드를 두 번 만들면 안 된다.
+
+    콘솔의 patch 는 이제 원샷이라 이 상태로 가는 길이 화면에는 없다. 폐쇄망
+    반입(create → 승인 → apply)에서는 여전히 한 작업이므로 여기서 검증한다.
+    """
+    async with connect(temp_db) as db:
+        cur = await db.execute(
+            "INSERT INTO jobs (kind, status, ref, started_by)"
+            " VALUES ('patch','awaiting','v1.0.2','web:yonghyuk')"
+        )
+        job_id = int(cur.lastrowid)
+        await db.execute(
+            "INSERT INTO job_hosts (job_id, host, status) VALUES (?, 'alpha', 'queued')", (job_id,)
+        )
+        await db.commit()
+    assert client.slack.posts == []
 
     await client.post(f"/api/jobs/{job_id}/approve", headers={CSRF_HEADER: client.csrf})
     await wait_finished(client, job_id)

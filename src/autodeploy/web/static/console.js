@@ -1175,10 +1175,12 @@ $("#newForm").addEventListener("submit", (e) => {
 
 /* ══ 패치 ══════════════════════════════════════════════ */
 
-/* patch 는 두 번에 나눠 돈다 — 번들 생성(컨트롤러 로컬)과 적용(타겟).
-   `patch create` 는 `-l` 을 못 받지만 **적용 대상은 여기서 정한다**. 번들을
-   다 만들어 놓고 승인 단계에서 "키가 없는 서버" 를 만나면 그 번들이 갈 곳이
-   없기 때문이다. 대상은 job_hosts 에 적히고 승인이 그대로 `-l` 로 넘긴다. */
+/* 원샷 `hubctl patch` 를 돌린다 — 타겟에서 번들을 만들고(base = 지금 깔려 있는
+   release-config) 그대로 적용한다. 컨트롤러 로컬 create 는 폐쇄망 반입용이라
+   온라인 병원에는 맞지 않는다.
+
+   중간에 `[y/N]` 을 묻는데, 그 확인을 여기 시작 화면으로 옮겨왔다. 그래서
+   시작 모달이 형식적인 확인이 아니라 **실제 게이트**다. */
 async function showPatch() {
   try { await loadServers(); } catch (e) { toast(e.message, "danger"); }
   $("#pSrvList").innerHTML = state.servers.length ? state.servers.map((s) => {
@@ -1209,26 +1211,23 @@ function drawPatchPlan() {
   const ref = $("#p-ref").value.trim();
   $("#pCount").textContent = `${hosts.length}대 선택`;
 
+  /* 명령은 하나지만 playbook 은 둘(patch-create → patch-apply)이라 단계는 그대로다. */
   $("#patchPlan").innerHTML = PHASES.patch.map(([, label], i) =>
-    `<div class="plan__i"><b>${i + 1}</b><span>${esc(label)}${i ? ` — 승인해야 실행` : ""}</span></div>`).join("");
+    `<div class="plan__i"><b>${i + 1}</b><span>${esc(label)}</span></div>`).join("");
 
-  /* 두 명령을 다 보여준다. 한 번 누르면 위만 돌고 아래는 승인 뒤에 도는데,
-     위만 그리면 "-l 이 왜 없지" 로 읽히고 아래만 그리면 지금 뭐가 도는지 안 보인다.
-     `patch apply` 에 ref 를 싣지 않는 것도 여기서 그대로 드러난다 — 번들 메타가
-     SoT 라 불일치하면 playbook 이 죽는다. */
   const tail = `${esc(ref || "<ref 없음>")}${$("#p-reftag").checked ? " -e hub_deploy_ref_type=tag" : ""}`;
   const limit = esc(hosts.length ? hosts.join(",") : "<대상 없음>");
   $("#patchCmd").innerHTML =
-    `./bin/hubctl patch create -- -e hub_deploy_ref=<b>${tail}</b>`
-    + `<br><span style="color:var(--console-dim)">↓ 적용 승인을 누르면</span><br>`
-    + `./bin/hubctl patch apply -l <b>${limit}</b>`;
+    `./bin/hubctl patch -l <b>${limit}</b> -- -e hub_deploy_ref=<b>${tail}</b>`
+    + `<br><span style="color:var(--console-dim)">중간의 <b>[y/N]</b> 에는 y 를 자동으로 넣습니다</span>`;
 
   const warn = [];
   if (hosts.length > FORKS) warn.push(`선택한 ${hosts.length}대는 ansible 기본 forks(${FORKS})보다 많아 ${FORKS}대씩 나눠 진행됩니다.`);
   $("#patchWarn").innerHTML = `<div class="alert alert--warn"><span class="alert__g" aria-hidden="true">!</span>
-    <p class="note" style="color:var(--ink-2)">번들을 만든 뒤 <b>승인 대기</b>에서 멈춥니다 — 작업 상세에서 <b>적용 승인</b>을 눌러야 서버에 반영됩니다.
-    승인 없이 24시간이 지나면 자동 취소되고, 이때도 번들은 컨트롤러에 남습니다.<br>
+    <p class="note" style="color:var(--ink-2)">번들을 만들고 <b>곧바로 적용</b>합니다. 터미널이라면 변경 앱 목록을 보고 <span class="mono">[y/N]</span> 을 눌렀을 자리인데,
+    콘솔은 그 확인을 <b>시작할 때</b> 받습니다 — 시작하면 중간에 멈추지 않습니다.<br>
     앱이 추가·제거되는 등 구조가 바뀌면 <span class="mono">패치 스코프 밖</span> 이라며 멈춥니다 — 서버는 그대로이고, 그때는 <b>새 설치</b>의 configure 로 반영합니다.
+    문제가 생기면 <span class="mono">hubctl rollback -l &lt;host&gt; -K</span> 로 직전 상태로 되돌립니다.
     ${warn.map((w) => `<br>${esc(w)}`).join("")}</p></div>`;
 
   $("#patchSubmit").disabled = hosts.length === 0 || !ref;
@@ -1240,11 +1239,15 @@ $("#patchForm").addEventListener("submit", (e) => {
   const ref = $("#p-ref").value.trim();
   if (!hosts.length || !ref) return;
   const isTag = $("#p-reftag").checked;
-  modal(`<h2>${hosts.length}대에 적용할 번들을 만들까요?</h2>
-    <p class="note">ref: <b class="mono">${esc(ref)}</b>${isTag ? " (태그)" : ""}<br>
-    적용 대상: <b class="mono">${esc(hosts.join(", "))}</b><br>
-    지금은 <b>번들만</b> 만듭니다. 서버에는 <b>적용 승인</b>을 눌러야 반영됩니다.</p>`,
-    { label: "번들 만들기" },
+  modal(`<h2>${hosts.length}대에 패치를 적용할까요?</h2>
+    <p class="note">대상: <b class="mono">${esc(hosts.join(", "))}</b><br>
+    ref: <b class="mono">${esc(ref)}</b>${isTag ? " (태그)" : ""}</p>
+    <div class="alert alert--warn"><span class="alert__g" aria-hidden="true">!</span>
+      <p class="note" style="color:var(--ink-2)">번들을 만든 뒤 <b>확인 없이 그대로 적용</b>합니다 —
+      터미널의 <span class="mono">[y/N]</span> 을 대신하는 것이 이 버튼입니다.
+      변경 앱 목록은 실행 로그에 남지만, 보실 때는 이미 적용된 뒤입니다.<br>
+      되돌리려면 <span class="mono">hubctl rollback -l ${esc(hosts[0])} -K</span> 를 터미널에서 실행합니다.</p></div>`,
+    { label: "패치 적용" },
     async () => {
       try {
         const created = await api("/api/jobs", {

@@ -91,6 +91,28 @@ touch "$FAKE_STARTED"
 sleep 60
 """
 
+# 원샷 `hubctl patch` — create 를 끝내고 stdin 으로 [y/N] 을 묻는다.
+# 프롬프트 줄에 **개행이 없는 것**까지 진짜와 똑같이 맞춘다 (printf).
+CONFIRM_HUBCTL = r"""#!/bin/bash
+echo "ARGS: $*"
+echo 'PLAY [패치 번들 생성 (patch_create)] ****'
+echo 'TASK [patch_create | 산출 요약] ****'
+echo 'ok: [alpha]'
+echo '  위 산출 요약의 변경 앱 목록이 이번에 적용될 내용입니다.'
+printf '이대로 적용(apply)을 진행할까요? [y/N] '
+read -r reply || reply=""
+echo
+echo "REPLY:[${reply}]"
+case "$reply" in
+  y|Y|yes|YES) ;;
+  *) echo 'CANCELLED'; exit 2 ;;
+esac
+echo 'PLAY [패치 번들 적용 (patch_apply)] ****'
+echo 'PLAY RECAP ****'
+echo 'alpha  : ok=2 changed=1 unreachable=0 failed=0 skipped=0 rescued=0 ignored=0'
+exit 0
+"""
+
 SLOW_HUBCTL = r"""#!/bin/bash
 echo "ARGS: $*"
 echo 'PLAY [hubctl verify] ****'
@@ -424,55 +446,104 @@ async def test_cancel_unknown_job_is_404(client):
 # ── patch 승인 ──────────────────────────────────────────────────────
 
 
-async def test_patch_create_stops_at_awaiting(client):
-    """AC-10: 번들 생성 후 멈추고, 승인해야 apply 가 돈다."""
-    resp = await post(
-        client,
-        "/api/jobs",
-        {"kind": "patch", "ref": "v1.0.2", "ref_type": "tag", "hosts": ["alpha"]},
-    )
-    assert resp.status == 201
-    job_id = (await resp.json())["id"]
+async def seed_awaiting_patch(temp_db, host="alpha"):
+    """`승인 대기` 상태의 patch 를 DB 에 직접 만든다.
 
-    job = await wait_finished(client, job_id)
-    assert job["status"] == "awaiting"
-
-    text = await (await client.get(f"/api/jobs/{job_id}/log")).text()
-    assert "ARGS: patch create -- -e hub_deploy_ref=v1.0.2 -e hub_deploy_ref_type=tag" in text
-
-
-async def test_patch_create_never_passes_a_limit(client):
-    """대상은 미리 고르지만 `patch create` 는 컨트롤러 로컬 실행이라 `-l` 을 못 받는다.
-
-    화면에서 서버를 고른다고 그 목록이 생성 단계 명령까지 따라가면 hubctl 이 거부한다.
+    콘솔은 이제 원샷만 만들므로 이 상태로 가는 길이 화면에는 없다. 그래도
+    폐쇄망 반입(create → apply)과 승인/거부/방치 정리는 살아 있는 기능이라
+    상태 기계 자체는 계속 검증한다.
     """
-    job_id = (await (await post(
-        client, "/api/jobs", {"kind": "patch", "ref": "v1", "hosts": ["alpha", "beta"]}
-    )).json())["id"]
-    await wait_finished(client, job_id)
+    async with connect(temp_db) as db:
+        cur = await db.execute(
+            "INSERT INTO jobs (kind, status, ref, started_by)"
+            " VALUES ('patch','awaiting','v1.0.2',?)",
+            (f"web:{USERNAME}",),
+        )
+        job_id = int(cur.lastrowid)
+        await db.execute(
+            "INSERT INTO job_hosts (job_id, host, status) VALUES (?, ?, 'queued')",
+            (job_id, host),
+        )
+        await db.commit()
+    return job_id
 
-    text = await (await client.get(f"/api/jobs/{job_id}/log")).text()
-    assert "ARGS: patch create -- -e hub_deploy_ref=v1" in text
-    assert "-l" not in text.split("ARGS:", 1)[1].splitlines()[0]
 
+async def test_patch_runs_create_and_apply_in_one_shot(temp_db, tmp_path):
+    """콘솔의 patch 는 원샷이다 — 승인 대기 없이 한 작업이 끝까지 간다.
 
-async def test_patch_records_its_apply_targets_up_front(client):
-    """적용 대상은 번들을 만들 때 정해 job_hosts 에 남는다 (승인 화면은 확인만 한다).
-
-    승인 단계에서 정하면 번들을 다 만든 뒤에야 "키가 없는 서버" 를 알게 된다.
+    `patch create` 는 컨트롤러 로컬(base = 준 git ref)이라 폐쇄망 반입용이고,
+    온라인 사이트는 타겟에서 도는 원샷(base = 지금 깔려 있는 release-config)이
+    맞다 (patch-create.yml 헤더).
     """
+    client = await make_client(temp_db, tmp_path, script=CONFIRM_HUBCTL)
+    try:
+        job_id = (await (await post(
+            client, "/api/jobs",
+            {"kind": "patch", "ref": "v1.0.2", "ref_type": "tag", "hosts": ["alpha"]},
+        )).json())["id"]
+        job = await wait_finished(client, job_id)
+        assert job["status"] == "succeeded"
+
+        text = await (await client.get(f"/api/jobs/{job_id}/log")).text()
+        assert "ARGS: patch -l alpha -- -e hub_deploy_ref=v1.0.2 -e hub_deploy_ref_type=tag" in text
+        assert "patch create" not in text and "patch apply" not in text
+    finally:
+        await client.close()
+
+
+async def test_patch_answers_the_confirmation_prompt(temp_db, tmp_path):
+    """원샷이 중간에 묻는 `[y/N]` 에 y 를 넣는다.
+
+    프롬프트 줄은 개행이 없어 줄 단위 펌프에 안 잡힌다 — 개행으로 끝나는 바로
+    앞 줄(PATCH_CONFIRM_MARKER)을 신호로 쓴다. 이게 깨지면 자식이 EOF 를 받아
+    "사용자 취소"(rc=2)로 끝나므로, 아래 succeeded 가 곧 그 검증이다.
+    """
+    client = await make_client(temp_db, tmp_path, script=CONFIRM_HUBCTL)
+    try:
+        job_id = (await (await post(
+            client, "/api/jobs", {"kind": "patch", "ref": "v1", "hosts": ["alpha"]}
+        )).json())["id"]
+        job = await wait_finished(client, job_id)
+
+        text = await (await client.get(f"/api/jobs/{job_id}/log")).text()
+        assert "REPLY:[y]" in text
+        assert "CANCELLED" not in text
+        assert job["status"] == "succeeded"
+        # 사람이 [y/N] 을 눌렀을 자리다. 대신 답했다는 사실이 기록에 남아야 한다.
+        assert any("y 를 보냈습니다" in e["message"] for e in job["events"])
+    finally:
+        await client.close()
+
+
+async def test_only_patch_gets_an_answer_on_stdin(temp_db, tmp_path):
+    """다른 종류는 stdin 을 곧바로 닫는다 — 안 그러면 읽는 명령이 영영 기다린다."""
+    client = await make_client(temp_db, tmp_path, script=CONFIRM_HUBCTL)
+    try:
+        job_id = (await (await post(
+            client, "/api/jobs", {"kind": "verify", "hosts": ["alpha"]}
+        )).json())["id"]
+        job = await wait_finished(client, job_id)
+
+        text = await (await client.get(f"/api/jobs/{job_id}/log")).text()
+        assert "REPLY:[]" in text, "EOF 를 받아 빈 값이어야 한다"
+        assert job["status"] == "failed"
+    finally:
+        await client.close()
+
+
+async def test_patch_targets_run_and_end_together(client):
+    """대상은 미리 골라 job_hosts 에 남고, 원샷이라 그대로 결말까지 간다."""
     job_id = (await (await post(
         client, "/api/jobs", {"kind": "patch", "ref": "v1", "hosts": ["alpha", "beta"]}
     )).json())["id"]
     job = await wait_finished(client, job_id)
 
     assert [h["host"] for h in job["hosts"]] == ["alpha", "beta"]
-    # 번들만 만들었다 — 서버는 아직 아무것도 안 받았으므로 '대기' 여야 한다.
-    assert {h["status"] for h in job["hosts"]} == {"queued"}
+    assert {h["status"] for h in job["hosts"]} == {"succeeded", "failed"}
 
 
-async def test_patch_checks_ssh_keys_before_building_the_bundle(client):
-    """AC-16 이 patch 에도 걸린다 — 번들을 다 만들고 나서 알게 되면 갈 곳이 없다."""
+async def test_patch_checks_ssh_keys_before_it_starts(client):
+    """AC-16 이 patch 에도 걸린다 — 타겟에서 도는 명령이라 키가 없으면 죽는다."""
     resp = await post(
         client, "/api/jobs", {"kind": "patch", "ref": "v1", "hosts": ["alpha", "nokey"]}
     )
@@ -480,16 +551,14 @@ async def test_patch_checks_ssh_keys_before_building_the_bundle(client):
     assert "nokey" in (await resp.json())["error"]
 
 
-async def test_patch_requires_apply_targets(client):
-    resp = await post(client, "/api/jobs", {"kind": "patch", "ref": "v1"})
-    assert resp.status == 400
+async def test_patch_requires_targets_and_ref(client):
+    assert (await post(client, "/api/jobs", {"kind": "patch", "ref": "v1"})).status == 400
+    assert (await post(client, "/api/jobs", {"kind": "patch", "hosts": ["alpha"]})).status == 400
 
 
-async def test_patch_approve_runs_apply(client):
-    job_id = (await (await post(
-        client, "/api/jobs", {"kind": "patch", "ref": "v1.0.2", "hosts": ["alpha"]}
-    )).json())["id"]
-    await wait_finished(client, job_id)
+async def test_patch_approve_runs_apply(client, temp_db):
+    """폐쇄망 반입 경로. 승인은 기록해 둔 대상에 `patch apply` 를 돌린다."""
+    job_id = await seed_awaiting_patch(temp_db)
 
     resp = await post(client, f"/api/jobs/{job_id}/approve")
     assert resp.status == 200
@@ -502,11 +571,8 @@ async def test_patch_approve_runs_apply(client):
     assert "patch apply -l alpha -- -e hub_deploy_ref" not in text
 
 
-async def test_patch_reject_leaves_the_server_untouched(client):
-    job_id = (await (await post(
-        client, "/api/jobs", {"kind": "patch", "ref": "v1.0.2", "hosts": ["alpha"]}
-    )).json())["id"]
-    await wait_finished(client, job_id)
+async def test_patch_reject_leaves_the_server_untouched(client, temp_db):
+    job_id = await seed_awaiting_patch(temp_db)
 
     resp = await post(client, f"/api/jobs/{job_id}/reject")
     assert resp.status == 200
@@ -639,10 +705,7 @@ async def test_stream_delivers_lines_while_the_job_runs(temp_db, tmp_path):
 
 async def test_awaiting_expires_after_the_ttl(client, temp_db):
     """승인 없이 남은 patch 는 24시간 뒤 취소된다. 번들은 컨트롤러에 남는다."""
-    job_id = (await (await post(
-        client, "/api/jobs", {"kind": "patch", "ref": "v1", "hosts": ["alpha"]}
-    )).json())["id"]
-    assert (await wait_finished(client, job_id))["status"] == "awaiting"
+    job_id = await seed_awaiting_patch(temp_db)
 
     async with connect(temp_db) as db:
         await db.execute(
@@ -658,11 +721,8 @@ async def test_awaiting_expires_after_the_ttl(client, temp_db):
     assert any("번들은 유지" in e["message"] for e in body["events"])
 
 
-async def test_recent_awaiting_is_left_alone(client):
-    job_id = (await (await post(
-        client, "/api/jobs", {"kind": "patch", "ref": "v1", "hosts": ["alpha"]}
-    )).json())["id"]
-    await wait_finished(client, job_id)
+async def test_recent_awaiting_is_left_alone(client, temp_db):
+    job_id = await seed_awaiting_patch(temp_db)
 
     assert await client.app[keys.JOB_SERVICE].expire_awaiting(older_than_hours=24) == []
     assert (await (await client.get(f"/api/jobs/{job_id}")).json())["status"] == "awaiting"

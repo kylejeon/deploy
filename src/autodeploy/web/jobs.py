@@ -26,7 +26,15 @@ from pathlib import Path
 from autodeploy import repository
 from autodeploy.ansible_log import LineKind, ParsedLine, host_status
 from autodeploy.db import connect
-from autodeploy.hubctl import CLEAN_MODES, ENVS, HubctlError, HubctlRunner, build_command
+from autodeploy.hubctl import (
+    CLEAN_MODES,
+    ENVS,
+    PATCH_CONFIRM_ANSWER,
+    PATCH_CONFIRM_MARKER,
+    HubctlError,
+    HubctlRunner,
+    build_command,
+)
 from autodeploy.inventory import load_inventory
 from autodeploy.masking import SecretMasker
 from autodeploy.models import JobKind, JobStatus
@@ -45,10 +53,6 @@ MAX_DB_LINES = 200_000
 # hubctl 을 쓰지 않는 종류. 여기서 실행하지 않는다.
 _NON_HUBCTL = frozenset({JobKind.SSH_KEY})
 
-# 명령에 `-l` 을 싣지 않는 단계. patch create 만 그렇다 (컨트롤러 로컬 실행).
-# 대상을 안 받는다는 뜻이 아니다 — 적용 대상은 이때 정해 job_hosts 에 적어두고,
-# 승인 단계의 `patch apply` 가 그 목록을 `-l` 로 넘긴다.
-_HOSTLESS_PHASES = {("patch", "create")}
 
 
 class JobError(RuntimeError):
@@ -119,25 +123,17 @@ class JobService:
         if kind in _NON_HUBCTL:
             raise JobError(f"작업으로 실행하지 않는 종류입니다: {kind.value}")
 
-        phase = "create" if kind is JobKind.PATCH else None
+        # patch 는 원샷이다 (phase=None) — 타겟에서 번들을 만들고 그대로 적용한다.
+        # 2단계 create/apply 는 폐쇄망 반입용으로 남아 있고 `approve()` 만 쓴다.
+        phase = None
         hosts = tuple(dict.fromkeys(h.strip() for h in req.hosts if h and h.strip()))
-
-        # 대상은 종류와 상관없이 여기서 검증하고 job_hosts 에 적어둔다. patch 의
-        # 번들 생성은 컨트롤러에서만 돌지만 **적용 대상은 이때 정한다** — 번들을
-        # 다 만들어 놓고 승인 단계에서 "키가 없는 서버" 를 만나면 그 번들은 갈
-        # 곳이 없다. 승인은 여기서 적어둔 대상에 그대로 적용한다.
         profiles = await self._check_hosts(kind, hosts, confirm=req.confirm)
-
-        # 명령에 실을 대상. `patch create` 는 `-l` 을 받지 않는다 (컨트롤러 로컬
-        # 실행). 여기서 비워야 build_command 가 거부하지 않고, _execute 도
-        # job_hosts 를 건드리지 않아 서버들이 '대기' 인 채로 승인을 기다린다.
-        command_hosts = () if (kind.value, phase) in _HOSTLESS_PHASES else hosts
 
         # 명령을 먼저 조립한다 — env/ref/clean_mode 오류를 DB 에 흔적을 남기기 전에 잡는다.
         try:
             build_command(
                 kind,
-                hosts=command_hosts,
+                hosts=hosts,
                 env=req.env,
                 ref=req.ref,
                 ref_type=req.ref_type,
@@ -162,7 +158,7 @@ class JobService:
                 )
             await db.commit()
 
-        await self.queue.submit(job_id, self._make_runner(job_id, command_hosts, req, phase))
+        await self.queue.submit(job_id, self._make_runner(job_id, hosts, req, phase))
         log.info("작업 %d 생성 (%s, hosts=%s, by=%s)", job_id, kind.value, hosts, req.started_by)
         return job_id
 
@@ -328,8 +324,20 @@ class JobService:
 
         sink = _LogSink(self, job_id, step)
         await sink.start()
+        # 원샷 patch 는 번들을 만든 뒤 `[y/N]` 로 적용 여부를 묻는다. 화면에서
+        # 시작 전에 이미 확인을 받았으므로 여기서 y 를 넣는다.
+        auto_reply = (
+            (PATCH_CONFIRM_MARKER, PATCH_CONFIRM_ANSWER)
+            if req.kind is JobKind.PATCH and phase is None
+            else None
+        )
         try:
-            result = await runner.run(command, on_line=sink.feed)
+            result = await runner.run(
+                command,
+                on_line=sink.feed,
+                auto_reply=auto_reply,
+                on_reply=lambda _answer: self._note_auto_apply(job_id, req.started_by),
+            )
         except Exception as exc:
             log.exception("작업 %d 실행 실패", job_id)
             await sink.close()
@@ -356,6 +364,20 @@ class JobService:
             error=None if status is not JobStatus.FAILED else f"종료 코드 {result.exit_code}",
             recaps=result.recaps,
         )
+
+    async def _note_auto_apply(self, job_id: int, started_by: str) -> None:
+        """적용 확인에 자동으로 답했다는 사실을 기록에 남긴다.
+
+        터미널이면 사람이 변경 앱 목록을 보고 `y` 를 눌렀을 자리다. 콘솔은 시작
+        전에 확인을 받고 여기서 대신 답하는데, 그게 어디에도 안 남으면 나중에
+        기록만 보고는 누가 적용을 승인했는지 알 수 없다.
+        """
+        async with connect(self.db_path) as db:
+            await repository.add_event(
+                db, job_id, "apply", "info",
+                f"변경 앱 요약 뒤의 적용 확인에 y 를 보냈습니다"
+                f" (시작할 때 {started_by} 님이 확인)",
+            )
 
     async def _finalize(
         self, job_id: int, hosts, *, status: JobStatus, exit_code: int | None,
