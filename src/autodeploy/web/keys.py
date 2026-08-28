@@ -18,6 +18,7 @@ if TYPE_CHECKING:
     from autodeploy.web.auth import LoginThrottle
     from autodeploy.web.forwards import ForwardManager
     from autodeploy.web.jobs import JobService
+    from autodeploy.web.progress import ProgressBoard
     from autodeploy.web.sse import SseBroker
 
 DB_PATH = web.AppKey("db_path", Path)
@@ -45,3 +46,5 @@ NODE_PREP: web.AppKey["NodePrepConfig"] = web.AppKey("node_prep")
 # 설치는 JobService 가 파일로 넘기지만, 시리얼 조회처럼 작업이 아닌 호출도
 # 같은 값을 쓴다.
 BECOME_PASSWORD = web.AppKey("become_password", str)
+# 오래 걸리는 SSH 키 등록의 진행 상태. 화면이 1초에 한 번 물어본다.
+SSH_PROGRESS: web.AppKey["ProgressBoard"] = web.AppKey("ssh_progress")

@@ -537,3 +537,34 @@ def test_missing_serials_are_filled_in_without_a_click():
     assert "\n  backfillSerials();" in js, "만들어만 두고 부르지 않는다"
     assert "s.key_installed_at && !s.serial" in js, "이미 읽은 서버까지 다시 읽는다"
     assert "state.serialTried" in js, "세션당 한 번이라는 보장이 없다"
+
+
+def test_the_key_modal_shows_progress_while_it_runs():
+    """등록은 몇 분이 걸릴 수 있다. 눌린 버튼만 보이면 멈춘 것처럼 보인다."""
+    js = (
+        Path(__file__).resolve().parents[1]
+        / "src" / "autodeploy" / "web" / "static" / "console.js"
+    ).read_text(encoding="utf-8")
+
+    assert "function watchKeySteps(" in js
+    assert "watchKeySteps(host," in js, "만들어만 두고 부르지 않는다"
+    assert "/ssh-key/progress" in js, "단계를 서버에 물어보지 않는다"
+    assert "경과" in js, "시간이 안 보이면 서버가 대답을 못 할 때 멈춰 보인다"
+
+
+def test_every_registration_step_has_a_korean_name():
+    """서버가 내놓는 단계 키가 화면에 이름 없이 그대로 뜨면 안 된다.
+
+    `ansible_log` 의 단계와 같은 규칙이다 — 키는 서버가 정하고 이름은 화면이 쥔다.
+    """
+    from autodeploy.ssh_keys import steps_for
+
+    js = (
+        Path(__file__).resolve().parents[1]
+        / "src" / "autodeploy" / "web" / "static" / "console.js"
+    ).read_text(encoding="utf-8")
+    block = re.search(r"const KEY_STEPS = \{(.*?)\};", js, re.S)
+    assert block is not None, "console.js 에서 KEY_STEPS 를 못 찾았다"
+
+    named = set(re.findall(r"(\w+):", block.group(1)))
+    assert set(steps_for(prepare=True)) <= named, f"이름 없는 단계: {set(steps_for(True)) - named}"

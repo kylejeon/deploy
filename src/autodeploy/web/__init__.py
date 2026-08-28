@@ -21,6 +21,7 @@ from autodeploy.settings import NodePrepConfig
 from autodeploy.web import api, keys
 from autodeploy.web.forwards import ForwardManager
 from autodeploy.web.jobs import JobService
+from autodeploy.web.progress import ProgressBoard
 from autodeploy.web.sse import SseBroker
 from autodeploy.web.auth import (
     CSRF_HEADER,
@@ -118,6 +119,7 @@ def create_app(
     )
     app[keys.NODE_PREP] = node_prep or NodePrepConfig()
     app[keys.BECOME_PASSWORD] = become_password
+    app[keys.SSH_PROGRESS] = ProgressBoard()
     app[keys.DB_PATH] = Path(db_path).expanduser()
     app[keys.HUBCTL_REPO] = hubctl_repo
     app[keys.INVENTORY_PATH] = (

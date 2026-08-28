@@ -152,14 +152,24 @@ if command -v anydesk &>/dev/null; then
         echo "  건너뜀 (비밀번호 미설정)"
     fi
 
+    # `anydesk --get-id` 는 값 끝에 개행을 안 붙인다. 예전에는 이 출력을 그대로
+    # 흘려보내고 아래 기계용 줄을 이어서 찍었는데, 둘이 한 줄로 붙어버려
+    # (`    1318618610ANYDESK_ID=1318618610`) 파싱이 조용히 깨졌다.
+    # 그래서 한 번만 물어보고, 값은 변수에 담아 echo 로 찍는다 — $( ) 가 끝의
+    # 개행을 정리하고 echo 가 다시 붙여준다.
+    _adid="$(anydesk --get-id 2>/dev/null | tr -dc '0-9')" || _adid=""
+
     echo
     echo "  이 장비의 AnyDesk ID:"
-    anydesk --get-id 2>/dev/null | sed 's/^/    /' || echo "    (조회 실패 - 서비스 기동 후 재시도)"
+    if [[ -n "$_adid" ]]; then
+        echo "    ${_adid}"
+    else
+        echo "    (조회 실패 - 서비스 기동 후 재시도)"
+    fi
 
     # AutoDeploy 가 이 줄을 읽어 서버 목록의 메모 칸에 적어둔다.
     # 사람이 읽는 위쪽 출력과 따로 두는 이유는, 줄 모양이 바뀌면 파싱이 조용히
     # 깨지기 때문이다. 이 줄은 기계용이라 형식을 고정한다.
-    _adid="$(anydesk --get-id 2>/dev/null | tr -dc '0-9')" || _adid=""
     [[ -n "$_adid" ]] && echo "ANYDESK_ID=${_adid}"
 fi
 

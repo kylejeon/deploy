@@ -650,3 +650,99 @@ async def test_the_sudo_password_never_comes_back_in_an_error(temp_db, tmp_path,
 async def test_an_unknown_server_is_not_probed(sudo_client):
     resp = await send(sudo_client, "POST", "/api/servers/ghost/serial")
     assert resp.status == 404
+
+
+# ── 등록 진행 상태 ────────────────────────────────────
+async def test_progress_is_empty_when_nothing_is_registering(client):
+    body = await (await client.get("/api/servers/alpha/ssh-key/progress")).json()
+    assert body == {"running": False}
+
+
+async def test_progress_reports_the_step_while_it_runs(client, monkeypatch, inventory_path):
+    """등록이 도는 **동안** 물어볼 수 있어야 한다 — 끝나고 알려주면 소용이 없다.
+
+    hybrid 는 apt 로 AnyDesk 를 까느라 몇 분이 걸린다. 그동안 화면에 눌린 버튼
+    말고 아무것도 없으면 멈춘 것처럼 보인다.
+    """
+    import asyncio
+
+    from autodeploy.ssh import StreamLine
+
+    inventory_path.write_text(
+        SITES_YML.replace("profile: onprem", "profile: hybrid-with-ai"), encoding="utf-8"
+    )
+    reached_prep = asyncio.Event()
+    may_finish = asyncio.Event()
+
+    async def fake_register(**kw):
+        kw["on_step"]("prep")
+        kw["on_line"](StreamLine("stdout", "Setting up anydesk (8.0.4) ..."))
+        reached_prep.set()
+        await may_finish.wait()
+        return KeyRegistration(pubkey="k", sleep_masked=True, prep_ran=True)
+
+    monkeypatch.setattr(api, "register_key", fake_register)
+    call = asyncio.create_task(
+        send(client, "POST", "/api/servers/alpha/ssh-key", {"password": "pw"})
+    )
+    try:
+        await asyncio.wait_for(reached_prep.wait(), 5)
+        body = await (await client.get("/api/servers/alpha/ssh-key/progress")).json()
+
+        assert body["running"] is True
+        assert body["step"] == "prep"
+        assert "anydesk" in body["detail"]
+        # hybrid 라 준비 단계가 목록에 들어가야 한다
+        assert body["steps"] == ["connect", "key", "sleep", "serial", "prep", "verify"]
+    finally:
+        may_finish.set()
+        resp = await call
+
+    assert resp.status == 200
+    after = await (await client.get("/api/servers/alpha/ssh-key/progress")).json()
+    assert after == {"running": False}, "끝난 뒤에도 남아 있으면 화면이 영영 돈다"
+
+
+async def test_progress_is_cleared_even_when_registration_fails(client, monkeypatch):
+    """실패로 끝나도 판을 치워야 한다 — 안 그러면 다음 등록이 옛 단계부터 보인다."""
+    async def boom(**kw):
+        kw["on_step"]("key")
+        raise SSHKeyError("비밀번호가 올바르지 않습니다")
+
+    monkeypatch.setattr(api, "register_key", boom)
+    assert (await send(client, "POST", "/api/servers/alpha/ssh-key",
+                       {"password": "wrong"})).status == 400
+
+    body = await (await client.get("/api/servers/alpha/ssh-key/progress")).json()
+    assert body == {"running": False}
+
+
+async def test_the_anydesk_password_never_leaks_through_the_progress(temp_db, tmp_path, inventory_path, monkeypatch):
+    """준비 스크립트 출력이 그대로 화면에 흐른다. 비밀번호가 섞이면 안 된다."""
+    import asyncio
+
+    from autodeploy.masking import SecretMasker
+    from autodeploy.ssh import StreamLine
+
+    c = await _login(temp_db, tmp_path, inventory_path, masker=SecretMasker(["ad-secret"]))
+    reached = asyncio.Event()
+    may_finish = asyncio.Event()
+
+    async def fake_register(**kw):
+        kw["on_line"](StreamLine("stdout", "비밀번호 설정: ad-secret"))
+        reached.set()
+        await may_finish.wait()
+        return KeyRegistration(pubkey="k", sleep_masked=True)
+
+    monkeypatch.setattr(api, "register_key", fake_register)
+    call = asyncio.create_task(
+        send(c, "POST", "/api/servers/alpha/ssh-key", {"password": "pw"})
+    )
+    try:
+        await asyncio.wait_for(reached.wait(), 5)
+        text = await (await c.get("/api/servers/alpha/ssh-key/progress")).text()
+        assert "ad-secret" not in text, text
+    finally:
+        may_finish.set()
+        await call
+        await c.close()

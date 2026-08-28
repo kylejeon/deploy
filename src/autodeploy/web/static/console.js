@@ -47,6 +47,17 @@ const PHASES = {
   rollback: [["rollback", "직전 패치 복귀 (patch-rollback.yml)"]],
   clean: [["clean", "초기화 (clean.yml)"]],
 };
+/* SSH 키 등록이 지나가는 단계 — 서버의 `ssh_keys.steps_for()` 와 1:1.
+   여기 없는 키가 오면 키를 그대로 보여준다 (틀린 이름을 지어내지 않는다). */
+const KEY_STEPS = {
+  connect: "타겟 접속",
+  key: "공개키 설치",
+  sleep: "절전 끄기",
+  serial: "본체 시리얼 읽기",
+  prep: "PC 준비 (AnyDesk·화면 설정)",
+  verify: "키 인증 확인",
+};
+
 const KIND_LABEL = { install: "설치", configure: "configure", patch: "patch", rollback: "rollback", verify: "verify", clean: "초기화" };
 
 const MODES = {
@@ -1161,6 +1172,7 @@ async function paintForwards() {
 function sshKeyModal(host) {
   const s = state.servers.find((x) => x.host === host);
   modal(`<h2>SSH 키 등록 — ${esc(host)}</h2>
+    <div id="keyForm">
     <p class="note">맥미니의 공개키를 <span class="mono">${esc(s.ansible_user)}@${esc(s.ansible_host)}</span> 의
     <span class="mono">~/.ssh/authorized_keys</span> 에 추가합니다. 이후 hubctl 이 비밀번호 없이 접속합니다.<br>
     같이 <b>절전을 꺼둡니다</b> — 설치 중 서버가 잠들면 SSH 가 끊겨 작업이 죽습니다.
@@ -1168,11 +1180,17 @@ function sshKeyModal(host) {
     <b>본체 시리얼</b>도 이때 함께 읽습니다 (<span class="mono">dmidecode -s system-serial-number</span>).</p>
     <div class="field"><label for="m-pw">타겟 서버 비밀번호</label>
       <input class="input mono" id="m-pw" type="password" autocomplete="off"></div>
-    <p class="note">비밀번호는 이 등록에만 쓰이고 저장되지 않습니다. 같은 키가 이미 있으면 줄이 늘지 않습니다.</p>`,
+    <p class="note">비밀번호는 이 등록에만 쓰이고 저장되지 않습니다. 같은 키가 이미 있으면 줄이 늘지 않습니다.</p>
+    </div>
+    <div id="keyProg" hidden></div>`,
     { label: "등록" },
     async () => {
       const password = $("#m-pw").value;
       if (!password) { toast("비밀번호를 입력하세요", "warn"); throw new Error("empty"); }
+      // hybrid 는 apt 로 AnyDesk 를 까느라 몇 분이 걸린다. 그동안 눌린 버튼만
+      // 보이면 멈춘 것처럼 보이므로, 폼을 접고 단계와 경과 시간을 보여준다.
+      $("#keyForm").hidden = true;
+      const stopWatching = watchKeySteps(host, $("#keyProg"), isHybrid(s.profile));
       try {
         const r = await api(`/api/servers/${encodeURIComponent(host)}/ssh-key`, { method: "POST", body: { password } });
         // 키는 됐는데 절전만 실패한 경우를 뭉뚱그리지 않는다. 그대로 두면 긴 설치가
@@ -1193,8 +1211,66 @@ function sshKeyModal(host) {
         // 준비 스크립트를 돌렸으면 결과를 보여준다. AnyDesk ID 처럼 사람이 읽어야
         // 하는 값이 나오므로 토스트로는 부족하다.
         if (r.prep_ran) prepResultModal(host, r);
-      } catch (e) { toast(e.message, "danger"); throw e; }
+      } catch (e) {
+        // 실패하면 폼을 되돌린다 — 비밀번호를 잘못 친 것뿐일 수 있다.
+        // 그 사이 사람이 창을 닫았을 수 있으므로 있을 때만 손댄다.
+        const form = $("#keyForm"), prog = $("#keyProg");
+        if (form && prog) { prog.hidden = true; form.hidden = false; }
+        toast(e.message, "danger");
+        throw e;
+      } finally { stopWatching(); }
     });
+}
+
+const isHybrid = (profile) => String(profile || "").startsWith("hybrid");
+
+/* 등록이 도는 동안 단계와 경과 시간을 그린다.
+ *
+ * 단계는 서버에 물어본다 (`.../ssh-key/progress`). 시간만 세면 "돌고는 있다"
+ * 까지만 말할 수 있고, 어디서 오래 걸리는지는 못 말한다 — 실제로 오래 걸리는
+ * 곳은 늘 `prep`(apt) 한 군데다.
+ *
+ * 폴링이 실패해도 화면은 그대로 돈다. 시계는 브라우저가 자체적으로 굴린다 —
+ * 그래야 서버가 대답을 못 해도 멈춰 보이지 않는다.
+ */
+function watchKeySteps(host, box, hybrid) {
+  const startedAt = Date.now();
+  // 서버가 알려주기 전에 그릴 밑그림. 실제 목록이 오면 갈아끼운다.
+  let steps = hybrid
+    ? ["connect", "key", "sleep", "serial", "prep", "verify"]
+    : ["connect", "key", "sleep", "serial", "verify"];
+  let current = "connect";
+  let detail = "";
+
+  const paint = () => {
+    const idx = steps.indexOf(current);
+    const rows = steps.map((k, i) => {
+      const state = i < idx ? "done" : i === idx ? "run" : "";
+      const mark = state === "done" ? "✓" : state === "run" ? "…" : "";
+      return `<div class="step" data-state="${state}"><span class="step__n">${i + 1}</span>
+        <span class="step__name">${esc(KEY_STEPS[k] || k)}</span>
+        <span class="step__t">${mark}</span></div>`;
+    }).join("");
+    box.innerHTML = `<div class="steps">${rows}</div>
+      <p class="note"><span class="mono">${esc(fmtSec((Date.now() - startedAt) / 1000))}</span> 경과
+      ${detail ? `<br><span class="mono dim">${esc(detail)}</span>` : ""}
+      <br>창을 닫아도 등록은 계속됩니다.</p>`;
+  };
+  paint();
+
+  const clock = setInterval(paint, 1000);
+  const poll = setInterval(async () => {
+    try {
+      const p = await api(`/api/servers/${encodeURIComponent(host)}/ssh-key/progress`);
+      if (!p.running) return;                 // 아직 안 시작했거나 이미 끝났다
+      if (p.steps && p.steps.length) steps = p.steps;
+      if (p.step) current = p.step;
+      detail = p.detail || "";
+      paint();
+    } catch { /* 폴링 실패로 화면을 깨뜨리지 않는다 */ }
+  }, 1000);
+
+  return () => { clearInterval(clock); clearInterval(poll); };
 }
 
 /* hybrid 타겟 준비 결과. 로그를 그대로 보여준다 — 어느 단계에서 건너뛰었는지가

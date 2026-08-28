@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import shlex
+from pathlib import Path
 
 import pytest
 
@@ -18,6 +19,7 @@ from autodeploy.ssh_keys import (
     prepare_desktop,
     mask_sleep_targets,
     register_key,
+    steps_for,
     verify_key_auth,
 )
 
@@ -482,3 +484,91 @@ async def test_a_serial_read_that_blows_up_does_not_fail_the_registration(tmp_pa
     assert result.pubkey.startswith("ssh-ed25519 ")
     assert result.serial is None
     assert result.serial_error
+
+
+# ── AnyDesk ID 파싱 ───────────────────────────────────
+def test_the_id_is_found_even_when_glued_to_the_line_before():
+    """실제로 한 번 깨졌던 출력이다 (snuseoul, 2026-08-28).
+
+    `anydesk --get-id` 가 값 끝에 개행을 안 붙여서 사람이 읽는 줄과 기계용 줄이
+    한 줄로 붙었다. 등록은 성공했는데 접속 ID 만 조용히 사라졌고, 화면은
+    "읽지 못했습니다" 라고만 했다.
+    """
+    log = [
+        "  이 장비의 AnyDesk ID:",
+        "    1318618610ANYDESK_ID=1318618610",
+    ]
+    assert parse_anydesk_id(log) == "1318618610"
+
+
+def test_the_marker_line_still_parses_on_its_own():
+    assert parse_anydesk_id(["ANYDESK_ID=987654321"]) == "987654321"
+    assert parse_anydesk_id(["== 준비 완료", "닫기"]) is None
+
+
+def test_the_script_asks_for_the_id_only_once():
+    """두 번 물어보면 한쪽 출력이 다시 앞 줄에 붙는다 — 위 사고의 원인이다."""
+    script = (
+        Path(__file__).resolve().parents[1] / "src" / "autodeploy" / "node_prep.sh"
+    ).read_text(encoding="utf-8")
+
+    code = [ln for ln in script.splitlines() if not ln.lstrip().startswith("#")]
+    asks = [ln for ln in code if "anydesk --get-id" in ln]
+    assert len(asks) == 1, f"값을 두 번 물어보고 있다: {asks}"
+    assert "--get-id 2>/dev/null | sed" not in script, "개행 없는 출력을 그대로 흘리고 있다"
+    assert 'echo "ANYDESK_ID=${_adid}"' in script, "기계용 줄이 사라졌다"
+
+
+# ── 진행 단계 ─────────────────────────────────────────
+def test_the_step_list_matches_what_actually_runs():
+    """hybrid 만 준비 스크립트를 돈다. 없는 단계를 그리면 영영 안 채워진다."""
+    assert steps_for(prepare=False) == ("connect", "key", "sleep", "serial", "verify")
+    assert steps_for(prepare=True) == (
+        "connect", "key", "sleep", "serial", "prep", "verify"
+    )
+
+
+@pytest.mark.asyncio
+async def test_registration_reports_each_step_in_order(tmp_path):
+    """apt 로 16MB 를 받는 동안 화면이 아무 말도 못 하면 멈춘 것처럼 보인다."""
+    ssh = FakeSSHClient()
+    ssh.enqueue("authorized_keys", [], 0)
+    ssh.enqueue("systemctl mask", [], 0)
+    ssh.enqueue("dmidecode", [StreamLine("stdout", "PF3ABCDE")], 0)
+    ssh.enqueue("cat >", [], 0)
+    ssh.enqueue("bash /tmp/", [StreamLine("stdout", "ANYDESK_ID=123456789")], 0)
+
+    async def fake_connect(host, **kw):
+        return _FakeConn()
+
+    seen: list[str] = []
+    await register_key(
+        host="10.0.0.9", username="connecteve", password="secret",
+        key_path=tmp_path / "id_ed25519", prepare=True,
+        ssh_factory=lambda h, p: ssh, connect_fn=fake_connect,
+        on_step=seen.append,
+    )
+
+    assert seen == list(steps_for(prepare=True))
+
+
+@pytest.mark.asyncio
+async def test_a_registration_without_prep_never_reports_that_step(tmp_path):
+    ssh = FakeSSHClient()
+    ssh.enqueue("authorized_keys", [], 0)
+    ssh.enqueue("systemctl mask", [], 0)
+    ssh.enqueue("dmidecode", [StreamLine("stdout", "PF3ABCDE")], 0)
+
+    async def fake_connect(host, **kw):
+        return _FakeConn()
+
+    seen: list[str] = []
+    await register_key(
+        host="10.0.0.9", username="connecteve", password="secret",
+        key_path=tmp_path / "id_ed25519",
+        ssh_factory=lambda h, p: ssh, connect_fn=fake_connect,
+        on_step=seen.append,
+    )
+
+    assert "prep" not in seen
+    assert seen == list(steps_for(prepare=False))

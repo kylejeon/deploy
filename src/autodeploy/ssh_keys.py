@@ -159,7 +159,12 @@ NODE_PREP_SCRIPT = Path(__file__).with_name("node_prep.sh")
 
 # 스크립트가 마지막에 뱉는 기계용 줄. 사람이 읽는 출력과 따로 둔다 —
 # 줄 모양이 바뀌면 파싱이 조용히 깨지기 때문이다.
-_ANYDESK_ID_RE = re.compile(r"^ANYDESK_ID=(\d+)\s*$")
+#
+# 줄 **머리에 고정하지 않는다.** 실제로 한 번 깨졌다: `anydesk --get-id` 가 값
+# 끝에 개행을 안 붙여서 앞 줄과 한 줄로 붙었고(`…1318618610ANYDESK_ID=…`),
+# 등록은 성공했는데 접속 ID 만 조용히 사라졌다. 스크립트는 고쳤지만, 파서도
+# 한 겹 더 버티게 둔다 — 이 값을 못 읽으면 사람이 그 PC 에 접속할 길이 없다.
+_ANYDESK_ID_RE = re.compile(r"ANYDESK_ID=(\d+)")
 
 
 def is_desktop_profile(profile: str) -> bool:
@@ -228,10 +233,26 @@ async def _try_remove(ssh: SSHClient, remote: str) -> None:
 
 def parse_anydesk_id(lines: Sequence[str]) -> str | None:
     for line in lines:
-        m = _ANYDESK_ID_RE.match(line.strip())
+        m = _ANYDESK_ID_RE.search(line)
         if m:
             return m.group(1)
     return None
+
+
+# 등록이 지나가는 단계. 화면이 진행 상태를 그릴 때 이 순서를 그대로 쓴다.
+# `prep` 은 hybrid 일 때만 낀다.
+STEP_CONNECT = "connect"
+STEP_KEY = "key"
+STEP_SLEEP = "sleep"
+STEP_SERIAL = "serial"
+STEP_PREP = "prep"
+STEP_VERIFY = "verify"
+
+
+def steps_for(prepare: bool) -> tuple[str, ...]:
+    """이번 등록이 지나갈 단계 목록. 화면은 이걸 받아 그린다."""
+    middle = (STEP_PREP,) if prepare else ()
+    return (STEP_CONNECT, STEP_KEY, STEP_SLEEP, STEP_SERIAL, *middle, STEP_VERIFY)
 
 
 @dataclass(frozen=True, slots=True)
@@ -265,6 +286,7 @@ async def register_key(
     ssh_factory: Callable[..., SSHClient] | None = None,
     connect_fn: Callable[..., object] | None = None,
     on_line: LineCallback | None = None,
+    on_step: Callable[[str], object] | None = None,
     prepare: bool = False,
     anydesk_password: str = "",
     weekly_reboot: bool = False,
@@ -282,7 +304,16 @@ async def register_key(
     **mask 가 실패해도 등록은 성공시킨다.** 키 등록이 막히면 설치를 아예 못 하는데,
     부수적인 절전 설정 때문에 그걸 막을 이유가 없다. 대신 결과를 돌려줘서
     화면이 "키는 됐고 절전은 안 됐다" 를 말할 수 있게 한다.
+
+    `on_step` 은 단계가 바뀔 때마다 불린다. hybrid 준비는 apt 로 16MB 짜리를
+    받아 까느라 몇 분이 걸리는데, 그동안 화면이 아무 말도 못 하면 멈춘 것처럼
+    보인다 (`web/progress.py`).
     """
+    def step(name: str) -> None:
+        if on_step is not None:
+            on_step(name)
+
+    step(STEP_CONNECT)
     pubkey = ensure_controller_key(key_path)
 
     if ssh_factory is None:
@@ -295,7 +326,9 @@ async def register_key(
     prep_ran, prep_error, prep_log = False, None, []
     serial, serial_error = None, None
     async with ssh_factory(host, port) as ssh:
+        step(STEP_KEY)
         await install_public_key(ssh, pubkey, on_line=on_line)
+        step(STEP_SLEEP)
         try:
             rc = await mask_sleep_targets(ssh, sudo_password=password, on_line=on_line)
             masked = rc == 0
@@ -308,6 +341,7 @@ async def register_key(
         # 시리얼도 여기서 읽는다. sudo 비밀번호를 손에 쥐고 타겟에 붙어 있는
         # 자리는 여기뿐이고, 읽기만 하는 명령이라 등록을 늦추지 않는다.
         # **실패해도 등록은 성공시킨다** — 서버 화면에서 다시 조회할 수 있다.
+        step(STEP_SERIAL)
         try:
             read = await read_serial(ssh, sudo_password=password, on_line=on_line)
             serial, serial_error = read.serial, read.error
@@ -323,6 +357,7 @@ async def register_key(
                     on_line(line)
 
             prep_ran = True
+            step(STEP_PREP)
             try:
                 rc = await prepare_desktop(
                     ssh,
@@ -339,6 +374,7 @@ async def register_key(
                 prep_error = f"{type(exc).__name__}: {exc}"
                 log.info("타겟 준비 실패 (%s): %s", host, prep_error)
 
+    step(STEP_VERIFY)
     ok = await verify_key_auth(
         host, port=port, username=username, key_path=key_path, connect_fn=connect_fn
     )

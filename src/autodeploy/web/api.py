@@ -32,6 +32,7 @@ from autodeploy.ssh_keys import (
     SSHKeyError,
     is_desktop_profile,
     register_key,
+    steps_for,
 )
 from autodeploy.web import keys
 from autodeploy.web.forwards import ForwardError
@@ -600,6 +601,13 @@ async def post_ssh_key(request: web.Request) -> web.Response:
     # (Wayland 끄기 · 화면 잠금 해제 · AnyDesk). onprem 은 폐쇄망 서버라 해당 없다.
     prep = request.app[keys.NODE_PREP]
     prepare = is_desktop_profile(server.profile)
+
+    # 이 요청은 몇 분이 걸릴 수 있다 (hybrid 는 apt 로 AnyDesk 를 깐다). 화면이
+    # 멈춘 것처럼 보이지 않도록 진행 상태를 따로 적어두고, 화면은 그걸 폴링한다.
+    # 준비 스크립트 출력에는 AnyDesk 비밀번호가 섞일 수 있으므로 **적기 전에** 가린다.
+    board = request.app[keys.SSH_PROGRESS]
+    masker = request.app[keys.MASKER]
+    board.start(host, steps_for(prepare))
     try:
         registration = await register_key(
             host=server.ansible_host,
@@ -609,6 +617,8 @@ async def post_ssh_key(request: web.Request) -> web.Response:
             anydesk_password=prep.anydesk_password,
             weekly_reboot=prep.weekly_reboot,
             weekly_reboot_cron=prep.weekly_reboot_cron,
+            on_step=lambda step: board.step(host, step),
+            on_line=lambda line: board.detail(host, masker(line.line)),
         )
     except SSHKeyError as exc:
         throttle.record_failure(ip, host)
@@ -617,6 +627,8 @@ async def post_ssh_key(request: web.Request) -> web.Response:
         throttle.record_failure(ip, host)
         log.warning("SSH 키 등록 실패 (%s): %s", host, type(exc).__name__)
         return json_error(400, f"타겟에 접속할 수 없습니다: {exc}")
+    finally:
+        board.finish(host)
 
     throttle.reset(ip, host)
     async with connect(request.app[keys.DB_PATH]) as db:
@@ -635,7 +647,6 @@ async def post_ssh_key(request: web.Request) -> web.Response:
 
     # 스크립트 출력에는 AnyDesk 비밀번호가 섞일 수 있다. 화면으로 내보내기 전에
     # 반드시 가린다 — 이 응답은 그대로 브라우저 콘솔에도 남는다.
-    masker = request.app[keys.MASKER]
     return json_response(
         {
             "host": host,
@@ -651,6 +662,18 @@ async def post_ssh_key(request: web.Request) -> web.Response:
             "serial_error": registration.serial_error,
         }
     )
+
+
+@routes.get("/api/servers/{host}/ssh-key/progress")
+async def get_ssh_key_progress(request: web.Request) -> web.Response:
+    """등록이 지금 어느 단계인지. 화면이 1초에 한 번 물어본다.
+
+    등록 중이 아니면 `running: false` 다 — 없는 것과 끝난 것을 구분할 이유가
+    없다. 이 값은 프로세스 메모리에만 있어서 데몬을 다시 띄우면 사라진다.
+    """
+    board = request.app[keys.SSH_PROGRESS]
+    item = board.get(request.match_info["host"])
+    return json_response(item.as_dict() if item is not None else {"running": False})
 
 
 @routes.post("/api/servers/{host}/serial")
