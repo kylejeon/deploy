@@ -1004,23 +1004,25 @@ function serverModal(host) {
   modal(`<h2>${s ? "서버 편집" : "서버 추가"}</h2>
     <div class="stack gap-12">
       <div class="field"><label for="m-host">이름 (inventory_hostname)</label>
-        <input class="input mono" id="m-host" value="${esc(s ? s.host : "")}"${s ? " disabled" : ""} placeholder="yonseiwa"></div>
+        <input class="input mono" id="m-host" value="${esc(s ? s.host : "")}"${s ? " disabled" : ""} placeholder="예: yonseiwa"></div>
       <div class="two">
         <div class="field"><label for="m-ip">주소</label>
-          <input class="input mono" id="m-ip" value="${esc(s ? s.ansible_host : "")}" placeholder="192.168.100.209"></div>
+          <input class="input mono" id="m-ip" value="${esc(s ? s.ansible_host : "")}" placeholder="예: 192.168.100.10"></div>
         <div class="field"><label for="m-user">계정</label>
           <input class="input mono" id="m-user" value="${esc(s ? s.ansible_user : "connecteve")}"></div>
       </div>
       <div class="two">
         <div class="field"><label for="m-site">site_name</label>
-          <input class="input mono" id="m-site" value="${esc(s ? s.site_name : "")}"></div>
+          <input class="input mono" id="m-site" value="${esc(s ? s.site_name : "")}" placeholder="예: yonseiwa"></div>
         <div class="field"><label for="m-prof">프로파일</label>
           <select class="input mono" id="m-prof">${opts}</select></div>
       </div>
       <div class="field"><label for="m-memo">메모 <span class="dim">— 병원명 등 (sites.yml 에는 안 들어감)</span></label>
         <input class="input" id="m-memo" value="${esc(s ? s.memo || "" : "")}"></div>
     </div>
-    ${s ? "" : `<p class="note">추가한 뒤 <b>SSH 키 등록</b>을 해야 설치를 시작할 수 있습니다.</p>`}`,
+    ${s ? "" : `<p class="note">회색 글씨는 <b>예시</b>라 저장되지 않습니다 — 직접 채워야 합니다.
+      계정 <span class="mono">connecteve</span> 와 프로파일 <span class="mono">onprem</span> 은 <b>기본값</b>이라 그대로 저장됩니다.<br>
+      추가한 뒤 <b>SSH 키 등록</b>을 해야 설치를 시작할 수 있습니다.</p>`}`,
     { label: s ? "저장" : "추가" },
     async () => {
       const payload = {
