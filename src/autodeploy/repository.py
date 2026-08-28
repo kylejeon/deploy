@@ -243,9 +243,9 @@ def _row_to_job(row: aiosqlite.Row) -> Job:
 # ── v2: server_meta (sites.yml 에 없는 웹 전용 부가정보) ────────────────
 
 async def get_server_meta(db: aiosqlite.Connection) -> dict[str, dict[str, str | None]]:
-    """host -> {"memo": ..., "key_installed_at": ..., "anydesk_id": ...}"""
+    """host -> {"memo": ..., "key_installed_at": ..., "anydesk_id": ..., "serial": ...}"""
     async with db.execute(
-        "SELECT host, memo, key_installed_at, anydesk_id FROM server_meta"
+        "SELECT host, memo, key_installed_at, anydesk_id, serial FROM server_meta"
     ) as cur:
         rows = await cur.fetchall()
     return {
@@ -253,9 +253,27 @@ async def get_server_meta(db: aiosqlite.Connection) -> dict[str, dict[str, str |
             "memo": r["memo"],
             "key_installed_at": r["key_installed_at"],
             "anydesk_id": r["anydesk_id"],
+            "serial": r["serial"],
         }
         for r in rows
     }
+
+
+async def set_server_serial(db: aiosqlite.Connection, host: str, serial: str) -> None:
+    """`dmidecode -s system-serial-number` 로 읽은 본체 시리얼.
+
+    **읽어낸 값일 때만 부른다.** dmidecode 가 실패했거나 제조사가 안 넣은 값
+    ("Default string" 등)을 그대로 쓰면 서버마다 같은 문자열이 박혀, 기계를
+    구분한다는 이 칸의 목적이 사라진다 (거르는 일은 node_info 가 한다).
+    """
+    await db.execute(
+        """INSERT INTO server_meta (host, serial, updated_at)
+           VALUES (?, ?, CURRENT_TIMESTAMP)
+           ON CONFLICT(host) DO UPDATE SET
+             serial=excluded.serial, updated_at=CURRENT_TIMESTAMP""",
+        (host, serial),
+    )
+    await db.commit()
 
 
 async def set_anydesk_id(db: aiosqlite.Connection, host: str, anydesk_id: str) -> None:

@@ -410,3 +410,75 @@ async def test_a_failed_prep_does_not_fail_the_registration(tmp_path):
     assert result.prep_ran is True
     assert "exit 1" in result.prep_error
     assert any("저장소 접근 실패" in line for line in result.prep_log)
+
+
+# ── 본체 시리얼 ───────────────────────────────────────
+@pytest.mark.asyncio
+async def test_registering_a_key_also_reads_the_serial(tmp_path):
+    """sudo 비밀번호를 쥐고 타겟에 붙어 있는 자리가 여기뿐이다.
+
+    나중에 읽으려면 사람이 비밀번호를 다시 내놓거나, 데몬이 저장해둔 값을
+    꺼내야 한다. 이미 손에 쥐고 있을 때 한 번 읽어두는 편이 싸다.
+    """
+    ssh = FakeSSHClient()
+    ssh.enqueue("authorized_keys", [], 0)
+    ssh.enqueue("systemctl mask", [], 0)
+    ssh.enqueue("dmidecode", [StreamLine("stdout", "PF3ABCDE")], 0)
+
+    async def fake_connect(host, **kw):
+        return _FakeConn()
+
+    result = await register_key(
+        host="10.0.0.9", username="connecteve", password="secret",
+        key_path=tmp_path / "id_ed25519",
+        ssh_factory=lambda h, p: ssh, connect_fn=fake_connect,
+    )
+
+    assert result.serial == "PF3ABCDE"
+    assert result.serial_error is None
+    read = next(c for c in ssh.executed if "dmidecode" in c)
+    assert "secret" not in read, "비밀번호가 명령줄에 실리면 타겟의 ps 에 보인다"
+
+
+@pytest.mark.asyncio
+async def test_a_failed_serial_read_does_not_fail_the_registration(tmp_path):
+    """시리얼은 표시용이다. 그것 때문에 설치를 못 하게 되면 앞뒤가 바뀐다."""
+    ssh = FakeSSHClient()
+    ssh.enqueue("authorized_keys", [], 0)
+    ssh.enqueue("systemctl mask", [], 0)
+    ssh.enqueue("dmidecode", [StreamLine("stderr", "dmidecode: command not found")], 127)
+
+    async def fake_connect(host, **kw):
+        return _FakeConn()
+
+    result = await register_key(
+        host="10.0.0.9", username="connecteve", password="secret",
+        key_path=tmp_path / "id_ed25519",
+        ssh_factory=lambda h, p: ssh, connect_fn=fake_connect,
+    )
+
+    assert result.pubkey.startswith("ssh-ed25519 "), "키 등록 자체는 성공해야 한다"
+    assert result.serial is None
+    assert "dmidecode" in result.serial_error
+
+
+@pytest.mark.asyncio
+async def test_a_serial_read_that_blows_up_does_not_fail_the_registration(tmp_path):
+    """연결이 끊기는 등 예외가 나도 마찬가지다."""
+    ssh = FakeSSHClient()
+    ssh.enqueue("authorized_keys", [], 0)
+    ssh.enqueue("systemctl mask", [], 0)
+    # dmidecode 응답을 안 넣어둔다 → FakeSSHClient 가 예외를 던진다
+
+    async def fake_connect(host, **kw):
+        return _FakeConn()
+
+    result = await register_key(
+        host="10.0.0.9", username="connecteve", password="secret",
+        key_path=tmp_path / "id_ed25519",
+        ssh_factory=lambda h, p: ssh, connect_fn=fake_connect,
+    )
+
+    assert result.pubkey.startswith("ssh-ed25519 ")
+    assert result.serial is None
+    assert result.serial_error

@@ -117,6 +117,7 @@ def create_app(
         middlewares=[session_middleware, require_auth_middleware, csrf_middleware]
     )
     app[keys.NODE_PREP] = node_prep or NodePrepConfig()
+    app[keys.BECOME_PASSWORD] = become_password
     app[keys.DB_PATH] = Path(db_path).expanduser()
     app[keys.HUBCTL_REPO] = hubctl_repo
     app[keys.INVENTORY_PATH] = (

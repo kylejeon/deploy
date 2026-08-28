@@ -122,6 +122,21 @@ function hostLabel(job) {
 /* 환경 표기. 화면에는 읽기 쉬운 이름을 쓰되 실제 `-e` 값도 함께 남긴다 —
    그 값이 Vault 금고 경로이고 재시도할 때 그대로 다시 나가기 때문에,
    "Staging" 만 보여주면 로그의 `-e stage` 와 대조할 방법이 없어진다. */
+/* 대시보드에서 쓰는 본체 시리얼. **지금 인벤토리에 기록된 값**이지 그 작업
+   때의 값이 아니다 — 기계는 바뀔 수 있으므로 툴팁으로 그 사실을 밝힌다.
+   서버가 여럿인 작업은 줄마다 서버가 갈리므로 한 대일 때만 붙인다. */
+function serialOf(host) {
+  const server = state.servers.find((s) => s.host === host);
+  return (server && server.serial) || "";
+}
+function serialNote(job, hostRow) {
+  const hosts = hostRow ? [hostRow.host] : hostsOf(job);
+  const sn = hosts.length === 1 ? serialOf(hosts[0]) : "";
+  return sn
+    ? `<div class="sn" title="본체 시리얼 — 서버 화면에 지금 기록된 값입니다">SN ${esc(sn)}</div>`
+    : "";
+}
+
 const ENV_LABEL = { dev: "Dev", stage: "Staging", prod: "Prod" };
 const envLabel = (env) => ENV_LABEL[env] || env;
 
@@ -312,6 +327,8 @@ function confirmJobDelete(heading, note, payload) {
 
 function liveCard(job) {
   const isClean = job.kind === "clean";
+  const hosts = hostsOf(job);
+  const sn = hosts.length === 1 ? serialOf(hosts[0]) : "";
   const phases = phasesOf(job);
   const idx = Math.max(0, phases.findIndex(([k]) => k === job.current_step));
   const pct = job.status === "queued" ? 0 : Math.round(((idx + 0.5) / phases.length) * 100);
@@ -322,6 +339,7 @@ function liveCard(job) {
       <div>
         <div class="live__hosp">${esc(hostLabel(job))}</div>
         <div class="live__meta">${kindTag(job)}${job.env ? `<span class="env">${esc(job.env)}</span>` : ""}
+          ${sn ? `<span class="sep">·</span><span class="mono" title="본체 시리얼 — 서버 화면에 지금 기록된 값입니다">SN ${esc(sn)}</span>` : ""}
           <span class="sep">·</span><span class="mono">#${job.id}</span>
           <span class="sep">·</span>${esc(job.started_by || "")}
           <span class="sep">·</span>${esc(duration(job))} 경과</div>
@@ -394,7 +412,7 @@ function jobRow(job, hostRow = null, first = true, last = true) {
   return `<tr class="${grouped.trim()}" data-open="${job.id}"${hostRow ? ` data-host="${esc(hostRow.host)}"` : ""}>
     <td class="col-chk" data-nogo>${pick}</td>
     <td><span class="jobid">#${job.id}</span> ${kindTag(job)}</td>
-    <td><span class="tag">${server}</span></td>
+    <td><span class="tag">${server}</span>${serialNote(job, hostRow)}</td>
     <td>${job.env ? `<span class="env">${esc(job.env)}</span> ` : ""}<span class="mono dim">${esc(job.ref || "")}</span></td>
     <td>${profileTag(job, hostRow)}</td>
     <td>${pill(status)}</td>
@@ -869,6 +887,21 @@ function memoCell(s) {
   return parts.length ? parts.join(" ") : "–";
 }
 
+/* 본체 시리얼 — `dmidecode -s system-serial-number` 로 읽은 값이다.
+   키 등록 때 자동으로 한 번 읽으므로, 이 칸의 버튼은 그 전에 등록된 서버와
+   본체를 바꾼 서버를 위한 것이다. 키가 없으면 접속 자체가 안 되므로 버튼도 없다. */
+function serialCell(s) {
+  if (!s.key_installed_at) {
+    return `<span class="dim" title="SSH 키를 등록하면 그때 함께 읽습니다">–</span>`;
+  }
+  const again = `<button class="btn btn--xs" data-serial="${esc(s.host)}"
+    title="타겟에 접속해 dmidecode 로 다시 읽습니다">${s.serial ? "↻" : "조회"}</button>`;
+  const value = s.serial
+    ? `<span class="mono" title="본체 시리얼 (dmidecode -s system-serial-number)">${esc(s.serial)}</span> `
+    : "";
+  return `<span class="row" style="gap:6px; flex-wrap:nowrap">${value}${again}</span>`;
+}
+
 function renderServers() {
   const rows = state.servers.map((s) => {
     const key = s.key_installed_at
@@ -879,6 +912,7 @@ function renderServers() {
       <td class="mono dim">${esc(s.ansible_user)}@${esc(s.ansible_host)}</td>
       <td class="mono dim">${esc(s.site_name)}</td>
       <td><span class="tag" title="${esc(PROFILES[s.profile] || "")}">${esc(s.profile)}</span></td>
+      <td>${serialCell(s)}</td>
       <td>${key}</td>
       <td class="dim">${memoCell(s)}</td>
       <td style="text-align:right"><div class="row" style="justify-content:flex-end; flex-wrap:nowrap">
@@ -886,13 +920,32 @@ function renderServers() {
         <button class="btn btn--xs btn--ghost-danger" data-del="${esc(s.host)}">삭제</button></div></td></tr>`;
   }).join("");
 
-  $("#srvRows").innerHTML = rows || `<tr><td colspan="7" class="dim" style="text-align:center; padding:24px">
+  $("#srvRows").innerHTML = rows || `<tr><td colspan="8" class="dim" style="text-align:center; padding:24px">
     등록된 서버가 없습니다. 오른쪽 위 <b>＋ 서버 추가</b>로 시작하세요.</td></tr>`;
 
   $("#yamlPrev").innerHTML = state.servers.length ? yamlPreview() : `<span class="c"># 아직 서버가 없습니다</span>`;
   $$("#srvRows [data-edit]").forEach((b) => b.addEventListener("click", () => serverModal(b.dataset.edit)));
   $$("#srvRows [data-del]").forEach((b) => b.addEventListener("click", () => confirmDelete(b.dataset.del)));
   $$("#srvRows [data-key]").forEach((b) => b.addEventListener("click", () => sshKeyModal(b.dataset.key)));
+  $$("#srvRows [data-serial]").forEach((b) => b.addEventListener("click", () => readSerial(b)));
+}
+
+/* 타겟에 SSH 로 붙어 sudo dmidecode 를 돌린다 — 몇 초 걸리므로 버튼을 잠그고
+   무슨 일이 일어나는지 적는다. 안 그러면 사람이 계속 누른다. */
+async function readSerial(button) {
+  const host = button.dataset.serial;
+  const before = button.textContent;
+  button.disabled = true;
+  button.textContent = "읽는 중…";
+  try {
+    const r = await api(`/api/servers/${encodeURIComponent(host)}/serial`, { method: "POST" });
+    toast(`${host} 시리얼: ${r.serial}`);
+    await showServers();
+  } catch (e) {
+    toast(e.message, "danger");
+    button.disabled = false;
+    button.textContent = before;
+  }
 }
 
 function yamlPreview() {
@@ -1083,7 +1136,8 @@ function sshKeyModal(host) {
     <p class="note">맥미니의 공개키를 <span class="mono">${esc(s.ansible_user)}@${esc(s.ansible_host)}</span> 의
     <span class="mono">~/.ssh/authorized_keys</span> 에 추가합니다. 이후 hubctl 이 비밀번호 없이 접속합니다.<br>
     같이 <b>절전을 꺼둡니다</b> — 설치 중 서버가 잠들면 SSH 가 끊겨 작업이 죽습니다.
-    (<span class="mono">systemctl mask sleep.target …</span>, sudo 필요·재부팅해도 유지)</p>
+    (<span class="mono">systemctl mask sleep.target …</span>, sudo 필요·재부팅해도 유지)<br>
+    <b>본체 시리얼</b>도 이때 함께 읽습니다 (<span class="mono">dmidecode -s system-serial-number</span>).</p>
     <div class="field"><label for="m-pw">타겟 서버 비밀번호</label>
       <input class="input mono" id="m-pw" type="password" autocomplete="off"></div>
     <p class="note">비밀번호는 이 등록에만 쓰이고 저장되지 않습니다. 같은 키가 이미 있으면 줄이 늘지 않습니다.</p>`,
@@ -1100,7 +1154,12 @@ function sshKeyModal(host) {
                 `타겟에서 sudo systemctl mask sleep.target suspend.target ` +
                 `hibernate.target hybrid-sleep.target 를 직접 실행하세요.`, "warn");
         } else {
-          toast(`${host} 키 등록 완료 (절전 꺼둠)`);
+          toast(`${host} 키 등록 완료 (절전 꺼둠)${r.serial ? ` · 시리얼 ${r.serial}` : ""}`);
+        }
+        // 시리얼은 등록의 부수 작업이라 실패해도 등록을 막지 않는다. 대신
+        // 조용히 넘어가지 않는다 — 서버 목록에서 다시 조회할 수 있다고 말한다.
+        if (!r.serial && r.serial_error) {
+          toast(`${host} 시리얼은 읽지 못했습니다 — ${r.serial_error}`, "warn");
         }
         await showServers();
         // 준비 스크립트를 돌렸으면 결과를 보여준다. AnyDesk ID 처럼 사람이 읽어야

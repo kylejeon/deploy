@@ -22,6 +22,7 @@ from pathlib import Path
 
 import asyncssh
 
+from autodeploy.node_info import read_serial
 from autodeploy.ssh import LineCallback, SSHClient
 
 log = logging.getLogger(__name__)
@@ -249,6 +250,9 @@ class KeyRegistration:
     prep_log: tuple[str, ...] = ()
     prep_error: str | None = None
     anydesk_id: str | None = None
+    # 본체 시리얼. 못 읽어도 등록은 성공이다 (절전 mask 와 같은 이유).
+    serial: str | None = None
+    serial_error: str | None = None
 
 
 async def register_key(
@@ -289,6 +293,7 @@ async def register_key(
 
     masked, mask_error = False, None
     prep_ran, prep_error, prep_log = False, None, []
+    serial, serial_error = None, None
     async with ssh_factory(host, port) as ssh:
         await install_public_key(ssh, pubkey, on_line=on_line)
         try:
@@ -299,6 +304,17 @@ async def register_key(
         except Exception as exc:   # 연결이 끊겨도 키 등록 결과는 지키다
             mask_error = f"{type(exc).__name__}: {exc}"
             log.info("절전 타겟 mask 실패 (%s): %s", host, mask_error)
+
+        # 시리얼도 여기서 읽는다. sudo 비밀번호를 손에 쥐고 타겟에 붙어 있는
+        # 자리는 여기뿐이고, 읽기만 하는 명령이라 등록을 늦추지 않는다.
+        # **실패해도 등록은 성공시킨다** — 서버 화면에서 다시 조회할 수 있다.
+        try:
+            read = await read_serial(ssh, sudo_password=password, on_line=on_line)
+            serial, serial_error = read.serial, read.error
+        except Exception as exc:
+            serial_error = f"{type(exc).__name__}: {exc}"
+        if serial_error:
+            log.info("시리얼 조회 실패 (%s): %s", host, serial_error)
 
         if prepare:
             def collect(line) -> None:
@@ -335,4 +351,5 @@ async def register_key(
         pubkey=pubkey, sleep_masked=masked, sleep_error=mask_error,
         prep_ran=prep_ran, prep_log=tuple(prep_log), prep_error=prep_error,
         anydesk_id=parse_anydesk_id(prep_log),
+        serial=serial, serial_error=serial_error,
     )

@@ -227,3 +227,18 @@ async def test_new_tables_exist(temp_db):
         ) as cur:
             names = {r["name"] for r in await cur.fetchall()}
     assert {"users", "sessions", "job_hosts", "server_meta"} <= names
+
+
+@pytest.mark.asyncio
+async def test_server_meta_serial_column_added(tmp_path):
+    """이미 등록된 서버는 NULL 로 남는다 — 서버 화면의 '조회' 로 채운다."""
+    path = tmp_path / "state.db"
+    await _make_v1_db(path)
+    await init_db(path)
+    async with connect(path) as db:
+        await db.execute("INSERT INTO server_meta (host) VALUES ('old')")
+        await db.execute("INSERT INTO server_meta (host, serial) VALUES ('new', 'PF3ABCDE')")
+        await db.commit()
+        async with db.execute("SELECT host, serial FROM server_meta ORDER BY host") as cur:
+            rows = {r["host"]: r["serial"] for r in await cur.fetchall()}
+    assert rows == {"new": "PF3ABCDE", "old": None}

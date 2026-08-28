@@ -43,24 +43,41 @@ def inventory_path(tmp_path: Path) -> Path:
     return path
 
 
-@pytest.fixture
-async def client(temp_db, tmp_path, inventory_path):
+async def _login(temp_db, tmp_path, inventory_path, **overrides):
+    """로그인까지 끝낸 클라이언트. 앱 설정을 바꿔가며 쓰려고 따로 뒀다."""
     async with connect(temp_db) as db:
         await create_user(db, USERNAME, PASSWORD)
 
     repo = tmp_path / "hub-provisioning"
-    repo.mkdir()
+    repo.mkdir(exist_ok=True)
     app = create_app(
         db_path=temp_db,
         hubctl_repo=repo,
         inventory_path=inventory_path,
         static_dir=tmp_path / "static",
         hubctl_shell=("bash", "-c"),
+        **overrides,
     )
     c = TestClient(TestServer(app))
     await c.start_server()
     resp = await c.post("/api/login", json={"username": USERNAME, "password": PASSWORD})
     c.csrf = (await resp.json())["csrf_token"]
+    return c
+
+
+@pytest.fixture
+async def client(temp_db, tmp_path, inventory_path):
+    c = await _login(temp_db, tmp_path, inventory_path)
+    try:
+        yield c
+    finally:
+        await c.close()
+
+
+@pytest.fixture
+async def sudo_client(temp_db, tmp_path, inventory_path):
+    """타겟 sudo 비밀번호가 설정된 콘솔 (.env 의 SSH_PASSWORD 에 해당)."""
+    c = await _login(temp_db, tmp_path, inventory_path, become_password="sudo-pw")
     try:
         yield c
     finally:
@@ -488,3 +505,148 @@ async def test_target_password_is_never_echoed_back(client, monkeypatch):
     monkeypatch.setattr(api, "register_key", boom)
     resp = await send(client, "POST", "/api/servers/alpha/ssh-key", {"password": secret})
     assert secret not in await resp.text()
+
+
+# ── 본체 시리얼 ───────────────────────────────────────
+async def mark_key_installed(client, host="alpha"):
+    """조회는 등록된 키로 접속하므로, 키가 있는 상태를 만들어준다."""
+    async def fake_register(**kw):
+        return KeyRegistration(pubkey="k", sleep_masked=True)
+
+    import autodeploy.web.api as api_module
+    original = api_module.register_key
+    api_module.register_key = fake_register
+    try:
+        await send(client, "POST", f"/api/servers/{host}/ssh-key", {"password": "pw"})
+    finally:
+        api_module.register_key = original
+
+
+async def test_the_serial_read_at_key_registration_lands_in_the_server_list(client, monkeypatch):
+    """키 등록 때 읽은 값이 목록에 남아야 한다 — 안 그러면 또 물어보러 가야 한다."""
+    async def fake_register(**kw):
+        return KeyRegistration(pubkey="k", sleep_masked=True, serial="PF3ABCDE")
+
+    monkeypatch.setattr(api, "register_key", fake_register)
+    body = await (await send(client, "POST", "/api/servers/alpha/ssh-key",
+                             {"password": "pw"})).json()
+    assert body["serial"] == "PF3ABCDE"
+
+    servers = (await (await client.get("/api/servers")).json())["servers"]
+    assert servers[0]["serial"] == "PF3ABCDE"
+
+
+async def test_a_server_without_a_serial_reports_none(client):
+    servers = (await (await client.get("/api/servers")).json())["servers"]
+    assert servers[0]["serial"] is None, "읽기 전에는 비어 있어야 한다 (지어내지 않는다)"
+
+
+async def test_reading_the_serial_on_demand_stores_it(sudo_client, monkeypatch):
+    """키 등록 전에 만들어진 서버와 본체를 바꾼 서버를 위한 경로."""
+    from autodeploy.node_info import SerialRead
+
+    await mark_key_installed(sudo_client)
+    seen = {}
+
+    async def fake_fetch(**kw):
+        seen.update(kw)
+        return SerialRead(serial="PF3ABCDE", exit_code=0)
+
+    monkeypatch.setattr(api, "fetch_serial", fake_fetch)
+    resp = await send(sudo_client, "POST", "/api/servers/alpha/serial")
+
+    assert resp.status == 200
+    assert (await resp.json())["serial"] == "PF3ABCDE"
+    # 인벤토리의 주소/계정으로 붙고, sudo 에는 데몬이 쥔 비밀번호를 쓴다.
+    assert seen["host"] == "192.0.2.10"
+    assert seen["username"] == "connecteve"
+    assert seen["sudo_password"] == "sudo-pw"
+
+    servers = (await (await sudo_client.get("/api/servers")).json())["servers"]
+    assert servers[0]["serial"] == "PF3ABCDE"
+
+
+async def test_reading_the_serial_again_replaces_the_old_one(sudo_client, monkeypatch):
+    from autodeploy.node_info import SerialRead
+
+    await mark_key_installed(sudo_client)
+    values = iter(["PF3ABCDE", "PF9ZZZZZ"])
+
+    async def fake_fetch(**kw):
+        return SerialRead(serial=next(values), exit_code=0)
+
+    monkeypatch.setattr(api, "fetch_serial", fake_fetch)
+    await send(sudo_client, "POST", "/api/servers/alpha/serial")
+    await send(sudo_client, "POST", "/api/servers/alpha/serial")
+
+    servers = (await (await sudo_client.get("/api/servers")).json())["servers"]
+    assert servers[0]["serial"] == "PF9ZZZZZ"
+
+
+async def test_a_server_without_a_key_cannot_be_asked(sudo_client, monkeypatch):
+    """접속 자체가 안 된다. SSH 가 끊기고 나서 알려주는 것보다 미리 거른다."""
+    called = False
+
+    async def fake_fetch(**kw):
+        nonlocal called
+        called = True
+
+    monkeypatch.setattr(api, "fetch_serial", fake_fetch)
+    resp = await send(sudo_client, "POST", "/api/servers/alpha/serial")
+
+    assert resp.status == 400
+    assert "키" in (await resp.json())["error"]
+    assert called is False, "붙어보지도 말아야 한다"
+
+
+async def test_without_a_configured_sudo_password_it_says_so(client, monkeypatch):
+    """.env 에 값이 없으면 sudo 가 조용히 실패한다 — 무엇을 채워야 하는지 말한다."""
+    await mark_key_installed(client)
+    resp = await send(client, "POST", "/api/servers/alpha/serial")
+
+    assert resp.status == 400
+    error = (await resp.json())["error"]
+    assert "SSH_PASSWORD" in error
+
+
+async def test_an_unreadable_serial_is_not_stored(sudo_client, monkeypatch):
+    """'Default string' 같은 값을 저장하면 서버마다 같은 문자열이 박힌다."""
+    from autodeploy.node_info import SerialRead
+
+    await mark_key_installed(sudo_client)
+
+    async def fake_fetch(**kw):
+        return SerialRead(serial=None, exit_code=0, error="이 기계에는 시리얼이 기록돼 있지 않습니다")
+
+    monkeypatch.setattr(api, "fetch_serial", fake_fetch)
+    resp = await send(sudo_client, "POST", "/api/servers/alpha/serial")
+
+    assert resp.status == 400
+    assert "시리얼" in (await resp.json())["error"]
+    servers = (await (await sudo_client.get("/api/servers")).json())["servers"]
+    assert servers[0]["serial"] is None
+
+
+async def test_the_sudo_password_never_comes_back_in_an_error(temp_db, tmp_path, inventory_path, monkeypatch):
+    """실패 이유에는 타겟의 출력이 섞인다. 비밀이 묻어 나가면 안 된다."""
+    from autodeploy.masking import SecretMasker
+
+    c = await _login(temp_db, tmp_path, inventory_path,
+                     become_password="sudo-pw", masker=SecretMasker(["sudo-pw"]))
+    try:
+        await mark_key_installed(c)
+
+        async def boom(**kw):
+            raise OSError("connection reset while sending sudo-pw")
+
+        monkeypatch.setattr(api, "fetch_serial", boom)
+        resp = await send(c, "POST", "/api/servers/alpha/serial")
+        assert resp.status == 400
+        assert "sudo-pw" not in await resp.text()
+    finally:
+        await c.close()
+
+
+async def test_an_unknown_server_is_not_probed(sudo_client):
+    resp = await send(sudo_client, "POST", "/api/servers/ghost/serial")
+    assert resp.status == 404

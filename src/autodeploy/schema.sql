@@ -110,5 +110,8 @@ CREATE TABLE IF NOT EXISTS server_meta (
   -- 준비 스크립트가 읽어온 AnyDesk 접속 ID. memo 와 따로 둔다 — 사람이 쓴 메모를
   -- 덮어쓰지 않고, 다시 등록해도 같은 값이 겹쳐 쌓이지 않게.
   anydesk_id       TEXT,
+  -- `dmidecode -s system-serial-number` 로 읽은 본체 시리얼. 사람이 고치는 값이
+  -- 아니라 기계에서 읽어온 값이라 메모와 따로 둔다.
+  serial           TEXT,
   updated_at       TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );

@@ -41,3 +41,7 @@ SSH_THROTTLE: web.AppKey["LoginThrottle"] = web.AppKey("ssh_throttle")
 HOUSEKEEPER: web.AppKey[Any] = web.AppKey("housekeeper")
 FORWARDS: web.AppKey["ForwardManager"] = web.AppKey("forwards")
 NODE_PREP: web.AppKey["NodePrepConfig"] = web.AppKey("node_prep")
+# 타겟에서 sudo 를 쓸 때의 비밀번호 (.env 의 BECOME_PASSWORD 또는 SSH_PASSWORD).
+# 설치는 JobService 가 파일로 넘기지만, 시리얼 조회처럼 작업이 아닌 호출도
+# 같은 값을 쓴다.
+BECOME_PASSWORD = web.AppKey("become_password", str)

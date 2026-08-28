@@ -164,6 +164,9 @@ tbody tr[data-open]{cursor:pointer}
 .tr--grp .jobid{opacity:.4}
 /* 기록이 아니라 "지금 인벤토리 값" 이라는 표시. 점선으로 확정이 아님을 알린다. */
 .tag--guess{border-style:dashed; color:var(--ink-3)}
+/* 최근 작업 표에서 서버 이름 밑에 붙는 본체 시리얼. 이름을 읽는 데 방해가
+   되지 않도록 작고 흐리게 둔다 — 찾을 때만 눈에 들어오면 된다. */
+.sn{margin-top:3px; font:500 11px/1.5 "IBM Plex Mono",monospace; color:var(--ink-3); white-space:nowrap}
 .tr--grp-first .jobid{opacity:1}
 /* 최근 작업 선택 칸 */
 .col-chk{width:36px; text-align:center; padding-right:0}

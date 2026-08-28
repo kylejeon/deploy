@@ -9,6 +9,7 @@ import inspect
 import logging
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Protocol, TypeVar, runtime_checkable
 
 import asyncssh
@@ -91,9 +92,10 @@ class AsyncSSHClient:
         self,
         host: str,
         username: str,
-        password: str,
+        password: str = "",
         *,
         port: int = 22,
+        key_path: str | Path | None = None,
         known_hosts: Any = None,
         connect_attempts: int = 3,
         connect_backoff: Sequence[float] = (1.0, 2.0),
@@ -102,6 +104,7 @@ class AsyncSSHClient:
         self._user = username
         self._password = password
         self._port = port
+        self._key_path = str(Path(key_path).expanduser()) if key_path is not None else None
         self._known_hosts = known_hosts
         self._connect_attempts = connect_attempts
         self._connect_backoff = connect_backoff
@@ -109,13 +112,20 @@ class AsyncSSHClient:
 
     async def __aenter__(self) -> "AsyncSSHClient":
         async def _attempt() -> asyncssh.SSHClientConnection:
-            return await asyncssh.connect(
-                host=self._host,
-                port=self._port,
-                username=self._user,
-                password=self._password,
-                known_hosts=self._known_hosts,
-            )
+            # asyncssh 규약: `client_keys` 를 아예 안 넘기면 ~/.ssh 의 기본 키를
+            # 훑고, **명시적으로 None 을 넘기면 공개키 인증을 아예 안 한다**
+            # (known_hosts 와 같은 함정이다). 그래서 있을 때만 넘긴다.
+            kwargs: dict[str, Any] = {
+                "host": self._host,
+                "port": self._port,
+                "username": self._user,
+                "known_hosts": self._known_hosts,
+            }
+            if self._key_path is not None:
+                kwargs["client_keys"] = [self._key_path]
+            if self._password:
+                kwargs["password"] = self._password
+            return await asyncssh.connect(**kwargs)
 
         try:
             self._conn = await _retry_async(

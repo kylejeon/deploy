@@ -485,3 +485,38 @@ async def test_login_page_redirects_when_already_signed_in(ui_client):
     resp = await ui_client.get("/login", allow_redirects=False)
     assert resp.status == 302
     assert resp.headers["Location"] == "/"
+
+
+def test_the_empty_server_table_spans_every_column():
+    """빈 목록 안내의 colspan 이 헤더 칸 수와 같아야 한다.
+
+    칸을 늘릴 때 같이 안 고치기 쉬운 값이고, 어긋나면 서버가 한 대도 없을 때만
+    표가 틀어져서 평소에는 티가 안 난다.
+    """
+    static = Path(__file__).resolve().parents[1] / "src" / "autodeploy" / "web" / "static"
+    html = (static / "console.html").read_text(encoding="utf-8")
+    js = (static / "console.js").read_text(encoding="utf-8")
+
+    head = re.search(r"<thead><tr>(<th>이름</th>.*?)</tr></thead>", html, re.S)
+    assert head is not None, "서버 표의 헤더를 못 찾았다"
+    assert "<th>시리얼</th>" in head.group(1), "본체 시리얼 칸이 없다"
+    columns = len(re.findall(r"<th", head.group(1)))
+
+    span = re.search(r'#srvRows"\)\.innerHTML = rows \|\| `<tr><td colspan="(\d+)"', js)
+    assert span is not None, "빈 목록 안내를 못 찾았다"
+    assert int(span.group(1)) == columns
+
+
+def test_the_dashboard_shows_the_serial_too():
+    """서버 화면에만 있으면 진행 중인 설치를 보면서 기계를 확인할 수 없다.
+
+    id 가 없는 요소라 위의 컨트롤 검사에 안 걸린다 — 따로 못박는다.
+    """
+    js = (
+        Path(__file__).resolve().parents[1]
+        / "src" / "autodeploy" / "web" / "static" / "console.js"
+    ).read_text(encoding="utf-8")
+
+    assert "function serialNote(" in js
+    assert "serialNote(job, hostRow)" in js, "최근 작업 표에 시리얼이 안 붙는다"
+    assert "SN ${esc(sn)}" in js, "진행 중 카드에 시리얼이 안 붙는다"

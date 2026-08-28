@@ -26,7 +26,13 @@ from autodeploy.inventory import (
     validate_server,
 )
 from autodeploy.models import JobKind
-from autodeploy.ssh_keys import SSHKeyError, is_desktop_profile, register_key
+from autodeploy.node_info import fetch_serial
+from autodeploy.ssh_keys import (
+    DEFAULT_KEY_PATH,
+    SSHKeyError,
+    is_desktop_profile,
+    register_key,
+)
 from autodeploy.web import keys
 from autodeploy.web.forwards import ForwardError
 from autodeploy.web.forwards import plan as forward_plan
@@ -195,6 +201,7 @@ async def get_servers(request: web.Request) -> web.Response:
             "memo": meta.get(s.host, {}).get("memo"),
             "key_installed_at": meta.get(s.host, {}).get("key_installed_at"),
             "anydesk_id": meta.get(s.host, {}).get("anydesk_id"),
+            "serial": meta.get(s.host, {}).get("serial"),
         }
         for s in inventory.servers
     ]
@@ -618,6 +625,8 @@ async def post_ssh_key(request: web.Request) -> web.Response:
             # 메모는 사람이 쓴 글이라 덮어쓰지 않는다. AnyDesk ID 는 따로 두고
             # 화면의 메모 칸에 나란히 보여준다.
             await repository.set_anydesk_id(db, host, registration.anydesk_id)
+        if registration.serial:
+            await repository.set_server_serial(db, host, registration.serial)
         meta = await repository.get_server_meta(db)
     if not registration.sleep_masked:
         log.warning("절전 타겟 mask 실패 (%s): %s", host, registration.sleep_error)
@@ -638,8 +647,65 @@ async def post_ssh_key(request: web.Request) -> web.Response:
             "prep_error": registration.prep_error,
             "prep_log": [masker(line) for line in registration.prep_log],
             "anydesk_id": registration.anydesk_id,
+            "serial": registration.serial,
+            "serial_error": registration.serial_error,
         }
     )
+
+
+@routes.post("/api/servers/{host}/serial")
+async def post_server_serial(request: web.Request) -> web.Response:
+    """본체 시리얼을 다시 읽는다 (`dmidecode -s system-serial-number`).
+
+    키 등록 때 이미 한 번 읽는다. 이 경로는 **그 전에 등록된 서버**와 **본체를
+    바꾼 서버**를 위한 것이다.
+
+    비밀번호를 받지 않는다: 접속은 등록해둔 키로 하고, sudo 에는 설치가 쓰는
+    것과 같은 `.env` 의 값을 쓴다. 사람이 다시 입력할 이유가 없고, 새 비밀을
+    화면에 통과시키지 않는 편이 낫다.
+    """
+    host = request.match_info["host"]
+    server = load_inventory(request.app[keys.INVENTORY_PATH]).get(host)
+    if server is None:
+        return json_error(404, f"등록되지 않은 서버입니다: {host}")
+
+    async with connect(request.app[keys.DB_PATH]) as db:
+        meta = await repository.get_server_meta(db)
+    if not (meta.get(host) or {}).get("key_installed_at"):
+        return json_error(
+            400,
+            f"{host} 은(는) SSH 키가 등록되지 않아 접속할 수 없습니다"
+            " — 먼저 키 등록을 실행하세요",
+        )
+
+    sudo_password = request.app[keys.BECOME_PASSWORD]
+    if not sudo_password:
+        return json_error(
+            400,
+            "타겟에서 sudo 를 쓸 비밀번호가 설정돼 있지 않습니다"
+            " — .env 의 SSH_PASSWORD (또는 BECOME_PASSWORD) 를 채운 뒤 데몬을 다시 시작하세요",
+        )
+
+    masker = request.app[keys.MASKER]
+    try:
+        read = await fetch_serial(
+            host=server.ansible_host,
+            username=server.ansible_user,
+            key_path=DEFAULT_KEY_PATH,
+            sudo_password=sudo_password,
+        )
+    except Exception as exc:
+        log.info("시리얼 조회 실패 (%s): %s", host, type(exc).__name__)
+        return json_error(400, masker(f"타겟에 접속할 수 없습니다: {exc}"))
+
+    if not read.ok:
+        # 실패 이유에는 타겟의 출력이 섞인다. 비밀이 묻어 나가지 않게 가린다.
+        return json_error(400, masker(read.error or "시리얼을 읽지 못했습니다"))
+
+    async with connect(request.app[keys.DB_PATH]) as db:
+        await repository.set_server_serial(db, host, read.serial)
+    log.info("시리얼 조회: %s (by %s)", host, request["session"].user.username)
+    return json_response({"host": host, "serial": read.serial})
 
 
 # ── 작업 (변경) ─────────────────────────────────────────────────────
