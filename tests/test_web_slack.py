@@ -520,3 +520,20 @@ def test_the_dashboard_shows_the_serial_too():
     assert "function serialNote(" in js
     assert "serialNote(job, hostRow)" in js, "최근 작업 표에 시리얼이 안 붙는다"
     assert "SN ${esc(sn)}" in js, "진행 중 카드에 시리얼이 안 붙는다"
+
+
+def test_missing_serials_are_filled_in_without_a_click():
+    """버튼만 두면 대시보드에는 영영 안 뜬다 — 사람이 서버 화면에 들를 이유가 없다.
+
+    키가 등록된 서버만, 세션당 한 번만 시도해야 한다. 타겟이 꺼져 있으면 SSH 가
+    한참 기다리다 실패하는데 화면을 열 때마다 그걸 반복하면 콘솔이 느려진다.
+    """
+    js = (
+        Path(__file__).resolve().parents[1]
+        / "src" / "autodeploy" / "web" / "static" / "console.js"
+    ).read_text(encoding="utf-8")
+
+    assert "async function backfillSerials(" in js
+    assert "\n  backfillSerials();" in js, "만들어만 두고 부르지 않는다"
+    assert "s.key_installed_at && !s.serial" in js, "이미 읽은 서버까지 다시 읽는다"
+    assert "state.serialTried" in js, "세션당 한 번이라는 보장이 없다"

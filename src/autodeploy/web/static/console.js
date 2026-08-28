@@ -133,7 +133,7 @@ function serialNote(job, hostRow) {
   const hosts = hostRow ? [hostRow.host] : hostsOf(job);
   const sn = hosts.length === 1 ? serialOf(hosts[0]) : "";
   return sn
-    ? `<div class="sn" title="본체 시리얼 — 서버 화면에 지금 기록된 값입니다">SN ${esc(sn)}</div>`
+    ? `<div><span class="tag sn" title="본체 시리얼 — 서버 화면에 지금 기록된 값입니다">SN ${esc(sn)}</span></div>`
     : "";
 }
 
@@ -191,6 +191,9 @@ const state = {
   // 대시보드는 5초마다 다시 그린다. 고른 것을 여기 두지 않으면 그때마다
   // 체크가 풀려 여러 건을 고를 수가 없다.
   selectedJobs: new Set(),
+  // 시리얼을 이미 읽어보려 한 서버. 타겟이 꺼져 있으면 SSH 가 한참 기다리다
+  // 실패하는데, 그걸 화면 열 때마다 반복하면 콘솔이 느려진다.
+  serialTried: new Set(),
   jobId: null, hostFilter: "", autoscroll: true,
   lines: [], lastLineId: 0, lastLineAt: null,
   sse: null, pollTimer: null, tickTimer: null,
@@ -930,6 +933,31 @@ function renderServers() {
   $$("#srvRows [data-serial]").forEach((b) => b.addEventListener("click", () => readSerial(b)));
 }
 
+/* 시리얼이 비어 있는 서버는 콘솔을 열 때 알아서 한 번 읽어둔다.
+ *
+ * 버튼만 두면 대시보드에는 영영 안 뜬다 — 사람이 서버 화면에 들를 이유가
+ * 없기 때문이다. 키가 등록된 서버만 대상이다 (그래야 접속이 된다).
+ *
+ * 세션당 한 번만 시도하고, 실패하면 조용히 넘어간다. 서버 화면의 조회 버튼이
+ * 그대로 남으므로 사람이 다시 누를 수 있다.
+ */
+async function backfillSerials() {
+  const targets = state.servers.filter(
+    (s) => s.key_installed_at && !s.serial && !state.serialTried.has(s.host));
+  if (!targets.length) return;
+
+  for (const s of targets) {
+    state.serialTried.add(s.host);
+    // 한 대씩 차례로 — 여러 타겟에 동시에 sudo 를 걸 이유가 없다.
+    try { await api(`/api/servers/${encodeURIComponent(s.host)}/serial`, { method: "POST" }); }
+    catch { /* 못 읽어도 화면은 그대로 돈다 */ }
+  }
+
+  try { await loadServers(); } catch { return; }
+  if (state.view === "srv") renderServers();
+  if (state.view === "dash") renderDash();
+}
+
 /* 타겟에 SSH 로 붙어 sudo dmidecode 를 돌린다 — 몇 초 걸리므로 버튼을 잠그고
    무슨 일이 일어나는지 적는다. 안 그러면 사람이 계속 누른다. */
 async function readSerial(button) {
@@ -1534,4 +1562,6 @@ window.addEventListener("hashchange", routeFromHash);
   if (state.me.version) $("#brandVer").textContent = `v${state.me.version}`;
   try { await loadServers(); } catch { /* 화면에서 다시 알린다 */ }
   routeFromHash();
+  // 화면을 먼저 띄우고 뒤에서 채운다 — 시리얼 때문에 첫 그리기가 늦으면 안 된다.
+  backfillSerials();
 })();
