@@ -568,3 +568,26 @@ def test_every_registration_step_has_a_korean_name():
 
     named = set(re.findall(r"(\w+):", block.group(1)))
     assert set(steps_for(prepare=True)) <= named, f"이름 없는 단계: {set(steps_for(True)) - named}"
+
+
+def test_the_progress_box_is_unhidden_before_it_is_drawn():
+    """실제로 났던 버그다 (2026-09-01, heung-k 등록).
+
+    진행 상자는 `hidden` 으로 만들어 두는데 **펼치는 줄을 빠뜨렸다.** 단계는
+    멀쩡히 그려지고 있었지만 `[hidden]{display:none !important}` 라 화면에는
+    제목과 버튼만 남았고, 사람이 "등록이 안 되는구나" 하고 닫기를 눌렀다.
+
+    문자열만 보는 검사라 DOM 상태까지는 못 본다 — 그래서 이 버그가 통과했다.
+    적어도 펼치는 줄이 사라지는 것은 여기서 막는다.
+    """
+    # 모달 마크업은 console.html 이 아니라 console.js 의 템플릿 안에 있다.
+    js = (
+        Path(__file__).resolve().parents[1]
+        / "src" / "autodeploy" / "web" / "static" / "console.js"
+    ).read_text(encoding="utf-8")
+
+    assert 'id="keyProg" hidden' in js, "처음부터 보이면 폼 밑에 빈 상자가 붙는다"
+
+    block = re.search(r"function watchKeySteps\(.*?\n\}", js, re.S)
+    assert block is not None, "console.js 에서 watchKeySteps 를 못 찾았다"
+    assert "box.hidden = false" in block.group(0), "숨은 채로 그리면 화면에 아무것도 안 나온다"

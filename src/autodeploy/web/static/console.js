@@ -1244,6 +1244,11 @@ function watchKeySteps(host, box, hybrid) {
   let current = "connect";
   let detail = "";
 
+  // **그리는 쪽이 보이게 한다.** 상자는 hidden 으로 만들어 두는데, 펼치는 일을
+  // 부르는 쪽에 맡겼다가 실제로 빠뜨렸다 — 단계는 멀쩡히 그려지는데 화면에는
+  // 제목과 버튼만 남아서, 사람이 "안 되는구나" 하고 닫기를 눌렀다.
+  box.hidden = false;
+
   const paint = () => {
     const idx = steps.indexOf(current);
     const rows = steps.map((k, i) => {
