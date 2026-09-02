@@ -1415,14 +1415,25 @@ function drawPatchPlan() {
   $("#patchPlan").innerHTML = PHASES.patch.map(([, label], i) =>
     `<div class="plan__i"><b>${i + 1}</b><span>${esc(label)}</span></div>`).join("");
 
-  const tail = `${esc(ref || "<ref 없음>")}${$("#p-reftag").checked ? " -e hub_deploy_ref_type=tag" : ""}`;
+  // ref 는 선택이다. 비우면 `--` 뒤를 통째로 안 붙인다 — 명령이 실제로 그렇게 나간다.
+  const tail = ref
+    ? ` -- -e hub_deploy_ref=<b>${esc(ref)}</b>${$("#p-reftag").checked ? " -e hub_deploy_ref_type=tag" : ""}`
+    : "";
   const limit = esc(hosts.length ? hosts.join(",") : "<대상 없음>");
   $("#patchCmd").innerHTML =
-    `./bin/hubctl patch -l <b>${limit}</b> -- -e hub_deploy_ref=<b>${tail}</b>`
+    `./bin/hubctl patch -l <b>${limit}</b>${tail}`
     + `<br><span style="color:var(--console-dim)">중간의 <b>[y/N]</b> 에는 y 를 자동으로 넣습니다</span>`;
 
   const warn = [];
   if (hosts.length > FORKS) warn.push(`선택한 ${hosts.length}대는 ansible 기본 forks(${FORKS})보다 많아 ${FORKS}대씩 나눠 진행됩니다.`);
+  // 콘솔은 ref 를 강제하지 않는다. 다만 playbook 은 지금 이 값을 요구하므로
+  // (patch_create | 인자 검증), 막지는 않되 무슨 일이 일어날지는 미리 말한다.
+  // 첫 단계에서 멈추는 것이라 타겟은 손대기 전이고, 반쯤 된 상태가 남지 않는다.
+  if (!ref) {
+    warn.push("ref 를 비웠습니다. 지금 hub-provisioning 은 이 값을 요구해서"
+      + " (patch_create | 인자 검증), 첫 단계에서 '-e hub_deploy_ref=<새 ref> 필수' 로"
+      + " 멈출 수 있습니다. 멈추더라도 타겟은 손대기 전이라 그대로입니다.");
+  }
   $("#patchWarn").innerHTML = `<div class="alert alert--warn"><span class="alert__g" aria-hidden="true">!</span>
     <p class="note" style="color:var(--ink-2)">번들을 만들고 <b>곧바로 적용</b>합니다. 터미널이라면 변경 앱 목록을 보고 <span class="mono">[y/N]</span> 을 눌렀을 자리인데,
     콘솔은 그 확인을 <b>시작할 때</b> 받습니다 — 시작하면 중간에 멈추지 않습니다.<br>
@@ -1430,18 +1441,19 @@ function drawPatchPlan() {
     문제가 생기면 <span class="mono">hubctl rollback -l &lt;host&gt; -K</span> 로 직전 상태로 되돌립니다.
     ${warn.map((w) => `<br>${esc(w)}`).join("")}</p></div>`;
 
-  $("#patchSubmit").disabled = hosts.length === 0 || !ref;
+  $("#patchSubmit").disabled = hosts.length === 0;
 }
 
 $("#patchForm").addEventListener("submit", (e) => {
   e.preventDefault();
   const hosts = patchHosts();
   const ref = $("#p-ref").value.trim();
-  if (!hosts.length || !ref) return;
+  if (!hosts.length) return;
   const isTag = $("#p-reftag").checked;
   modal(`<h2>${hosts.length}대에 패치를 적용할까요?</h2>
     <p class="note">대상: <b class="mono">${esc(hosts.join(", "))}</b><br>
-    ref: <b class="mono">${esc(ref)}</b>${isTag ? " (태그)" : ""}</p>
+    ref: ${ref ? `<b class="mono">${esc(ref)}</b>${isTag ? " (태그)" : ""}`
+              : `<b>기본값</b> <span class="dim">— hub-provisioning 이 정한 ref 를 씁니다</span>`}</p>
     <div class="alert alert--warn"><span class="alert__g" aria-hidden="true">!</span>
       <p class="note" style="color:var(--ink-2)">번들을 만든 뒤 <b>확인 없이 그대로 적용</b>합니다 —
       터미널의 <span class="mono">[y/N]</span> 을 대신하는 것이 이 버튼입니다.
@@ -1452,7 +1464,7 @@ $("#patchForm").addEventListener("submit", (e) => {
       try {
         const created = await api("/api/jobs", {
           method: "POST",
-          body: { kind: "patch", hosts, ref, ref_type: isTag ? "tag" : null },
+          body: { kind: "patch", hosts, ref: ref || null, ref_type: ref && isTag ? "tag" : null },
         });
         toast(`작업 #${created.id} 을(를) 시작했습니다`);
         go("job", created.id);
