@@ -86,7 +86,7 @@
             <div class="field"><label for="f-env">환경 <span class="dim">— Vault 금고 (-e)</span></label>
               <select class="input mono" id="f-env"><option value="dev" selected>dev (QA 기본)</option><option value="stage">stage</option><option value="prod">prod</option></select></div>
             <div class="field"><label for="f-ref">hub-deploy ref <span class="dim">— 비우면 기본값</span></label>
-              <input class="input mono" id="f-ref" placeholder="main / feature/obs-stack / v1.2.0"></div>
+              <input class="input mono" id="f-ref" placeholder="main, Release v1.1.0, feature/obs-stack"></div>
           </div>
           <label class="type"><input type="checkbox" id="f-reftag">
             <span><span class="type__n">태그로 지정</span><span class="type__d">ref가 브랜치가 아니라 태그일 때 체크 — <span class="mono">hub_deploy_ref_type=tag</span>가 함께 전달됩니다</span></span></label>
@@ -109,7 +109,7 @@
               <span class="count push" id="pCount">0대 선택</span></div>
             <div class="servers" id="pSrvList"></div></div>
           <div class="field"><label for="p-ref">hub-deploy ref <span class="dim">— 번들에 담을 버전 (필수)</span></label>
-            <input class="input mono" id="p-ref" placeholder="v1.2.1 / main / feature/obs-stack"></div>
+            <input class="input mono" id="p-ref" placeholder="main, Release v1.1.0, feature/obs-stack"></div>
           <label class="type"><input type="checkbox" id="p-reftag">
             <span><span class="type__n">태그로 지정</span><span class="type__d">ref가 브랜치가 아니라 태그일 때 체크 — 체크하지 않으면 <span class="mono">patch_create</span>가 경고를 냅니다</span></span></label>
         </div></div>
