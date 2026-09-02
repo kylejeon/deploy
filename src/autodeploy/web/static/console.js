@@ -1101,6 +1101,7 @@ async function forwardModal(hosts, env) {
     <b>터미널</b>은 이 맥의 Terminal 앱이 열리면서 접속까지 실행됩니다.
     타겟 비밀번호는 직접 입력하셔야 합니다 — 중계는 길만 내주고 인증은
     이 맥과 타겟 사이에서 일어납니다.</p>
+    <div id="fwdEnv" class="row gap-8" style="flex-wrap:wrap" hidden></div>
     <div id="fwdRows" class="stack gap-8"></div>`, { confirm: false });
   await paintForwards();
 }
@@ -1125,6 +1126,21 @@ async function paintForwards() {
     return;
   }
 
+  /* 중앙(hybrid)으로 가는 포트는 환경마다 주소가 다르다. 작업에 env 가 없으면
+     (patch·verify·clean 은 `-e ENV` 를 안 받는다) 콘솔은 어느 환경인지 알 길이
+     없다 — 그때 "알 수 없습니다" 로 끝내지 않고 사람이 고르게 한다. */
+  const cloudy = blocks.some((b) => b.entries.some((x) => x.mode === "cloud" || x.mode === "unknown"));
+  const envBox = $("#fwdEnv");
+  if (envBox) {
+    envBox.hidden = !cloudy;
+    if (cloudy) {
+      envBox.innerHTML = `<span class="lbl">환경</span>`
+        + ["dev", "stage", "prod"].map((v) =>
+          `<button class="btn btn--xs${v === env ? " btn--primary" : ""}" data-fwd-env="${v}">${v}</button>`).join("")
+        + (env ? "" : `<span class="dim" style="font-size:12px">— 중앙 주소는 환경마다 다릅니다</span>`);
+    }
+  }
+
   el.innerHTML = blocks.map(({ host, profile, user, entries, open }) => {
     const rows = entries.map((entry) => {
       const f = open.get(`${host}:${entry.port}`);
@@ -1134,8 +1150,8 @@ async function paintForwards() {
           target="_blank" rel="noopener">${esc(entry.url)}</a></span>
           <span class="tag">중앙</span>`;
       } else if (entry.mode === "unknown") {
-        right = `<span class="fwd__url dim">환경(dev/stage/prod)을 알 수 없어 주소를 정할 수 없습니다</span>
-          <span class="tag">–</span>`;
+        right = `<span class="fwd__url dim">위에서 환경을 고르면 주소가 나옵니다</span>
+          <span class="tag">중앙</span>`;
       } else if (f && entry.via === "ssh") {
         /* 링크를 그대로 남겨둔다 — 중계를 닫았다 열지 않고 터미널만 다시 띄울 수 있게. */
         right = `<span class="fwd__url"><a class="mono" href="${esc(sshUrl(user, f.listen_port))}"
@@ -1566,6 +1582,13 @@ document.addEventListener("click", (e) => {
   // 작업 화면은 통째로 다시 그려지므로 개별 바인딩 대신 위임으로 받는다.
   const jump = e.target.closest("[data-jump]");
   if (jump) jumpToLine(Number(jump.dataset.jump));
+});
+
+document.addEventListener("click", (e) => {
+  const pick = e.target.closest("[data-fwd-env]");
+  if (!pick) return;
+  state.forwardEnv = pick.dataset.fwdEnv;
+  paintForwards();
 });
 
 document.addEventListener("click", async (e) => {

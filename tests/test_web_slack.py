@@ -591,3 +591,20 @@ def test_the_progress_box_is_unhidden_before_it_is_drawn():
     block = re.search(r"function watchKeySteps\(.*?\n\}", js, re.S)
     assert block is not None, "console.js 에서 watchKeySteps 를 못 찾았다"
     assert "box.hidden = false" in block.group(0), "숨은 채로 그리면 화면에 아무것도 안 나온다"
+
+
+def test_the_forward_modal_lets_you_pick_the_environment():
+    """중앙(hybrid) 주소는 환경마다 다른데 patch·verify·clean 에는 env 가 없다.
+
+    "환경을 알 수 없습니다" 로 끝내면 화면이 막다른 길이 된다 — 주소는 서버가
+    이미 알고 있으니(forwards.CLOUD_URLS) 사람이 환경만 고르면 된다.
+    """
+    js = (
+        Path(__file__).resolve().parents[1]
+        / "src" / "autodeploy" / "web" / "static" / "console.js"
+    ).read_text(encoding="utf-8")
+
+    assert 'id="fwdEnv"' in js, "환경을 고를 자리가 없다"
+    assert "data-fwd-env" in js, "고른 값을 받는 곳이 없다"
+    assert '["dev", "stage", "prod"]' in js
+    assert "알 수 없어 주소를 정할 수 없습니다" not in js, "막다른 문구가 남아 있다"
