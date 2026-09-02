@@ -594,18 +594,9 @@ async def test_patch_checks_ssh_keys_before_it_starts(client):
     assert "nokey" in (await resp.json())["error"]
 
 
-async def test_patch_requires_targets(client):
-    """대상 없이는 무엇을 패치할지가 없다. ref 는 선택이다 (아래)."""
+async def test_patch_requires_targets_and_ref(client):
     assert (await post(client, "/api/jobs", {"kind": "patch", "ref": "v1"})).status == 400
-
-
-async def test_patch_without_a_ref_is_accepted(client):
-    """콘솔은 ref 를 강제하지 않는다.
-
-    hub-provisioning 의 patch_create 는 지금 이 값을 요구하지만, 그 판단은
-    playbook 이 첫 단계에서 내린다 — 콘솔이 미리 막지 않는다.
-    """
-    assert (await post(client, "/api/jobs", {"kind": "patch", "hosts": ["alpha"]})).status == 201
+    assert (await post(client, "/api/jobs", {"kind": "patch", "hosts": ["alpha"]})).status == 400
 
 
 async def test_patch_approve_runs_apply(client, temp_db):

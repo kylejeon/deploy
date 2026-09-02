@@ -207,8 +207,8 @@ def build_command(
         if phase is None:
             # 원샷 — 타겟에서 번들을 만들고(base=live release-config) 그대로 적용한다.
             targets = _check_hosts(hosts)
-            # ref 는 선택이다. 비우면 `-- -e hub_deploy_ref=...` 를 아예 안 붙이고,
-            # hub-provisioning 의 기본 ref 가 그대로 쓰인다.
+            if not ref:
+                raise HubctlError("patch 에는 ref 가 필요합니다")
             argv = ["./bin/hubctl", "patch", "-l", ",".join(targets)]
             argv += _passthrough(ref, ref_type)
         elif phase == "create":

@@ -108,26 +108,11 @@ def test_patch_one_shot_limits_to_the_chosen_servers():
     assert " create " not in cmd and " apply " not in cmd
 
 
-def test_patch_one_shot_requires_hosts():
+def test_patch_one_shot_requires_hosts_and_ref():
     with pytest.raises(HubctlError, match="호스트"):
         build_command(JobKind.PATCH, ref="v1")
-
-
-def test_patch_one_shot_works_without_a_ref():
-    """ref 는 선택이다. 비우면 hub-provisioning 의 기본 ref 가 쓰인다.
-
-    `--` 뒤를 통째로 안 붙인다 — 빈 값을 넘기면 playbook 이 빈 ref 로 체크아웃을
-    시도한다.
-    """
-    cmd = build_command(JobKind.PATCH, hosts=["a", "b"])
-    assert cmd == "./bin/hubctl patch -l a,b"
-    assert "--" not in cmd and "hub_deploy_ref" not in cmd
-
-
-def test_patch_still_rejects_a_ref_type_without_a_ref():
-    """무엇에 붙일 태그인지가 없다. 조용히 무시하면 사람이 태그로 착각한다."""
-    with pytest.raises(HubctlError, match="ref_type"):
-        build_command(JobKind.PATCH, hosts=["a"], ref_type="tag")
+    with pytest.raises(HubctlError, match="ref"):
+        build_command(JobKind.PATCH, hosts=["a"])
 
 
 def test_patch_rejects_an_unknown_phase():
