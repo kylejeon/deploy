@@ -89,6 +89,8 @@ class JobRequest:
     ref_type: str | None = None
     # configure --only (1.1.1.0 신규 이미지 전환). 다른 종류에는 쓰지 않는다.
     only: str | None = None
+    # 실행 직전 hub-provisioning 을 맞출 브랜치. 비우면 main.
+    sync_branch: str | None = None
     clean_mode: str | None = None
     confirm: str | None = None
 
@@ -159,16 +161,18 @@ class JobService:
                 clean_mode=req.clean_mode,
                 phase=phase,
             )
+            build_sync_command(req.sync_branch or SYNC_BRANCH)
         except HubctlError as exc:
             raise JobError(str(exc)) from exc
 
         async with connect(self.db_path) as db:
             cur = await db.execute(
                 "INSERT INTO jobs"
-                " (kind, status, env, ref, ref_type, clean_mode, only_tags, started_by)"
-                " VALUES (?, 'queued', ?, ?, ?, ?, ?, ?)",
+                " (kind, status, env, ref, ref_type, clean_mode, only_tags,"
+                "  sync_branch, started_by)"
+                " VALUES (?, 'queued', ?, ?, ?, ?, ?, ?, ?)",
                 (kind.value, req.env, req.ref, req.ref_type, req.clean_mode,
-                 req.only, req.started_by),
+                 req.only, req.sync_branch or SYNC_BRANCH, req.started_by),
             )
             job_id = int(cur.lastrowid)
             if hosts:
@@ -337,11 +341,12 @@ class JobService:
         sink = _LogSink(self, job_id, step, current=first_step)
         await sink.start()
 
-        # hub-provisioning 을 main 기준으로 맞춘 뒤에 시작한다. 작업은 한 번에
-        # 하나만 돌므로, 여기서 당겨도 도는 중인 다른 작업의 playbook 이 발밑에서
-        # 바뀌는 일은 없다 (작업 생성 시점에 당기면 그럴 수 있다).
+        # hub-provisioning 을 고른 브랜치(기본 main)로 맞춘 뒤에 시작한다. 작업은
+        # 한 번에 하나만 돌므로, 여기서 당겨도 도는 중인 다른 작업의 playbook 이
+        # 발밑에서 바뀌는 일은 없다 (작업 생성 시점에 당기면 그럴 수 있다).
+        branch = req.sync_branch or SYNC_BRANCH
         if _needs_fresh_repo(req.kind, phase):
-            sync_rc = await self._sync_repo(ticket, sink)
+            sync_rc = await self._sync_repo(ticket, sink, branch)
             if sync_rc != 0:
                 await sink.close()
                 if ticket.cancel_requested:
@@ -349,7 +354,7 @@ class JobService:
                     return
                 await self._finalize(
                     job_id, hosts, status=JobStatus.FAILED, exit_code=sync_rc,
-                    error=f"hub-provisioning({SYNC_BRANCH}) 최신화에 실패해 시작하지"
+                    error=f"hub-provisioning({branch}) 최신화에 실패해 시작하지"
                           " 않았습니다 — 타겟 서버는 그대로입니다. 위 로그에서 이유를"
                           " 확인하고 다시 실행하세요.",
                     recaps={},
@@ -413,7 +418,9 @@ class JobService:
             recaps=result.recaps,
         )
 
-    async def _sync_repo(self, ticket: JobTicket, sink: _LogSink) -> int:
+    async def _sync_repo(
+        self, ticket: JobTicket, sink: _LogSink, branch: str = SYNC_BRANCH
+    ) -> int:
         """hub-provisioning 을 최신으로 맞춘다. 0 이면 성공.
 
         출력은 작업 로그에 그대로 남는다 — 마지막 줄에 어떤 커밋으로 설치했는지가
@@ -430,11 +437,11 @@ class JobService:
             return -1
 
         sink.feed("stdout", ParsedLine(
-            f"── hub-provisioning 을 {SYNC_BRANCH} 최신으로 맞추는 중",
+            f"── hub-provisioning 을 {branch} 최신으로 맞추는 중",
             LineKind.TASK, None, None,
         ))
         try:
-            result = await runner.run(build_sync_command(), on_line=sink.feed)
+            result = await runner.run(build_sync_command(branch), on_line=sink.feed)
         except Exception as exc:
             log.exception("hub-provisioning 최신화 실행 실패")
             sink.feed("stderr", ParsedLine(

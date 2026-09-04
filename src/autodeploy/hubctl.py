@@ -104,7 +104,10 @@ class HubctlError(RuntimeError):
 # 원샷 `hubctl patch` 가 적용 여부를 묻기 **직전에** 내는 줄 (bin/hubctl cmd_patch).
 # 프롬프트 자체는 개행이 없어 못 잡으므로 이 줄을 신호로 쓴다.
 # 설치 직전에 컨트롤러의 hub-provisioning 을 맞출 브랜치.
+# 설치·패치를 돌릴 때 hub-provisioning 을 맞출 브랜치. **기본은 main** 이고,
+# 아직 main 에 없는 기능을 시험할 때만 다른 브랜치를 고른다 (작업마다 기록된다).
 SYNC_BRANCH = "main"
+SYNC_BRANCHES: tuple[str, ...] = ("main", "dev")
 
 # 1.1.1.0 부터 **신규 이미지**가 들어왔다. patch 는 base↔new 의 diff 만 담으므로
 # 새로 생긴 이미지가 반영되지 않는다. 그 경계를 넘는 패치는 configure 로
@@ -205,7 +208,21 @@ def _passthrough(ref: str | None, ref_type: str | None) -> list[str]:
     return args
 
 
+# 브랜치 이름 모양. 목록으로 못 박지 않는 이유는 feature 브랜치로 시험할 일이
+# 있기 때문이고, 그래도 아무 문자열이나 받지는 않는다 (`-` 로 시작하면 git 이
+# 옵션으로 읽고, 공백·`..` 은 refname 으로 성립하지 않는다).
+_BRANCH_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/-]*$")
+
+
+def _check_branch(branch: str) -> str:
+    name = (branch or "").strip()
+    if not _BRANCH_RE.match(name) or ".." in name or name.endswith("/"):
+        raise HubctlError(f"hub-provisioning 브랜치 이름이 올바르지 않습니다: {branch!r}")
+    return name
+
+
 def build_sync_command(branch: str = SYNC_BRANCH) -> str:
+    branch = _check_branch(branch)
     """컨트롤러의 hub-provisioning 을 `origin/<branch>` 에 맞추는 명령.
 
     `git pull` 한 방으로 하지 않는 이유가 셋 있다.

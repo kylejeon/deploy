@@ -602,6 +602,10 @@ function renderJob() {
             ? `${esc(envLabel(job.env))} <span class="mono dim">(-e ${esc(job.env)})</span>`
             : `– <span class="dim">이 종류는 -e 를 받지 않습니다</span>`}</dd>
           <dt>ref</dt><dd>${esc(job.ref || "–")}${job.ref_type ? ` (${esc(job.ref_type)})` : ""}</dd>
+          ${job.sync_branch && job.sync_branch !== "main"
+            ? `<dt>설치 코드</dt><dd><span class="mono" style="color:var(--warn)">${esc(job.sync_branch)}</span>
+                <span class="dim">— hub-provisioning 브랜치 (main 아님)</span></dd>` : ""}
+          ${job.only_tags ? `<dt>--only</dt><dd class="mono">${esc(job.only_tags)}</dd>` : ""}
           <dt>종료 코드</dt><dd>${job.exit_code === null || job.exit_code === undefined ? "–" : job.exit_code}</dd>
           ${job.cancel_by ? `<dt>취소</dt><dd>${esc(job.cancel_by)}</dd>` : ""}
         </dl>
@@ -895,7 +899,8 @@ function confirmCancel(id) {
 async function retry(job, hosts) {
   if (!hosts.length) return;
   const payload = { kind: job.kind, hosts, env: job.env, ref: job.ref, ref_type: job.ref_type,
-                    clean_mode: job.clean_mode, only: job.only_tags };
+                    clean_mode: job.clean_mode, only: job.only_tags,
+                    sync_branch: job.sync_branch };
   if (job.kind === "clean") payload.confirm = hosts[0];
   modal(`<h2>${esc(hosts.length)}대를 다시 실행할까요?</h2>
     <p class="note">대상: <b class="mono">${esc(hosts.join(", "))}</b><br>
@@ -1373,6 +1378,7 @@ async function showNew() {
     </label>`;
   }).join("") : `<p class="note">등록된 서버가 없습니다. <b>서버</b> 화면에서 먼저 추가하세요.</p>`;
 
+  $("#f-branch").onchange = drawPlan;
   $$('input[name="nsrv"]').forEach((c) => c.addEventListener("change", drawPlan));
   $("#nAll").onchange = (e) => {
     $$('input[name="nsrv"]:not(:disabled)').forEach((c) => { c.checked = e.target.checked; });
@@ -1396,7 +1402,9 @@ function drawPlan() {
   const ref = $("#f-ref").value.trim();
   const tail = ref ? ` -- -e hub_deploy_ref=${ref}${$("#f-reftag").checked ? " -e hub_deploy_ref_type=tag" : ""}` : "";
   const limit = hosts.length ? hosts.join(",") : "<대상 없음>";
-  $("#cmdPrev").innerHTML = `./bin/hubctl install -e <b>${esc(env)}</b> -l <b>${esc(limit)}</b>${esc(tail)}`;
+  const branch = $("#f-branch").value;
+  $("#cmdPrev").innerHTML = `./bin/hubctl install -e <b>${esc(env)}</b> -l <b>${esc(limit)}</b>${esc(tail)}`
+    + branchNote(branch);
 
   const warn = [];
   if (hosts.length > FORKS) warn.push(`선택한 ${hosts.length}대는 ansible 기본 forks(${FORKS})보다 많아 ${FORKS}대씩 나눠 진행됩니다.`);
@@ -1421,7 +1429,8 @@ $("#newForm").addEventListener("submit", (e) => {
       try {
         const created = await api("/api/jobs", {
           method: "POST",
-          body: { kind: "install", hosts, env, ref: ref || null, ref_type: ref && $("#f-reftag").checked ? "tag" : null },
+          body: { kind: "install", hosts, env, ref: ref || null, ref_type: ref && $("#f-reftag").checked ? "tag" : null,
+          sync_branch: $("#f-branch").value },
         });
         toast(`작업 #${created.id} 을(를) 시작했습니다`);
         go("job", created.id);
@@ -1472,6 +1481,7 @@ async function showPatch() {
   }));
   $("#p-reftag").onchange = drawPatchPlan;
   $("#p-env").onchange = drawPatchPlan;
+  $("#p-branch").onchange = drawPatchPlan;
 
   state.patchModePicked = false;
   pickPatchMode(needsConfigure($("#p-ref").value.trim()) ? "configure" : "patch");
@@ -1484,6 +1494,13 @@ function pickPatchMode(mode) {
 }
 
 const patchMode = () => ($('input[name="pmode"]:checked') || {}).value || "patch";
+
+/* 실행 직전 hub-provisioning 을 이 브랜치로 맞춘다. main 이 아니면 그 사실을
+   명령 밑에 적는다 — 화면 위쪽 select 를 못 보고 지나칠 수 있다. */
+function branchNote(branch) {
+  return branch === "main" ? ""
+    : `<br><span style="color:var(--warn)">설치 코드는 <b>${esc(branch)}</b> 브랜치입니다 (main 아님)</span>`;
+}
 
 const patchHosts = () => $$('input[name="psrv"]:checked').map((c) => c.value);
 
@@ -1504,11 +1521,12 @@ function drawPatchPlan() {
   const tag = $("#p-reftag").checked ? " -e hub_deploy_ref_type=tag" : "";
   const refPart = `-- -e hub_deploy_ref=<b>${esc(ref || "<ref 없음>")}</b>${esc(tag)}`;
   const limit = esc(hosts.length ? hosts.join(",") : "<대상 없음>");
-  $("#patchCmd").innerHTML = isConfigure
+  $("#patchCmd").innerHTML = (isConfigure
     ? `./bin/hubctl configure -e <b>${esc(env)}</b> -l <b>${limit}</b>`
       + `<br>&nbsp;&nbsp;--only <b>${esc(CONFIGURE_ONLY_TAGS)}</b> ${refPart}`
     : `./bin/hubctl patch -l <b>${limit}</b> ${refPart}`
-      + `<br><span style="color:var(--console-dim)">중간의 <b>[y/N]</b> 에는 y 를 자동으로 넣습니다</span>`;
+      + `<br><span style="color:var(--console-dim)">중간의 <b>[y/N]</b> 에는 y 를 자동으로 넣습니다</span>`)
+    + branchNote($("#p-branch").value);
 
   const warn = [];
   if (hosts.length > FORKS) warn.push(`선택한 ${hosts.length}대는 ansible 기본 forks(${FORKS})보다 많아 ${FORKS}대씩 나눠 진행됩니다.`);
@@ -1536,9 +1554,11 @@ $("#patchForm").addEventListener("submit", (e) => {
   const isTag = $("#p-reftag").checked;
   const isConfigure = patchMode() === "configure";
   const env = $("#p-env").value;
+  const syncBranch = $("#p-branch").value;
   const body = isConfigure
-    ? { kind: "configure", hosts, env, ref, ref_type: isTag ? "tag" : null, only: CONFIGURE_ONLY_TAGS }
-    : { kind: "patch", hosts, ref, ref_type: isTag ? "tag" : null };
+    ? { kind: "configure", hosts, env, ref, ref_type: isTag ? "tag" : null,
+        only: CONFIGURE_ONLY_TAGS, sync_branch: syncBranch }
+    : { kind: "patch", hosts, ref, ref_type: isTag ? "tag" : null, sync_branch: syncBranch };
   modal(`<h2>${hosts.length}대에 ${isConfigure ? "configure 를" : "패치를"} 적용할까요?</h2>
     <p class="note">대상: <b class="mono">${esc(hosts.join(", "))}</b><br>
     ref: <b class="mono">${esc(ref)}</b>${isTag ? " (태그)" : ""}${isConfigure ? `<br>환경: <b class="mono">${esc(env)}</b>` : ""}</p>

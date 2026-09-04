@@ -170,6 +170,8 @@ def git_init(repo: Path) -> None:
     run("-c", "init.defaultBranch=main", "init", "-q")
     run(*who, "add", "-A")
     run(*who, "commit", "-qm", "init")
+    # main 아닌 브랜치도 하나 둔다 — 콘솔이 dev 로 맞출 수 있어야 한다.
+    run("branch", "dev")
     run("remote", "add", "origin", str(repo))
 
 
@@ -1276,3 +1278,36 @@ async def test_patch_does_not_take_only(client):
         "kind": "patch", "hosts": ["alpha"], "ref": "v1", "only": "flux_wire",
     })
     assert resp.status == 400
+
+
+# ── hub-provisioning 브랜치 ─────────────────────────────────────────
+async def test_the_sync_branch_defaults_to_main(client):
+    job_id = (await (await post(
+        client, "/api/jobs", {"kind": "verify", "hosts": ["alpha"]}
+    )).json())["id"]
+    job = await (await client.get(f"/api/jobs/{job_id}")).json()
+    assert job["sync_branch"] == "main"
+
+
+async def test_a_job_can_follow_another_branch(client):
+    """아직 main 에 없는 기능을 시험할 때 (configure --only 는 dev 에만 있다)."""
+    job_id = (await (await post(client, "/api/jobs", {
+        "kind": "install", "hosts": ["alpha"], "env": "dev", "sync_branch": "dev",
+    })).json())["id"]
+    await wait_finished(client, job_id)
+
+    job = await (await client.get(f"/api/jobs/{job_id}")).json()
+    assert job["sync_branch"] == "dev"
+
+    text = await (await client.get(f"/api/jobs/{job_id}/log")).text()
+    assert "dev 최신으로 맞추는 중" in text
+    assert "git checkout dev" in text or "Switched to branch 'dev'" in text or "'dev'" in text
+
+
+async def test_a_bogus_sync_branch_never_starts(client):
+    """`-` 로 시작하면 git 이 옵션으로 읽는다. 작업이 만들어지기 전에 막는다."""
+    resp = await post(client, "/api/jobs", {
+        "kind": "verify", "hosts": ["alpha"], "sync_branch": "-rf",
+    })
+    assert resp.status == 400
+    assert "브랜치" in (await resp.json())["error"]

@@ -16,6 +16,7 @@ CREATE TABLE IF NOT EXISTS jobs (
   ref_type          TEXT,          -- branch|tag|commit
   clean_mode        TEXT,          -- reset|reset-keep|uninstall
   only_tags         TEXT,          -- configure --only (1.1.1.0 신규 이미지 전환)
+  sync_branch       TEXT,          -- 실행 직전 맞춘 hub-provisioning 브랜치 (기본 main)
   exit_code         INTEGER,
   cancel_by         TEXT,
   current_step      TEXT,

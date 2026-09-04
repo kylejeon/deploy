@@ -335,7 +335,7 @@ async def delete_server_meta(db: aiosqlite.Connection, host: str) -> None:
 # 다르므로 건드리지 않고 따로 둔다 (D1: Slack 경로 불변).
 
 _JOB_COLUMNS = (
-    "id", "kind", "status", "env", "ref", "ref_type", "clean_mode", "only_tags",
+    "id", "kind", "status", "env", "ref", "ref_type", "clean_mode", "only_tags", "sync_branch",
     "exit_code", "cancel_by", "current_step", "started_by",
     "slack_channel", "slack_thread_ts", "slack_permalink", "error_message",
     "created_at", "started_at", "finished_at",

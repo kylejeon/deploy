@@ -15,6 +15,7 @@ from pathlib import Path
 import pytest
 
 from autodeploy.hubctl import (
+    SYNC_BRANCH,
     needs_configure,
     parse_version,
     build_sync_command,
@@ -580,3 +581,26 @@ def test_a_blank_only_tag_is_rejected():
     for bad in (",", "flux_wire,", " ,flux_wire"):
         with pytest.raises(HubctlError, match="비어 있"):
             build_command(JobKind.CONFIGURE, hosts=["a"], env="dev", only=bad)
+
+
+# ── hub-provisioning 브랜치 ───────────────────────────
+def test_sync_defaults_to_main():
+    """평소에는 main 이다. 다른 브랜치는 시험할 때만 고른다."""
+    assert SYNC_BRANCH == "main"
+    assert "origin/main" in build_sync_command()
+
+
+def test_sync_can_follow_another_branch():
+    """아직 main 에 없는 기능을 시험할 때 (예: configure --only 는 dev 에만 있다)."""
+    cmd = build_sync_command("dev")
+    assert "git fetch origin dev" in cmd
+    assert "git checkout dev" in cmd
+    assert "origin/dev" in cmd
+    assert "main" not in cmd
+
+
+@pytest.mark.parametrize("bad", ["", "  ", "-rf", "a b", "feature/../x", "dev/", "dev;ls"])
+def test_a_bogus_branch_name_is_rejected(bad):
+    """`-` 로 시작하면 git 이 옵션으로 읽는다. 나머지는 refname 으로 성립하지 않는다."""
+    with pytest.raises(HubctlError, match="브랜치 이름"):
+        build_sync_command(bad)
