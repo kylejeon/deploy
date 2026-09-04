@@ -245,7 +245,8 @@ def _row_to_job(row: aiosqlite.Row) -> Job:
 async def get_server_meta(db: aiosqlite.Connection) -> dict[str, dict[str, str | None]]:
     """host -> {"memo": ..., "key_installed_at": ..., "anydesk_id": ..., "serial": ...}"""
     async with db.execute(
-        "SELECT host, memo, key_installed_at, anydesk_id, serial FROM server_meta"
+        "SELECT host, memo, key_installed_at, anydesk_id, serial,"
+        " live_ref, live_ref_type, live_ref_at FROM server_meta"
     ) as cur:
         rows = await cur.fetchall()
     return {
@@ -254,9 +255,31 @@ async def get_server_meta(db: aiosqlite.Connection) -> dict[str, dict[str, str |
             "key_installed_at": r["key_installed_at"],
             "anydesk_id": r["anydesk_id"],
             "serial": r["serial"],
+            "live_ref": r["live_ref"],
+            "live_ref_type": r["live_ref_type"],
+            "live_ref_at": r["live_ref_at"],
         }
         for r in rows
     }
+
+
+async def set_server_live_ref(
+    db: aiosqlite.Connection, host: str, ref: str, ref_type: str
+) -> None:
+    """그 서버가 지금 보고 있는 배포 ref.
+
+    **읽은 시각도 같이 남긴다.** 서버는 콘솔 밖에서도 바뀔 수 있어서, 이 값은
+    '그때 그랬다' 이지 '지금 그렇다' 가 아니다. 화면이 그 차이를 말할 수 있어야 한다.
+    """
+    await db.execute(
+        """INSERT INTO server_meta (host, live_ref, live_ref_type, live_ref_at, updated_at)
+           VALUES (?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+           ON CONFLICT(host) DO UPDATE SET
+             live_ref=excluded.live_ref, live_ref_type=excluded.live_ref_type,
+             live_ref_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP""",
+        (host, ref, ref_type),
+    )
+    await db.commit()
 
 
 async def set_server_serial(db: aiosqlite.Connection, host: str, serial: str) -> None:

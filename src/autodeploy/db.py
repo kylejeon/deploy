@@ -117,6 +117,11 @@ async def _migrate(db: aiosqlite.Connection) -> None:
     # 이미 등록된 서버는 NULL 로 남는다 — 서버 화면의 '조회' 로 채운다.
     if "serial" not in meta_cols:
         await db.execute("ALTER TABLE server_meta ADD COLUMN serial TEXT")
+    # 그 서버가 지금 보고 있는 배포 ref. 읽어봐야 아는 값이라 처음엔 비어 있다.
+    for name in ("live_ref", "live_ref_type", "live_ref_at"):
+        if name not in meta_cols:
+            decl = "TIMESTAMP" if name.endswith("_at") else "TEXT"
+            await db.execute(f"ALTER TABLE server_meta ADD COLUMN {name} {decl}")
 
     if await _jobs_needs_rebuild(db):
         await _rebuild_jobs(db)

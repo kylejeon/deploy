@@ -642,8 +642,38 @@ def test_the_patch_screen_can_switch_to_configure():
     assert "function needsConfigure(" in js
     assert "state.patchModePicked" in js, "사람이 고른 뒤에도 자동으로 뒤집으면 안 된다"
     assert 'kind: "configure"' in js
-    # `--only` 는 **같은 ref 재수렴 전용**이다. ref 를 바꾸는 이 경로에 붙이면
+    # `--only` 는 **같은 ref 재수렴 전용**이다. ref 를 바꾸는 경로에 붙이면
     # flux_wire 의 partial_guard 가 시작 전에 멈춘다 (2026-09-04 installtest 실측,
     # RUNBOOK-hubctl §3-8 "ref 를 바꾸는 일은 --only 로 하지 않는다").
-    submit = js[js.index('kind: "configure", hosts, env, ref'):][:300]
-    assert "only:" not in submit, "ref 를 바꾸는 configure 에 --only 를 붙이면 가드가 막는다"
+    submit = js[js.index('kind: "configure", hosts, env, ref'):][:400]
+    assert "isOnly ? { only:" in submit, "--only 가 재수렴 모드에서만 붙어야 한다"
+
+
+def test_the_only_mode_reads_the_live_ref_from_the_server():
+    """`--only` 는 서버가 지금 보고 있는 ref 를 그대로 넘겨야 통과한다.
+
+    사람이 옮겨 적다 틀리면 가드가 막을 뿐이라, 기계가 읽어 채운다.
+    """
+    js = (
+        Path(__file__).resolve().parents[1]
+        / "src" / "autodeploy" / "web" / "static" / "console.js"
+    ).read_text(encoding="utf-8")
+
+    assert "async function fillLiveRef(" in js
+    assert "/live-ref" in js, "서버에서 읽지 않고 사람에게 맡기고 있다"
+    assert "fillLiveRef()" in js, "만들어만 두고 부르지 않는다"
+    # 여러 대는 서로 다른 ref 를 볼 수 있는데 -e hub_deploy_ref 는 실행당 하나다.
+    assert "isOnly && hosts.length > 1" in js, "여러 대를 한 번에 돌리려 한다"
+
+
+def test_the_patch_screen_offers_all_three_paths():
+    """RUNBOOK-OPS §1 의 반영 경로 셋이 그대로 있어야 한다."""
+    js = (
+        Path(__file__).resolve().parents[1]
+        / "src" / "autodeploy" / "web" / "static" / "console.js"
+    ).read_text(encoding="utf-8")
+    block = re.search(r"const PATCH_MODES = \{(.*?)\n\};", js, re.S)
+    assert block is not None, "console.js 에서 PATCH_MODES 를 못 찾았다"
+    assert set(re.findall(r"^  (\w+): \{", block.group(1), re.M)) == {
+        "patch", "configure", "only"
+    }

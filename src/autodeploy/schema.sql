@@ -115,5 +115,10 @@ CREATE TABLE IF NOT EXISTS server_meta (
   -- `dmidecode -s system-serial-number` 로 읽은 본체 시리얼. 사람이 고치는 값이
   -- 아니라 기계에서 읽어온 값이라 메모와 따로 둔다.
   serial           TEXT,
+  -- 그 서버가 지금 보고 있는 배포 ref (flux GitRepository spec.ref).
+  -- `configure --only` 가 이 값을 그대로 넘겨야 가드를 통과한다.
+  live_ref         TEXT,
+  live_ref_type    TEXT,        -- branch | tag
+  live_ref_at      TIMESTAMP,   -- 언제 읽은 값인지 (서버는 콘솔 밖에서도 바뀐다)
   updated_at       TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );

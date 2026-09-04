@@ -113,7 +113,8 @@
           <div class="field"><label for="p-ref">hub-deploy ref <span class="dim">— 올릴 버전 (필수)</span></label>
             <input class="input mono" id="p-ref" placeholder="main, Release v1.1.0, feature/obs-stack"></div>
           <div class="field"><span class="lbl">적용 방식 <span class="dim" style="text-transform:none; letter-spacing:0">— ref 를 보고 골라두지만, 맞는 쪽으로 바꿔주세요</span></span>
-            <div class="types" id="pModeList"></div></div>
+            <div class="types" id="pModeList"></div>
+            <p class="note" id="patchLive" style="margin-top:8px" hidden></p></div>
           <div class="field"><label for="p-branch">설치 코드 <span class="dim">— hub-provisioning 브랜치. 시작 직전 이 브랜치로 맞춥니다</span></label>
             <select class="input mono" id="p-branch"><option value="main" selected>main (기본)</option><option value="dev">dev (시험용)</option></select></div>
           <div class="field" id="pEnvField" hidden><label for="p-env">환경 <span class="dim">— Vault 금고 (configure 는 필수)</span></label>

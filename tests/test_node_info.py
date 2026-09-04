@@ -4,10 +4,13 @@ from __future__ import annotations
 import pytest
 
 from autodeploy.node_info import (
+    LIVE_REF_COMMAND,
     SERIAL_COMMAND,
     SerialRead,
     fetch_serial,
+    parse_live_ref,
     parse_serial,
+    read_live_ref,
     read_serial,
 )
 from autodeploy.ssh import FakeSSHClient, StreamLine
@@ -142,3 +145,72 @@ async def test_the_connection_is_closed_when_fetching():
 
     assert read.serial == "PF3ABCDE"
     assert ssh.connected is False, "세션을 열어둔 채 끝내면 타겟에 연결이 쌓인다"
+
+
+# ── 라이브 배포 ref ───────────────────────────────────
+def test_the_live_ref_read_needs_no_sudo():
+    """조회일 뿐이다. sudo 를 끌어들이면 비밀번호가 없는 경로에서 못 쓴다."""
+    assert "sudo" not in LIVE_REF_COMMAND
+    assert "gitrepository" in LIVE_REF_COMMAND and "hub-deploy" in LIVE_REF_COMMAND
+    # aqua 도구는 비로그인 셸 PATH 에 없다 (RUNBOOK-OPS §0).
+    assert "/opt/hub/aqua/bin" in LIVE_REF_COMMAND
+    assert "KUBECONFIG=" in LIVE_REF_COMMAND
+
+
+@pytest.mark.parametrize(
+    "line,expected",
+    [
+        ('{"branch":"release/1.1.1.0"}', ("branch", "release/1.1.1.0")),
+        ('{"tag":"v1.2.0"}', ("tag", "v1.2.0")),
+        ('  {"branch":"main"}  ', ("branch", "main")),
+        ("{}", (None, None)),
+        ("", (None, None)),
+        ("쓰레기", (None, None)),
+        # 키가 둘이면 어느 쪽인지 알 수 없다 — 지어내지 않는다.
+        ('{"branch":"main","tag":"v1"}', (None, None)),
+    ],
+)
+def test_the_live_ref_is_read_from_the_jsonpath_output(line, expected):
+    assert parse_live_ref([line]) == expected
+
+
+async def test_reading_the_live_ref():
+    ssh = FakeSSHClient()
+    ssh.enqueue("gitrepository", out('{"branch":"release/1.1.1.0"}'), 0)
+    async with ssh:
+        read = await read_live_ref(ssh)
+
+    assert read.ok
+    assert (read.ref_type, read.ref) == ("branch", "release/1.1.1.0")
+    assert read.error is None
+
+
+async def test_only_stdout_is_parsed():
+    """aqua 가 캐시 권한 경고를 표준오류로 뱉는다 (2026-09-04 installtest 실측).
+
+    경고가 **JSON 처럼 생긴 줄**을 흘리는 경우를 골랐다 — 안 그러면 표준오류를
+    통째로 섞어 읽어도 검사가 통과해버린다. 값은 표준출력 것이어야 한다.
+    """
+    ssh = FakeSSHClient()
+    ssh.enqueue("gitrepository", [
+        StreamLine("stderr", "WRN write a registry cache file ... permission denied"),
+        StreamLine("stdout", '{"branch":"release/1.1.1.0"}'),
+        StreamLine("stderr", '{"branch":"main"}'),
+    ], 0)
+    async with ssh:
+        read = await read_live_ref(ssh)
+
+    assert read.ref == "release/1.1.1.0", "표준오류를 값으로 읽었다"
+
+
+async def test_a_server_without_the_gitrepository_says_so():
+    """설치되지 않은 서버. '읽기 실패' 로 뭉뚱그리면 원인을 못 찾는다."""
+    ssh = FakeSSHClient()
+    ssh.enqueue("gitrepository", err(
+        'Error from server (NotFound): gitrepositories.source.toolkit.fluxcd.io "hub-deploy" not found'
+    ), 1)
+    async with ssh:
+        read = await read_live_ref(ssh)
+
+    assert not read.ok
+    assert "설치되지 않은" in read.error

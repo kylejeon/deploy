@@ -746,3 +746,57 @@ async def test_the_anydesk_password_never_leaks_through_the_progress(temp_db, tm
         may_finish.set()
         await call
         await c.close()
+
+
+# ── 라이브 배포 ref ───────────────────────────────────
+async def test_reading_the_live_ref_stores_it(client, monkeypatch):
+    """`--only` 가 이 값을 그대로 넘겨야 partial_guard 를 통과한다."""
+    from autodeploy.node_info import LiveRefRead
+
+    await mark_key_installed(client)
+    seen = {}
+
+    async def fake_fetch(**kw):
+        seen.update(kw)
+        return LiveRefRead(ref="release/1.1.1.0", ref_type="branch")
+
+    monkeypatch.setattr(api, "fetch_live_ref", fake_fetch)
+    body = await (await send(client, "POST", "/api/servers/alpha/live-ref")).json()
+
+    assert body["live_ref"] == "release/1.1.1.0"
+    assert body["live_ref_type"] == "branch"
+    assert body["live_ref_at"], "언제 읽은 값인지가 없으면 오래된 값을 최신으로 오해한다"
+    assert "sudo_password" not in seen, "조회에 sudo 를 끌어들이면 안 된다"
+
+    servers = (await (await client.get("/api/servers")).json())["servers"]
+    assert servers[0]["live_ref"] == "release/1.1.1.0"
+
+
+async def test_a_server_without_a_key_cannot_be_read(client, monkeypatch):
+    called = False
+
+    async def fake_fetch(**kw):
+        nonlocal called
+        called = True
+
+    monkeypatch.setattr(api, "fetch_live_ref", fake_fetch)
+    resp = await send(client, "POST", "/api/servers/alpha/live-ref")
+
+    assert resp.status == 400
+    assert called is False, "붙어보지도 말아야 한다"
+
+
+async def test_an_unreadable_live_ref_is_not_stored(client, monkeypatch):
+    from autodeploy.node_info import LiveRefRead
+
+    await mark_key_installed(client)
+
+    async def fake_fetch(**kw):
+        return LiveRefRead(error="이 서버에는 hub-deploy GitRepository 가 없습니다")
+
+    monkeypatch.setattr(api, "fetch_live_ref", fake_fetch)
+    resp = await send(client, "POST", "/api/servers/alpha/live-ref")
+
+    assert resp.status == 400
+    servers = (await (await client.get("/api/servers")).json())["servers"]
+    assert servers[0]["live_ref"] is None

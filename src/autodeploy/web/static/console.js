@@ -94,6 +94,10 @@ const PATCH_MODES = {
     label: "configure — 다른 ref 로 옮기기 (신규 앱 포함)",
     d: "1.1.1.0 처럼 새 앱·이미지가 담긴 다른 ref 로 서버를 옮길 때. 전체를 다시 수렴시킵니다 (미러가 14분쯤 걸립니다).",
   },
+  only: {
+    label: "configure --only — 같은 ref 에서 재수렴",
+    d: "보고 있는 ref 는 그대로 두고 새 앱·시크릿·배선만 다시 맞춥니다. ref 는 서버에서 읽어와 채웁니다 — 다른 값을 넣으면 가드가 막습니다.",
+  },
 };
 
 const KIND_LABEL = { install: "설치", configure: "configure", patch: "patch", rollback: "rollback", verify: "verify", clean: "초기화" };
@@ -244,6 +248,8 @@ const state = {
   // 시리얼을 이미 읽어보려 한 서버. 타겟이 꺼져 있으면 SSH 가 한참 기다리다
   // 실패하는데, 그걸 화면 열 때마다 반복하면 콘솔이 느려진다.
   serialTried: new Set(),
+  // 서버가 지금 보고 있는 ref (`host` → `branch:release/1.1.1.0`). --only 에서만 쓴다.
+  liveRefs: {},
   jobId: null, hostFilter: "", autoscroll: true,
   lines: [], lastLineId: 0, lastLineAt: null,
   sse: null, pollTimer: null, tickTimer: null,
@@ -1463,10 +1469,14 @@ async function showPatch() {
     `<label class="type"><input type="radio" name="pmode" value="${key}"${i === 0 ? " checked" : ""}>
       <span><span class="type__n">${esc(m.label)}</span><span class="type__d">${esc(m.d)}</span></span></label>`).join("");
 
-  $$('input[name="psrv"]').forEach((c) => c.addEventListener("change", drawPatchPlan));
+  $$('input[name="psrv"]').forEach((c) => c.addEventListener("change", () => {
+    drawPatchPlan();
+    fillLiveRef();
+  }));
   $("#pAll").onchange = (e) => {
     $$('input[name="psrv"]:not(:disabled)').forEach((c) => { c.checked = e.target.checked; });
     drawPatchPlan();
+    fillLiveRef();
   };
   /* ref 를 고칠 때마다 방식을 다시 골라준다. **사람이 직접 고른 뒤에는 건드리지
      않는다** — 이미 1.1.1.0 이상인 서버를 그 다음 버전으로 올리는 경우는 ref 만
@@ -1477,7 +1487,9 @@ async function showPatch() {
   };
   $$('input[name="pmode"]').forEach((r) => r.addEventListener("change", () => {
     state.patchModePicked = true;
+    $("#patchLive").hidden = patchMode() !== "only";
     drawPatchPlan();
+    fillLiveRef();
   }));
   $("#p-reftag").onchange = drawPatchPlan;
   $("#p-env").onchange = drawPatchPlan;
@@ -1494,6 +1506,48 @@ function pickPatchMode(mode) {
 }
 
 const patchMode = () => ($('input[name="pmode"]:checked') || {}).value || "patch";
+const isConfigureMode = (mode) => mode === "configure" || mode === "only";
+
+/* `--only` 는 서버가 **지금 보고 있는** ref 를 그대로 넘겨야 한다. 사람이 옮겨
+   적다 틀리면 가드가 막을 뿐이라, 고른 서버에서 직접 읽어와 칸을 채운다.
+   여러 대를 골랐는데 서로 다른 ref 를 보고 있으면 한 번에 못 돌린다 —
+   `-e hub_deploy_ref` 는 실행당 하나뿐이기 때문이다. */
+async function fillLiveRef() {
+  const hosts = patchHosts();
+  if (patchMode() !== "only" || !hosts.length) return;
+
+  const box = $("#patchLive");
+  box.hidden = false;
+  box.innerHTML = `<span class="dim">서버에서 지금 보고 있는 ref 를 읽는 중…</span>`;
+  try {
+    const reads = await Promise.all(hosts.map((h) =>
+      api(`/api/servers/${encodeURIComponent(h)}/live-ref`, { method: "POST" })
+        .then((r) => ({ host: h, ...r }))
+        .catch((e) => ({ host: h, error: e.message }))));
+
+    const failed = reads.filter((r) => r.error);
+    const refs = [...new Set(reads.filter((r) => !r.error).map((r) => `${r.live_ref_type}:${r.live_ref}`))];
+
+    if (refs.length === 1 && !failed.length) {
+      const [type, ...rest] = refs[0].split(":");
+      $("#p-ref").value = rest.join(":");
+      $("#p-reftag").checked = type === "tag";
+      box.innerHTML = `<span class="dim">서버가 보고 있는 ref 를 그대로 넣었습니다:</span>`
+        + ` <b class="mono">${esc(rest.join(":"))}</b>${type === "tag" ? " (태그)" : ""}`;
+    } else if (refs.length > 1) {
+      box.innerHTML = `<span style="color:var(--err)">고른 서버들이 서로 다른 ref 를 보고 있습니다`
+        + ` (${esc(refs.join(", "))}) — <b>한 번에 하나만</b> 고르세요.</span>`;
+    } else {
+      box.innerHTML = failed.map((r) =>
+        `<span style="color:var(--err)">${esc(r.host)}: ${esc(r.error)}</span>`).join("<br>");
+    }
+    state.liveRefs = Object.fromEntries(reads.filter((r) => !r.error)
+      .map((r) => [r.host, `${r.live_ref_type}:${r.live_ref}`]));
+  } catch (e) {
+    box.innerHTML = `<span style="color:var(--err)">${esc(e.message)}</span>`;
+  }
+  drawPatchPlan();
+}
 
 /* 실행 직전 hub-provisioning 을 이 브랜치로 맞춘다. main 이 아니면 그 사실을
    명령 밑에 적는다 — 화면 위쪽 select 를 못 보고 지나칠 수 있다. */
@@ -1508,20 +1562,25 @@ function drawPatchPlan() {
   const hosts = patchHosts();
   const ref = $("#p-ref").value.trim();
   const mode = patchMode();
-  const isConfigure = mode === "configure";
+  const isOnly = mode === "only";
+  const isConfigure = isConfigureMode(mode);
   const env = $("#p-env").value;
   $("#pCount").textContent = `${hosts.length}대 선택`;
   $("#pEnvField").hidden = !isConfigure;   // configure 만 Vault 금고가 필요하다
-  $("#patchChip").textContent = isConfigure ? "hubctl configure" : "hubctl patch";
+  $("#patchChip").textContent = isOnly ? "hubctl configure --only"
+    : isConfigure ? "hubctl configure" : "hubctl patch";
 
-  const phases = isConfigure ? PHASES.configure : PHASES.patch;
+  const phases = isOnly ? PHASES["configure-only"] : isConfigure ? PHASES.configure : PHASES.patch;
   $("#patchPlan").innerHTML = phases.map(([, label], i) =>
     `<div class="plan__i"><b>${i + 1}</b><span>${esc(label)}</span></div>`).join("");
 
   const tag = $("#p-reftag").checked ? " -e hub_deploy_ref_type=tag" : "";
   const refPart = `-- -e hub_deploy_ref=<b>${esc(ref || "<ref 없음>")}</b>${esc(tag)}`;
   const limit = esc(hosts.length ? hosts.join(",") : "<대상 없음>");
-  $("#patchCmd").innerHTML = (isConfigure
+  $("#patchCmd").innerHTML = (isOnly
+    ? `./bin/hubctl configure -e <b>${esc(env)}</b> -l <b>${limit}</b>`
+      + `<br>&nbsp;&nbsp;--only <b>${esc(CONFIGURE_ONLY_TAGS)}</b> ${refPart}`
+    : isConfigure
     ? `./bin/hubctl configure -e <b>${esc(env)}</b> -l <b>${limit}</b> ${refPart}`
     : `./bin/hubctl patch -l <b>${limit}</b> ${refPart}`
       + `<br><span style="color:var(--console-dim)">중간의 <b>[y/N]</b> 에는 y 를 자동으로 넣습니다</span>`)
@@ -1529,7 +1588,21 @@ function drawPatchPlan() {
 
   const warn = [];
   if (hosts.length > FORKS) warn.push(`선택한 ${hosts.length}대는 ansible 기본 forks(${FORKS})보다 많아 ${FORKS}대씩 나눠 진행됩니다.`);
-  const body = isConfigure
+  // --only 는 라이브 ref 와 정확히 같아야 한다. 다르면 가드가 막을 뿐이라
+  // 여기서 먼저 말해준다 (읽어온 값이 있을 때만 판단한다).
+  const liveMismatch = isOnly && hosts.length === 1 && state.liveRefs
+    && state.liveRefs[hosts[0]]
+    && state.liveRefs[hosts[0]] !== `${$("#p-reftag").checked ? "tag" : "branch"}:${ref}`;
+
+  const body = isOnly
+    ? `보고 있는 ref 는 <b>그대로</b> 두고 새 앱·시크릿·배선만 다시 맞춥니다.
+       ref 는 서버에서 읽어온 값이라 손대지 마세요 — 다르면
+       <span class="mono">partial_guard</span> 가 시작 전에 멈춥니다.<br>
+       ${liveMismatch ? `<b style="color:var(--err)">지금 값이 서버의 라이브 ref
+         (<span class="mono">${esc(state.liveRefs[hosts[0]])}</span>) 와 다릅니다 — 이대로면 막힙니다.</b><br>` : ""}
+       <b>새 앱의 시크릿이 그 환경(${esc(env)}) Vault 마운트에 미리 있어야 합니다.</b>
+       앱 반영은 그 뒤 Flux 주기(최대 10분)입니다. 다시 돌려도 안전합니다.`
+    : isConfigure
     ? `서버가 보는 ref 를 <b>${esc(ref || "…")}</b> 로 <b>옮깁니다</b>. 새 앱·이미지가 담긴 ref 로 갈 때 쓰는 경로입니다
        (부분 실행 <span class="mono">--only</span> 는 ref 를 못 바꿉니다 — 가드가 시작 전에 멈춥니다).<br>
        <b>새 앱의 시크릿이 그 환경(${esc(env)}) Vault 마운트에 미리 있어야 합니다.</b> 없으면 secrets_fetch 가
@@ -1545,8 +1618,12 @@ function drawPatchPlan() {
     <p class="note" style="color:var(--ink-2)">${body}
     ${warn.map((w) => `<br>${esc(w)}`).join("")}</p></div>`;
 
-  $("#patchSubmit").textContent = isConfigure ? "configure 로 적용" : "패치 적용";
-  $("#patchSubmit").disabled = hosts.length === 0 || !ref;
+  $("#patchSubmit").textContent = isOnly ? "재수렴 실행"
+    : isConfigure ? "configure 로 적용" : "패치 적용";
+  // --only 에서 여러 대는 못 돌린다 — `-e hub_deploy_ref` 는 실행당 하나인데
+  // 서버마다 보고 있는 ref 가 다를 수 있다.
+  $("#patchSubmit").disabled = hosts.length === 0 || !ref
+    || (isOnly && hosts.length > 1);
 }
 
 $("#patchForm").addEventListener("submit", (e) => {
@@ -1555,27 +1632,33 @@ $("#patchForm").addEventListener("submit", (e) => {
   const ref = $("#p-ref").value.trim();
   if (!hosts.length || !ref) return;
   const isTag = $("#p-reftag").checked;
-  const isConfigure = patchMode() === "configure";
+  const mode = patchMode();
+  const isOnly = mode === "only";
+  const isConfigure = isConfigureMode(mode);
   const env = $("#p-env").value;
   const syncBranch = $("#p-branch").value;
   // configure 는 **전체**로 돈다. `--only` 는 같은 ref 재수렴 전용이라 ref 를
   // 바꾸는 이 경로에 붙이면 flux_wire 의 partial_guard 가 시작 전에 멈춘다
   // (RUNBOOK-hubctl §3-8: "ref 를 바꾸는 일은 --only 로 하지 않는다").
   const body = isConfigure
-    ? { kind: "configure", hosts, env, ref, ref_type: isTag ? "tag" : null, sync_branch: syncBranch }
+    ? { kind: "configure", hosts, env, ref, ref_type: isTag ? "tag" : null,
+        sync_branch: syncBranch, ...(isOnly ? { only: CONFIGURE_ONLY_TAGS } : {}) }
     : { kind: "patch", hosts, ref, ref_type: isTag ? "tag" : null, sync_branch: syncBranch };
-  modal(`<h2>${hosts.length}대에 ${isConfigure ? "configure 를" : "패치를"} 적용할까요?</h2>
+  modal(`<h2>${hosts.length}대에 ${isOnly ? "재수렴을" : isConfigure ? "configure 를" : "패치를"} 적용할까요?</h2>
     <p class="note">대상: <b class="mono">${esc(hosts.join(", "))}</b><br>
     ref: <b class="mono">${esc(ref)}</b>${isTag ? " (태그)" : ""}${isConfigure ? `<br>환경: <b class="mono">${esc(env)}</b>` : ""}</p>
     <div class="alert alert--warn"><span class="alert__g" aria-hidden="true">!</span>
-      <p class="note" style="color:var(--ink-2)">${isConfigure
+      <p class="note" style="color:var(--ink-2)">${isOnly
+        ? `보고 있는 ref(<b>${esc(ref)}</b>)는 그대로 두고 새 앱·시크릿·배선만 다시 맞춥니다.<br>
+           새 앱 시크릿이 <b>${esc(env)}</b> Vault 마운트에 미리 있어야 합니다.`
+        : isConfigure
         ? `서버가 보는 ref 를 <b>${esc(ref)}</b> 로 옮기고 전체를 다시 수렴시킵니다 — 미러에만 14분쯤 걸립니다.<br>
            새 앱 시크릿이 <b>${esc(env)}</b> Vault 마운트에 미리 있어야 합니다. 앱 반영은 그 뒤 Flux 주기(최대 10분)입니다.`
         : `번들을 만든 뒤 <b>확인 없이 그대로 적용</b>합니다 —
            터미널의 <span class="mono">[y/N]</span> 을 대신하는 것이 이 버튼입니다.
            변경 앱 목록은 실행 로그에 남지만, 보실 때는 이미 적용된 뒤입니다.`}<br>
       되돌리려면 <span class="mono">hubctl rollback -l ${esc(hosts[0])} -K</span> 를 터미널에서 실행합니다.</p></div>`,
-    { label: isConfigure ? "configure 로 적용" : "패치 적용" },
+    { label: isOnly ? "재수렴 실행" : isConfigure ? "configure 로 적용" : "패치 적용" },
     async () => {
       try {
         const created = await api("/api/jobs", { method: "POST", body });

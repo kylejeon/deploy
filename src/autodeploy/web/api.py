@@ -26,7 +26,7 @@ from autodeploy.inventory import (
     validate_server,
 )
 from autodeploy.models import JobKind
-from autodeploy.node_info import fetch_serial
+from autodeploy.node_info import fetch_live_ref, fetch_serial
 from autodeploy.ssh_keys import (
     DEFAULT_KEY_PATH,
     SSHKeyError,
@@ -203,6 +203,9 @@ async def get_servers(request: web.Request) -> web.Response:
             "key_installed_at": meta.get(s.host, {}).get("key_installed_at"),
             "anydesk_id": meta.get(s.host, {}).get("anydesk_id"),
             "serial": meta.get(s.host, {}).get("serial"),
+            "live_ref": meta.get(s.host, {}).get("live_ref"),
+            "live_ref_type": meta.get(s.host, {}).get("live_ref_type"),
+            "live_ref_at": meta.get(s.host, {}).get("live_ref_at"),
         }
         for s in inventory.servers
     ]
@@ -674,6 +677,54 @@ async def get_ssh_key_progress(request: web.Request) -> web.Response:
     board = request.app[keys.SSH_PROGRESS]
     item = board.get(request.match_info["host"])
     return json_response(item.as_dict() if item is not None else {"running": False})
+
+
+@routes.post("/api/servers/{host}/live-ref")
+async def post_server_live_ref(request: web.Request) -> web.Response:
+    """그 서버가 지금 보고 있는 배포 ref 를 읽어온다.
+
+    `configure --only` 가 이 값을 그대로 `-e hub_deploy_ref` 로 넘겨야 한다 —
+    다른 값이면 flux_wire 의 partial_guard 가 시작 전에 멈춘다. 사람이 옮겨
+    적다 틀리느니 기계가 읽는 편이 낫다.
+
+    **sudo 를 쓰지 않는다.** 사용자 kubeconfig 로 읽는 조회라 비밀번호가 필요 없다.
+    """
+    host = request.match_info["host"]
+    server = load_inventory(request.app[keys.INVENTORY_PATH]).get(host)
+    if server is None:
+        return json_error(404, f"등록되지 않은 서버입니다: {host}")
+
+    async with connect(request.app[keys.DB_PATH]) as db:
+        meta = await repository.get_server_meta(db)
+    if not (meta.get(host) or {}).get("key_installed_at"):
+        return json_error(
+            400,
+            f"{host} 은(는) SSH 키가 등록되지 않아 접속할 수 없습니다"
+            " — 먼저 키 등록을 실행하세요",
+        )
+
+    masker = request.app[keys.MASKER]
+    try:
+        read = await fetch_live_ref(
+            host=server.ansible_host,
+            username=server.ansible_user,
+            key_path=DEFAULT_KEY_PATH,
+        )
+    except Exception as exc:
+        log.info("라이브 ref 조회 실패 (%s): %s", host, type(exc).__name__)
+        return json_error(400, masker(f"타겟에 접속할 수 없습니다: {exc}"))
+
+    if not read.ok:
+        return json_error(400, masker(read.error or "라이브 ref 를 읽지 못했습니다"))
+
+    async with connect(request.app[keys.DB_PATH]) as db:
+        await repository.set_server_live_ref(db, host, read.ref, read.ref_type)
+        meta = await repository.get_server_meta(db)
+    log.info("라이브 ref 조회: %s = %s:%s", host, read.ref_type, read.ref)
+    return json_response({
+        "host": host, "live_ref": read.ref, "live_ref_type": read.ref_type,
+        "live_ref_at": (meta.get(host) or {}).get("live_ref_at"),
+    })
 
 
 @routes.post("/api/servers/{host}/serial")
