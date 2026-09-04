@@ -28,11 +28,12 @@ _JOBS_NEW_COLUMNS: tuple[tuple[str, str], ...] = (
     ("cancel_by", "TEXT"),
     ("slack_permalink", "TEXT"),
     ("target_port", "INTEGER DEFAULT 22"),
+    ("only_tags", "TEXT"),
 )
 
 # jobs 테이블 재생성 시 옮길 컬럼 (신·구 공통. ALTER를 먼저 돌린 뒤라 전부 존재한다)
 _JOBS_CARRY_COLUMNS: tuple[str, ...] = (
-    "id", "kind", "status", "env", "ref", "ref_type", "clean_mode",
+    "id", "kind", "status", "env", "ref", "ref_type", "clean_mode", "only_tags",
     "exit_code", "cancel_by", "current_step", "started_by", "slack_channel",
     "slack_thread_ts", "slack_permalink", "admin_web_url", "script_commit_sha", "error_message",
     "target_ip", "target_port", "deployment_type", "hospital_code",
@@ -141,6 +142,7 @@ async def _rebuild_jobs(db: aiosqlite.Connection) -> None:
           ref               TEXT,
           ref_type          TEXT,
           clean_mode        TEXT,
+          only_tags         TEXT,
           exit_code         INTEGER,
           cancel_by         TEXT,
           current_step      TEXT,

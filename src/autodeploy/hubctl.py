@@ -59,6 +59,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import re
 import shlex
 import signal
 import tempfile
@@ -105,6 +106,52 @@ class HubctlError(RuntimeError):
 # 설치 직전에 컨트롤러의 hub-provisioning 을 맞출 브랜치.
 SYNC_BRANCH = "main"
 
+# 1.1.1.0 부터 **신규 이미지**가 들어왔다. patch 는 base↔new 의 diff 만 담으므로
+# 새로 생긴 이미지가 반영되지 않는다. 그 경계를 넘는 패치는 configure 로
+# 세 단계만 다시 돌린다 (gitops 적재 → 시크릿 env 파일 → flux 배선).
+#
+#   ./bin/hubctl configure -e ENV -l HOST -K \
+#     --only gitops_publish,secrets_fetch_env_file,flux_wire -- -e hub_deploy_ref=release/1.1.1.0
+#
+# 이미 1.1.1.0 이상인 사이트는 이미지가 이미 있으므로 예전처럼 patch 다.
+NEW_IMAGE_VERSION: tuple[int, int, int, int] = (1, 1, 1, 0)
+CONFIGURE_ONLY_TAGS: tuple[str, ...] = (
+    "gitops_publish", "secrets_fetch_env_file", "flux_wire",
+)
+# `--only` 로 넘길 수 있는 태그를 이 셋으로 묶어둔다. hubctl 이 cluster.yml 로
+# 다시 검증하지만(bin/hubctl:176), 콘솔이 임의의 단계를 돌리는 통로가 되면 안 된다.
+ALLOWED_ONLY_TAGS: frozenset[str] = frozenset(CONFIGURE_ONLY_TAGS)
+
+# `release/1.1.1.0` · `v1.1.1.0` · `1.1.1.0` 에서 숫자만 뽑는다.
+_VERSION_RE = re.compile(r"(?<![\d.])(\d+(?:\.\d+){1,3})(?![\d.])")
+
+
+def parse_version(ref: str | None) -> tuple[int, ...] | None:
+    """ref 에 박힌 버전. 없으면 None.
+
+    `main` · `feature/obs-stack` 처럼 버전을 알 수 없는 ref 가 정상적으로 있다.
+    그때는 **지어내지 않고** None 을 돌려준다 — 무엇으로 돌릴지는 사람이 정한다.
+    """
+    if not ref:
+        return None
+    m = _VERSION_RE.search(ref)
+    if m is None:
+        return None
+    parts = tuple(int(x) for x in m.group(1).split("."))
+    return parts + (0,) * (4 - len(parts))   # 1.1.1 == 1.1.1.0
+
+
+def needs_configure(ref: str | None) -> bool:
+    """이 ref 로 올리려면 configure 를 써야 하는가 (화면의 기본 선택값).
+
+    버전을 못 읽으면 False — 기존 동작(patch)을 유지한다. 이미 1.1.1.0 이상인
+    사이트를 그 다음 버전으로 올릴 때도 patch 가 맞는데, 그건 ref 만 봐서는
+    알 수 없다. 그래서 이 값은 **기본 선택**이고 화면에서 뒤집을 수 있다.
+    """
+    version = parse_version(ref)
+    return version is not None and version >= NEW_IMAGE_VERSION
+
+
 PATCH_CONFIRM_MARKER = "이번에 적용될 내용입니다"
 PATCH_CONFIRM_ANSWER = "y\n"
 
@@ -125,6 +172,20 @@ def _check_choice(value: str | None, allowed: Sequence[str], label: str) -> str:
     if value not in allowed:
         raise HubctlError(f"{label} 는 {'|'.join(allowed)} 중 하나여야 합니다 (받은 값: {value!r})")
     return value
+
+
+def _check_only(only: str) -> str:
+    """`--only` 태그 목록 검증. 허용한 것만, 빈 항목 없이."""
+    tags = [t.strip() for t in only.split(",")]
+    if not any(tags) or any(not t for t in tags):
+        raise HubctlError(f"--only 태그가 비어 있습니다: {only!r}")
+    unknown = [t for t in tags if t not in ALLOWED_ONLY_TAGS]
+    if unknown:
+        raise HubctlError(
+            f"허용되지 않은 --only 태그입니다: {', '.join(unknown)}"
+            f" — 쓸 수 있는 것: {', '.join(sorted(ALLOWED_ONLY_TAGS))}"
+        )
+    return ",".join(tags)
 
 
 def _passthrough(ref: str | None, ref_type: str | None) -> list[str]:
@@ -176,6 +237,7 @@ def build_command(
     ref: str | None = None,
     ref_type: str | None = None,
     clean_mode: str | None = None,
+    only: str | None = None,
     phase: str | None = None,
     inventory: str = DEFAULT_INVENTORY,
 ) -> str:
@@ -188,10 +250,18 @@ def build_command(
     kind = JobKind(kind)
     argv: list[str]
 
+    # hubctl 도 같은 이유로 거부한다 — configure 외에는 전체 실행뿐이다
+    # (site.yml 은 bootstrap 까지 import 한다, bin/hubctl:156). 조용히 무시하면
+    # 화면이 부분 실행을 시켰다고 믿는데 실제로는 전체가 돈다.
+    if only and kind is not JobKind.CONFIGURE:
+        raise HubctlError(f"--only 는 configure 에만 쓸 수 있습니다 ({kind.value})")
+
     if kind in (JobKind.INSTALL, JobKind.CONFIGURE):
         targets = _check_hosts(hosts)
         _check_choice(env, ENVS, "env")
         argv = ["./bin/hubctl", kind.value, "-e", env, "-l", ",".join(targets)]
+        if only:
+            argv += ["--only", _check_only(only)]
         argv += _passthrough(ref, ref_type)
 
     elif kind is JobKind.VERIFY:

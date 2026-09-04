@@ -42,6 +42,9 @@ const PHASES = {
     ["wire", "연동 (Consul·Vault·Temporal)"],
     ["verify", "검증"],
   ],
+  /* configure --only 로 돈 것. 세 태그가 내는 단계는 둘뿐이다 —
+     gitops_publish → gitops, secrets_fetch·flux_wire → wire. */
+  "configure-only": [["gitops", "GitOps 적재"], ["wire", "시크릿 · Flux 배선"]],
   verify: [["verify", "검증"]],
   patch: [["create", "번들 생성 (patch-create.yml)"], ["apply", "번들 적용 (patch-apply.yml)"]],
   rollback: [["rollback", "직전 패치 복귀 (patch-rollback.yml)"]],
@@ -56,6 +59,41 @@ const KEY_STEPS = {
   serial: "본체 시리얼 읽기",
   prep: "PC 준비 (AnyDesk·화면 설정)",
   verify: "키 인증 확인",
+};
+
+/* 1.1.1.0 부터 **신규 이미지**가 들어왔다. patch 는 base↔new 의 diff 만 담으므로
+   새로 생긴 이미지가 반영되지 않는다 — 그 경계를 넘길 때는 configure 로 세 단계만
+   다시 돌린다. 서버의 `hubctl.needs_configure()` 와 같은 규칙이고, 경계가 갈라지면
+   테스트가 잡는다. */
+const NEW_IMAGE_VERSION = [1, 1, 1, 0];
+const CONFIGURE_ONLY_TAGS = "gitops_publish,secrets_fetch_env_file,flux_wire";
+
+function refVersion(ref) {
+  const m = String(ref || "").match(/(?<![\d.])(\d+(?:\.\d+){1,3})(?![\d.])/);
+  if (!m) return null;                       // main·feature/… — 버전을 알 수 없다
+  const parts = m[1].split(".").map(Number);
+  while (parts.length < 4) parts.push(0);    // 1.1.1 == 1.1.1.0
+  return parts;
+}
+
+function needsConfigure(ref) {
+  const v = refVersion(ref);
+  if (!v) return false;                      // 모르면 기존 동작(patch)
+  for (let i = 0; i < 4; i++) {
+    if (v[i] !== NEW_IMAGE_VERSION[i]) return v[i] > NEW_IMAGE_VERSION[i];
+  }
+  return true;
+}
+
+const PATCH_MODES = {
+  patch: {
+    label: "patch — 기존 방식",
+    d: "이미 1.1.1.0 이상인 서버를 그 다음 버전으로 올릴 때. 바뀐 것만 번들로 만들어 적용합니다.",
+  },
+  configure: {
+    label: "configure — 신규 이미지 반영 (1.1.1.0 경계)",
+    d: "1.1.1.0 이전 버전에서 올릴 때. patch 의 diff 에는 새로 생긴 이미지가 안 담겨서, gitops 적재·시크릿·flux 배선을 다시 돌립니다.",
+  },
 };
 
 const KIND_LABEL = { install: "설치", configure: "configure", patch: "patch", rollback: "rollback", verify: "verify", clean: "초기화" };
@@ -151,7 +189,8 @@ function serialNote(job, hostRow) {
 const ENV_LABEL = { dev: "Dev", stage: "Staging", prod: "Prod" };
 const envLabel = (env) => ENV_LABEL[env] || env;
 
-const phasesOf = (job) => PHASES[job.kind] || PHASES.install;
+const phasesOf = (job) =>
+  (job.only_tags ? PHASES["configure-only"] : PHASES[job.kind]) || PHASES.install;
 
 function toast(message, kind) {
   const el = document.createElement("div");
@@ -855,7 +894,8 @@ function confirmCancel(id) {
 
 async function retry(job, hosts) {
   if (!hosts.length) return;
-  const payload = { kind: job.kind, hosts, env: job.env, ref: job.ref, ref_type: job.ref_type, clean_mode: job.clean_mode };
+  const payload = { kind: job.kind, hosts, env: job.env, ref: job.ref, ref_type: job.ref_type,
+                    clean_mode: job.clean_mode, only: job.only_tags };
   if (job.kind === "clean") payload.confirm = hosts[0];
   modal(`<h2>${esc(hosts.length)}대를 다시 실행할까요?</h2>
     <p class="note">대상: <b class="mono">${esc(hosts.join(", "))}</b><br>
@@ -1410,42 +1450,81 @@ async function showPatch() {
     </label>`;
   }).join("") : `<p class="note">등록된 서버가 없습니다. <b>서버</b> 화면에서 먼저 추가하세요.</p>`;
 
+  $("#pModeList").innerHTML = Object.entries(PATCH_MODES).map(([key, m], i) =>
+    `<label class="type"><input type="radio" name="pmode" value="${key}"${i === 0 ? " checked" : ""}>
+      <span><span class="type__n">${esc(m.label)}</span><span class="type__d">${esc(m.d)}</span></span></label>`).join("");
+
   $$('input[name="psrv"]').forEach((c) => c.addEventListener("change", drawPatchPlan));
   $("#pAll").onchange = (e) => {
     $$('input[name="psrv"]:not(:disabled)').forEach((c) => { c.checked = e.target.checked; });
     drawPatchPlan();
   };
-  $("#p-ref").oninput = drawPatchPlan;
+  /* ref 를 고칠 때마다 방식을 다시 골라준다. **사람이 직접 고른 뒤에는 건드리지
+     않는다** — 이미 1.1.1.0 이상인 서버를 그 다음 버전으로 올리는 경우는 ref 만
+     봐서는 알 수 없고, 그때 고른 것을 도로 뒤집으면 화면과 싸우게 된다. */
+  $("#p-ref").oninput = () => {
+    if (!state.patchModePicked) pickPatchMode(needsConfigure($("#p-ref").value.trim()) ? "configure" : "patch");
+    drawPatchPlan();
+  };
+  $$('input[name="pmode"]').forEach((r) => r.addEventListener("change", () => {
+    state.patchModePicked = true;
+    drawPatchPlan();
+  }));
   $("#p-reftag").onchange = drawPatchPlan;
+  $("#p-env").onchange = drawPatchPlan;
+
+  state.patchModePicked = false;
+  pickPatchMode(needsConfigure($("#p-ref").value.trim()) ? "configure" : "patch");
   drawPatchPlan();
 }
+
+function pickPatchMode(mode) {
+  const radio = $(`input[name="pmode"][value="${mode}"]`);
+  if (radio) radio.checked = true;
+}
+
+const patchMode = () => ($('input[name="pmode"]:checked') || {}).value || "patch";
 
 const patchHosts = () => $$('input[name="psrv"]:checked').map((c) => c.value);
 
 function drawPatchPlan() {
   const hosts = patchHosts();
   const ref = $("#p-ref").value.trim();
+  const mode = patchMode();
+  const isConfigure = mode === "configure";
+  const env = $("#p-env").value;
   $("#pCount").textContent = `${hosts.length}대 선택`;
+  $("#pEnvField").hidden = !isConfigure;   // configure 만 Vault 금고가 필요하다
+  $("#patchChip").textContent = isConfigure ? "hubctl configure --only" : "hubctl patch";
 
-  /* 명령은 하나지만 playbook 은 둘(patch-create → patch-apply)이라 단계는 그대로다. */
-  $("#patchPlan").innerHTML = PHASES.patch.map(([, label], i) =>
+  const phases = isConfigure ? PHASES["configure-only"] : PHASES.patch;
+  $("#patchPlan").innerHTML = phases.map(([, label], i) =>
     `<div class="plan__i"><b>${i + 1}</b><span>${esc(label)}</span></div>`).join("");
 
-  const tail = `${esc(ref || "<ref 없음>")}${$("#p-reftag").checked ? " -e hub_deploy_ref_type=tag" : ""}`;
+  const tag = $("#p-reftag").checked ? " -e hub_deploy_ref_type=tag" : "";
+  const refPart = `-- -e hub_deploy_ref=<b>${esc(ref || "<ref 없음>")}</b>${esc(tag)}`;
   const limit = esc(hosts.length ? hosts.join(",") : "<대상 없음>");
-  $("#patchCmd").innerHTML =
-    `./bin/hubctl patch -l <b>${limit}</b> -- -e hub_deploy_ref=<b>${tail}</b>`
-    + `<br><span style="color:var(--console-dim)">중간의 <b>[y/N]</b> 에는 y 를 자동으로 넣습니다</span>`;
+  $("#patchCmd").innerHTML = isConfigure
+    ? `./bin/hubctl configure -e <b>${esc(env)}</b> -l <b>${limit}</b>`
+      + `<br>&nbsp;&nbsp;--only <b>${esc(CONFIGURE_ONLY_TAGS)}</b> ${refPart}`
+    : `./bin/hubctl patch -l <b>${limit}</b> ${refPart}`
+      + `<br><span style="color:var(--console-dim)">중간의 <b>[y/N]</b> 에는 y 를 자동으로 넣습니다</span>`;
 
   const warn = [];
   if (hosts.length > FORKS) warn.push(`선택한 ${hosts.length}대는 ansible 기본 forks(${FORKS})보다 많아 ${FORKS}대씩 나눠 진행됩니다.`);
+  const body = isConfigure
+    ? `<b>1.1.1.0 부터 새 이미지가 추가</b>돼서 patch 의 변경분만으로는 반영되지 않습니다.
+       그래서 GitOps 적재 · 시크릿(env 파일) · Flux 배선 세 단계만 다시 돌립니다.<br>
+       <b>이미 1.1.1.0 이상인 서버</b>라면 위에서 <b>patch</b> 로 바꾸세요 — 이미지가 이미 있어서 다시 적재할 이유가 없습니다.`
+    : `번들을 만들고 <b>곧바로 적용</b>합니다. 터미널이라면 변경 앱 목록을 보고 <span class="mono">[y/N]</span> 을 눌렀을 자리인데,
+       콘솔은 그 확인을 <b>시작할 때</b> 받습니다 — 시작하면 중간에 멈추지 않습니다.<br>
+       앱이 추가·제거되는 등 구조가 바뀌면 <span class="mono">패치 스코프 밖</span> 이라며 멈춥니다 — 서버는 그대로입니다.
+       문제가 생기면 <span class="mono">hubctl rollback -l &lt;host&gt; -K</span> 로 직전 상태로 되돌립니다.`;
   $("#patchWarn").innerHTML = `<div class="alert alert--warn"><span class="alert__g" aria-hidden="true">!</span>
-    <p class="note" style="color:var(--ink-2)">번들을 만들고 <b>곧바로 적용</b>합니다. 터미널이라면 변경 앱 목록을 보고 <span class="mono">[y/N]</span> 을 눌렀을 자리인데,
-    콘솔은 그 확인을 <b>시작할 때</b> 받습니다 — 시작하면 중간에 멈추지 않습니다.<br>
-    앱이 추가·제거되는 등 구조가 바뀌면 <span class="mono">패치 스코프 밖</span> 이라며 멈춥니다 — 서버는 그대로이고, 그때는 <b>새 설치</b>의 configure 로 반영합니다.
-    문제가 생기면 <span class="mono">hubctl rollback -l &lt;host&gt; -K</span> 로 직전 상태로 되돌립니다.
+    <p class="note" style="color:var(--ink-2)">${body}
     ${warn.map((w) => `<br>${esc(w)}`).join("")}</p></div>`;
 
+  $("#patchSubmit").textContent = isConfigure ? "configure 로 적용" : "패치 적용";
   $("#patchSubmit").disabled = hosts.length === 0 || !ref;
 }
 
@@ -1455,21 +1534,26 @@ $("#patchForm").addEventListener("submit", (e) => {
   const ref = $("#p-ref").value.trim();
   if (!hosts.length || !ref) return;
   const isTag = $("#p-reftag").checked;
-  modal(`<h2>${hosts.length}대에 패치를 적용할까요?</h2>
+  const isConfigure = patchMode() === "configure";
+  const env = $("#p-env").value;
+  const body = isConfigure
+    ? { kind: "configure", hosts, env, ref, ref_type: isTag ? "tag" : null, only: CONFIGURE_ONLY_TAGS }
+    : { kind: "patch", hosts, ref, ref_type: isTag ? "tag" : null };
+  modal(`<h2>${hosts.length}대에 ${isConfigure ? "configure 를" : "패치를"} 적용할까요?</h2>
     <p class="note">대상: <b class="mono">${esc(hosts.join(", "))}</b><br>
-    ref: <b class="mono">${esc(ref)}</b>${isTag ? " (태그)" : ""}</p>
+    ref: <b class="mono">${esc(ref)}</b>${isTag ? " (태그)" : ""}${isConfigure ? `<br>환경: <b class="mono">${esc(env)}</b>` : ""}</p>
     <div class="alert alert--warn"><span class="alert__g" aria-hidden="true">!</span>
-      <p class="note" style="color:var(--ink-2)">번들을 만든 뒤 <b>확인 없이 그대로 적용</b>합니다 —
-      터미널의 <span class="mono">[y/N]</span> 을 대신하는 것이 이 버튼입니다.
-      변경 앱 목록은 실행 로그에 남지만, 보실 때는 이미 적용된 뒤입니다.<br>
+      <p class="note" style="color:var(--ink-2)">${isConfigure
+        ? `1.1.1.0 의 <b>새 이미지</b>를 반영합니다 — GitOps 적재 · 시크릿(env 파일) · Flux 배선을 다시 돌립니다.<br>
+           이미 1.1.1.0 이상인 서버라면 이 방식이 아니라 <b>patch</b> 입니다.`
+        : `번들을 만든 뒤 <b>확인 없이 그대로 적용</b>합니다 —
+           터미널의 <span class="mono">[y/N]</span> 을 대신하는 것이 이 버튼입니다.
+           변경 앱 목록은 실행 로그에 남지만, 보실 때는 이미 적용된 뒤입니다.`}<br>
       되돌리려면 <span class="mono">hubctl rollback -l ${esc(hosts[0])} -K</span> 를 터미널에서 실행합니다.</p></div>`,
-    { label: "패치 적용" },
+    { label: isConfigure ? "configure 로 적용" : "패치 적용" },
     async () => {
       try {
-        const created = await api("/api/jobs", {
-          method: "POST",
-          body: { kind: "patch", hosts, ref, ref_type: isTag ? "tag" : null },
-        });
+        const created = await api("/api/jobs", { method: "POST", body });
         toast(`작업 #${created.id} 을(를) 시작했습니다`);
         go("job", created.id);
       } catch (e) { toast(e.message, "danger"); throw e; }

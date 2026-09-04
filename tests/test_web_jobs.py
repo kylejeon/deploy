@@ -1232,3 +1232,47 @@ async def test_patch_apply_does_not_update_the_repo(temp_db, tmp_path):
         assert "최신으로 맞추는 중" not in text
     finally:
         await client.close()
+
+
+# ── 1.1.1.0 전환 (configure --only) ─────────────────────────────────
+async def test_configure_with_only_reaches_hubctl(client):
+    """패치 화면이 configure 로 보낼 때. 세 단계만 돌아야 한다."""
+    resp = await post(client, "/api/jobs", {
+        "kind": "configure", "hosts": ["alpha"], "env": "prod",
+        "ref": "release/1.1.1.0",
+        "only": "gitops_publish,secrets_fetch_env_file,flux_wire",
+    })
+    assert resp.status == 201, await resp.text()
+    job_id = (await resp.json())["id"]
+    await wait_finished(client, job_id)
+
+    text = await (await client.get(f"/api/jobs/{job_id}/log")).text()
+    assert "--only gitops_publish,secrets_fetch_env_file,flux_wire" in text
+    assert "-e prod" in text and "hub_deploy_ref=release/1.1.1.0" in text
+
+
+async def test_the_only_tags_are_kept_on_the_job(client):
+    """재시도가 같은 명령을 다시 만들려면 기록이 남아 있어야 한다."""
+    job_id = (await (await post(client, "/api/jobs", {
+        "kind": "configure", "hosts": ["alpha"], "env": "prod",
+        "ref": "release/1.1.1.0", "only": "flux_wire",
+    })).json())["id"]
+
+    job = await (await client.get(f"/api/jobs/{job_id}")).json()
+    assert job["only_tags"] == "flux_wire"
+
+
+async def test_an_unknown_only_tag_never_starts(client):
+    """허용 목록 밖의 단계는 작업이 만들어지기 전에 막힌다."""
+    resp = await post(client, "/api/jobs", {
+        "kind": "configure", "hosts": ["alpha"], "env": "prod", "only": "k0s",
+    })
+    assert resp.status == 400
+    assert "허용되지 않은" in (await resp.json())["error"]
+
+
+async def test_patch_does_not_take_only(client):
+    resp = await post(client, "/api/jobs", {
+        "kind": "patch", "hosts": ["alpha"], "ref": "v1", "only": "flux_wire",
+    })
+    assert resp.status == 400

@@ -15,6 +15,8 @@ from pathlib import Path
 import pytest
 
 from autodeploy.hubctl import (
+    needs_configure,
+    parse_version,
     build_sync_command,
     CLEAN_MODES,
     HubctlError,
@@ -495,3 +497,86 @@ def test_sync_command_quotes_the_branch():
     cmd = build_sync_command("release/1.2")
     assert "origin/release/1.2" in cmd
     assert ";" not in cmd and "&&" in cmd
+
+
+# ── 1.1.1.0 경계 (신규 이미지) ─────────────────────────
+@pytest.mark.parametrize(
+    "ref,expected",
+    [
+        ("release/1.1.1.0", (1, 1, 1, 0)),
+        ("v1.1.1.0", (1, 1, 1, 0)),
+        ("1.1.0.3", (1, 1, 0, 3)),
+        ("1.1.1", (1, 1, 1, 0)),          # 짧은 것은 0 으로 채운다
+        ("release/1.1.0.10", (1, 1, 0, 10)),
+        ("main", None),
+        ("feature/obs-stack", None),
+        ("", None),
+        (None, None),
+    ],
+)
+def test_version_is_read_from_the_ref(ref, expected):
+    assert parse_version(ref) == expected
+
+
+@pytest.mark.parametrize(
+    "ref,expected",
+    [
+        ("release/1.1.0.3", False),   # 지금 main
+        ("release/1.1.0.9", False),
+        ("release/1.1.1.0", True),    # 경계 — 여기서 새 이미지가 들어온다
+        ("release/1.1.1.1", True),    # 건너뛰어도 경계를 넘으면 configure
+        ("v1.2.0", True),
+        ("main", False),              # 모르면 기존 동작. 화면에서 사람이 뒤집는다
+    ],
+)
+def test_the_boundary_decides_the_default_command(ref, expected):
+    """1.1.1.0 부터 신규 이미지가 들어와 patch 의 diff 로는 반영되지 않는다.
+
+    이 값은 **기본 선택**이다. 이미 1.1.1.0 이상인 사이트를 그 다음 버전으로
+    올릴 때도 patch 가 맞는데, 그건 올릴 ref 만 봐서는 알 수 없다.
+    """
+    assert needs_configure(ref) is expected
+
+
+def test_configure_with_only_matches_the_runbook():
+    """runbook 2026-09-04 의 명령 그대로. `-K` 는 콘솔이 비밀번호 파일로 대신한다."""
+    cmd = build_command(
+        JobKind.CONFIGURE, hosts=["bumin-node1"], env="dev",
+        only="gitops_publish,secrets_fetch_env_file,flux_wire",
+        ref="release/1.1.1.0",
+    )
+    assert cmd == (
+        "./bin/hubctl configure -e dev -l bumin-node1"
+        " --only gitops_publish,secrets_fetch_env_file,flux_wire"
+        " -- -e hub_deploy_ref=release/1.1.1.0"
+    )
+
+
+def test_only_comes_before_the_passthrough():
+    """`--` 뒤는 ansible 로 그대로 넘어간다. --only 가 그 뒤로 가면 hubctl 이 못 본다."""
+    cmd = build_command(
+        JobKind.CONFIGURE, hosts=["a"], env="prod",
+        only="flux_wire", ref="release/1.1.1.0",
+    )
+    assert cmd.index("--only") < cmd.index(" -- ")
+
+
+def test_only_is_rejected_outside_configure():
+    """hubctl 도 같은 이유로 거부한다 — site.yml 은 bootstrap 까지 import 한다."""
+    with pytest.raises(HubctlError, match="configure"):
+        build_command(JobKind.INSTALL, hosts=["a"], env="dev", only="flux_wire")
+
+
+def test_an_unknown_only_tag_is_rejected():
+    """콘솔이 임의의 단계를 돌리는 통로가 되면 안 된다."""
+    with pytest.raises(HubctlError, match="허용되지 않은"):
+        build_command(JobKind.CONFIGURE, hosts=["a"], env="dev", only="k0s")
+    with pytest.raises(HubctlError, match="허용되지 않은"):
+        build_command(JobKind.CONFIGURE, hosts=["a"], env="dev", only="flux_wire,clean")
+
+
+def test_a_blank_only_tag_is_rejected():
+    """빈 값은 hubctl 에서 '전체 실행' 으로 강등되지 않고 거부된다 — 여기서 먼저 잡는다."""
+    for bad in (",", "flux_wire,", " ,flux_wire"):
+        with pytest.raises(HubctlError, match="비어 있"):
+            build_command(JobKind.CONFIGURE, hosts=["a"], env="dev", only=bad)

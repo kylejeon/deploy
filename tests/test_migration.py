@@ -242,3 +242,22 @@ async def test_server_meta_serial_column_added(tmp_path):
         async with db.execute("SELECT host, serial FROM server_meta ORDER BY host") as cur:
             rows = {r["host"]: r["serial"] for r in await cur.fetchall()}
     assert rows == {"new": "PF3ABCDE", "old": None}
+
+
+@pytest.mark.asyncio
+async def test_jobs_only_tags_column_added(tmp_path):
+    """configure --only (1.1.1.0 전환). 지난 작업은 NULL 로 남는다."""
+    path = tmp_path / "state.db"
+    await _make_v1_db(path)
+    await init_db(path)
+    async with connect(path) as db:
+        await db.execute(
+            "INSERT INTO jobs (kind, status, started_by, only_tags)"
+            " VALUES ('configure', 'queued', 'web:t', 'flux_wire')"
+        )
+        await db.commit()
+        async with db.execute(
+            "SELECT only_tags FROM jobs WHERE only_tags IS NOT NULL"
+        ) as cur:
+            rows = [r["only_tags"] for r in await cur.fetchall()]
+    assert rows == ["flux_wire"], "재생성 때 칸이 사라지면 재시도가 명령을 못 만든다"

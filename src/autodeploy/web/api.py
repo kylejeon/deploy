@@ -756,6 +756,7 @@ async def post_job(request: web.Request) -> web.Response:
         ref=_opt(data, "ref"),
         ref_type=_opt(data, "ref_type"),
         clean_mode=_opt(data, "clean_mode"),
+        only=_opt(data, "only"),
         confirm=_opt(data, "confirm"),
     )
     try:

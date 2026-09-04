@@ -15,6 +15,7 @@ CREATE TABLE IF NOT EXISTS jobs (
   ref               TEXT,          -- hub_deploy_ref
   ref_type          TEXT,          -- branch|tag|commit
   clean_mode        TEXT,          -- reset|reset-keep|uninstall
+  only_tags         TEXT,          -- configure --only (1.1.1.0 신규 이미지 전환)
   exit_code         INTEGER,
   cancel_by         TEXT,
   current_step      TEXT,

@@ -526,6 +526,33 @@ PLAY 는 install 에 둘(Bootstrap·Configuration)뿐이라 그것만으로는 �
 실패한 작업 상세에 `실패한 N대만 재시도` 가 뜬다. Ansible 은 멱등해서
 이미 끝난 부분은 건너뛴다. 전체 재시도도 가능하다.
 
+### 5-4-1. 1.1.1.0 경계 — patch 냐 configure 냐
+
+**1.1.1.0 부터 신규 이미지가 추가됐다.** patch 는 base↔new 의 *변경분*만 번들에
+담으므로, 새로 생긴 이미지는 들어가지 않는다. 그래서 그 경계를 넘을 때는
+configure 로 세 단계만 다시 돌린다.
+
+| 지금 깔린 버전 | 올릴 버전 | 명령 |
+|---|---|---|
+| 1.1.0.3 이하 | 1.1.1.0 이상 | `configure --only gitops_publish,secrets_fetch_env_file,flux_wire` |
+| 1.1.1.0 이상 | 그 다음 | `patch` (기존) |
+
+```
+./bin/hubctl configure -e prod -l bumin-node1 -K \
+  --only gitops_publish,secrets_fetch_env_file,flux_wire \
+  -- -e hub_deploy_ref=release/1.1.1.0
+```
+
+**콘솔에서**: 패치 화면의 `적용 방식` 에서 고른다. ref 에 적은 버전이 1.1.1.0
+이상이면 configure 가 미리 골라져 있고, 아니면 patch 다. **한 번이라도 직접
+고르면 그 뒤로는 자동으로 안 바뀐다** — 이미 1.1.1.0 이상인 서버를 다음 버전으로
+올리는 경우는 올릴 ref 만 봐서는 알 수 없기 때문이다. 그때는 patch 로 바꾼다.
+
+configure 는 Vault 금고가 필요해서 `환경`(dev/stage/prod) 칸이 같이 나타난다.
+`--only` 세 태그는 코드에 박혀 있고 다른 태그는 서버가 거부한다.
+
+---
+
 ### 5-5. patch
 
 설치가 끝난 서버에 **앱 버전만** 올릴 때 쓴다 (앱의 cpu/메모리 설정 변경도 같은

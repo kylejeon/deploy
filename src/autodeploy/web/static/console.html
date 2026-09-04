@@ -108,8 +108,12 @@
             <div class="pickall"><label class="row gap-8" style="gap:7px; cursor:pointer"><input type="checkbox" id="pAll"> <span style="font-size:13px">전체 선택</span></label>
               <span class="count push" id="pCount">0대 선택</span></div>
             <div class="servers" id="pSrvList"></div></div>
-          <div class="field"><label for="p-ref">hub-deploy ref <span class="dim">— 번들에 담을 버전 (필수)</span></label>
+          <div class="field"><label for="p-ref">hub-deploy ref <span class="dim">— 올릴 버전 (필수)</span></label>
             <input class="input mono" id="p-ref" placeholder="main, Release v1.1.0, feature/obs-stack"></div>
+          <div class="field"><span class="lbl">적용 방식 <span class="dim" style="text-transform:none; letter-spacing:0">— ref 를 보고 골라두지만, 맞는 쪽으로 바꿔주세요</span></span>
+            <div class="types" id="pModeList"></div></div>
+          <div class="field" id="pEnvField" hidden><label for="p-env">환경 <span class="dim">— Vault 금고 (configure 는 필수)</span></label>
+            <select class="input mono" id="p-env"><option value="dev">dev</option><option value="stage">stage</option><option value="prod" selected>prod</option></select></div>
           <label class="type"><input type="checkbox" id="p-reftag">
             <span><span class="type__n">태그로 지정</span><span class="type__d">ref가 브랜치가 아니라 태그일 때 체크 — 체크하지 않으면 <span class="mono">patch_create</span>가 경고를 냅니다</span></span></label>
         </div></div>

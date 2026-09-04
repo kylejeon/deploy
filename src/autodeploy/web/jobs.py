@@ -87,6 +87,8 @@ class JobRequest:
     env: str | None = None
     ref: str | None = None
     ref_type: str | None = None
+    # configure --only (1.1.1.0 신규 이미지 전환). 다른 종류에는 쓰지 않는다.
+    only: str | None = None
     clean_mode: str | None = None
     confirm: str | None = None
 
@@ -153,6 +155,7 @@ class JobService:
                 env=req.env,
                 ref=req.ref,
                 ref_type=req.ref_type,
+                only=req.only,
                 clean_mode=req.clean_mode,
                 phase=phase,
             )
@@ -161,9 +164,11 @@ class JobService:
 
         async with connect(self.db_path) as db:
             cur = await db.execute(
-                "INSERT INTO jobs (kind, status, env, ref, ref_type, clean_mode, started_by)"
-                " VALUES (?, 'queued', ?, ?, ?, ?, ?)",
-                (kind.value, req.env, req.ref, req.ref_type, req.clean_mode, req.started_by),
+                "INSERT INTO jobs"
+                " (kind, status, env, ref, ref_type, clean_mode, only_tags, started_by)"
+                " VALUES (?, 'queued', ?, ?, ?, ?, ?, ?)",
+                (kind.value, req.env, req.ref, req.ref_type, req.clean_mode,
+                 req.only, req.started_by),
             )
             job_id = int(cur.lastrowid)
             if hosts:
@@ -295,12 +300,15 @@ class JobService:
     async def _execute(
         self, job_id: int, ticket: JobTicket, *, hosts, req: JobRequest, phase: str | None
     ) -> None:
+        # 생성 때 조립한 것은 검증용이고, 실제로 도는 것은 여기서 만든다.
+        # 인자를 한쪽에만 넣으면 화면이 시킨 것과 다른 명령이 돈다.
         command = build_command(
             req.kind,
             hosts=hosts,
             env=req.env,
             ref=req.ref,
             ref_type=req.ref_type,
+            only=req.only,
             clean_mode=req.clean_mode,
             phase=phase,
         )

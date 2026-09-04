@@ -608,3 +608,37 @@ def test_the_forward_modal_lets_you_pick_the_environment():
     assert "data-fwd-env" in js, "고른 값을 받는 곳이 없다"
     assert '["dev", "stage", "prod"]' in js
     assert "알 수 없어 주소를 정할 수 없습니다" not in js, "막다른 문구가 남아 있다"
+
+
+def test_the_console_and_the_server_agree_on_the_new_image_boundary():
+    """화면이 기본 선택을 정하는 경계와 서버가 명령을 만드는 경계는 같아야 한다.
+
+    갈라지면 화면은 patch 를 보여주는데 서버는 configure 를 만드는(또는 반대)
+    상태가 되고, 그건 화면 어디에도 안 보인다.
+    """
+    from autodeploy.hubctl import CONFIGURE_ONLY_TAGS, NEW_IMAGE_VERSION
+
+    js = (
+        Path(__file__).resolve().parents[1]
+        / "src" / "autodeploy" / "web" / "static" / "console.js"
+    ).read_text(encoding="utf-8")
+
+    boundary = re.search(r"const NEW_IMAGE_VERSION = \[([^\]]+)\]", js)
+    assert boundary is not None, "console.js 에서 NEW_IMAGE_VERSION 을 못 찾았다"
+    assert tuple(int(x) for x in boundary.group(1).split(",")) == NEW_IMAGE_VERSION
+
+    tags = re.search(r'const CONFIGURE_ONLY_TAGS = "([^"]+)"', js)
+    assert tags is not None, "console.js 에서 CONFIGURE_ONLY_TAGS 를 못 찾았다"
+    assert tuple(tags.group(1).split(",")) == CONFIGURE_ONLY_TAGS
+
+
+def test_the_patch_screen_can_switch_to_configure():
+    """1.1.1.0 경계를 넘을 때는 configure 여야 한다. 사람이 뒤집을 수도 있어야 한다."""
+    static = Path(__file__).resolve().parents[1] / "src" / "autodeploy" / "web" / "static"
+    html = (static / "console.html").read_text(encoding="utf-8")
+    js = (static / "console.js").read_text(encoding="utf-8")
+
+    assert 'id="pModeList"' in html and 'id="p-env"' in html
+    assert "function needsConfigure(" in js
+    assert "state.patchModePicked" in js, "사람이 고른 뒤에도 자동으로 뒤집으면 안 된다"
+    assert 'kind: "configure"' in js and "only: CONFIGURE_ONLY_TAGS" in js
