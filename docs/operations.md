@@ -563,13 +563,27 @@ configure 로 세 단계만 다시 돌린다.
   -- -e hub_deploy_ref=release/1.1.1.0
 ```
 
+`configure` 는 **`--only` 없이 전체로** 돈다. `--only` 는 *같은 ref 에서* 새 앱·
+시크릿·배선만 재수렴하는 경로라, **ref 를 바꾸는 이 작업에는 붙일 수 없다** —
+붙이면 `flux_wire` 의 `partial_guard` 가 시작 전에 멈춘다
+(RUNBOOK-hubctl §3-8: "ref 를 바꾸는 일은 --only 로 하지 않는다").
+2026-09-04 installtest 에서 실제로 이걸 맞고 배웠다.
+
 **콘솔에서**: 패치 화면의 `적용 방식` 에서 고른다. ref 에 적은 버전이 1.1.1.0
 이상이면 configure 가 미리 골라져 있고, 아니면 patch 다. **한 번이라도 직접
 고르면 그 뒤로는 자동으로 안 바뀐다** — 이미 1.1.1.0 이상인 서버를 다음 버전으로
 올리는 경우는 올릴 ref 만 봐서는 알 수 없기 때문이다. 그때는 patch 로 바꾼다.
 
 configure 는 Vault 금고가 필요해서 `환경`(dev/stage/prod) 칸이 같이 나타난다.
-`--only` 세 태그는 코드에 박혀 있고 다른 태그는 서버가 거부한다.
+
+**돌리기 전에 확인할 것**
+
+- **새 앱의 시크릿이 그 환경 Vault 마운트에 미리 있어야 한다.** 없으면
+  `secrets_fetch` 가 `Invalid or missing path` 로 멈춘다. dev 에만 만들고
+  stage/prod 를 빠뜨리는 경우가 흔하다 — 관리자에게 KV 생성을 요청한다.
+- 미러에만 **14분**쯤 걸린다. 앱 반영은 그 뒤 **Flux 주기(최대 10분)** 를 기다린다.
+  바로 보려면 타겟에서 `flux reconcile kustomization apps -n flux-system`.
+- **같은 명령을 다시 돌려도 안전하다** — 이미 반영된 서버는 changed=0 으로 끝난다.
 
 ---
 

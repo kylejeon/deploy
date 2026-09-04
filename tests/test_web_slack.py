@@ -641,4 +641,9 @@ def test_the_patch_screen_can_switch_to_configure():
     assert 'id="pModeList"' in html and 'id="p-env"' in html
     assert "function needsConfigure(" in js
     assert "state.patchModePicked" in js, "사람이 고른 뒤에도 자동으로 뒤집으면 안 된다"
-    assert 'kind: "configure"' in js and "only: CONFIGURE_ONLY_TAGS" in js
+    assert 'kind: "configure"' in js
+    # `--only` 는 **같은 ref 재수렴 전용**이다. ref 를 바꾸는 이 경로에 붙이면
+    # flux_wire 의 partial_guard 가 시작 전에 멈춘다 (2026-09-04 installtest 실측,
+    # RUNBOOK-hubctl §3-8 "ref 를 바꾸는 일은 --only 로 하지 않는다").
+    submit = js[js.index('kind: "configure", hosts, env, ref'):][:300]
+    assert "only:" not in submit, "ref 를 바꾸는 configure 에 --only 를 붙이면 가드가 막는다"

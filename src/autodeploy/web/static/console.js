@@ -87,12 +87,12 @@ function needsConfigure(ref) {
 
 const PATCH_MODES = {
   patch: {
-    label: "patch — 기존 방식",
-    d: "이미 1.1.1.0 이상인 서버를 그 다음 버전으로 올릴 때. 바뀐 것만 번들로 만들어 적용합니다.",
+    label: "patch — 앱 버전만 올리기",
+    d: "서버가 보고 있는 ref 는 그대로 두고 바뀐 앱 이미지만 나릅니다. 앱이 추가·제거되면 거부합니다.",
   },
   configure: {
-    label: "configure — 신규 이미지 반영 (1.1.1.0 경계)",
-    d: "1.1.1.0 이전 버전에서 올릴 때. patch 의 diff 에는 새로 생긴 이미지가 안 담겨서, gitops 적재·시크릿·flux 배선을 다시 돌립니다.",
+    label: "configure — 다른 ref 로 옮기기 (신규 앱 포함)",
+    d: "1.1.1.0 처럼 새 앱·이미지가 담긴 다른 ref 로 서버를 옮길 때. 전체를 다시 수렴시킵니다 (미러가 14분쯤 걸립니다).",
   },
 };
 
@@ -1512,9 +1512,9 @@ function drawPatchPlan() {
   const env = $("#p-env").value;
   $("#pCount").textContent = `${hosts.length}대 선택`;
   $("#pEnvField").hidden = !isConfigure;   // configure 만 Vault 금고가 필요하다
-  $("#patchChip").textContent = isConfigure ? "hubctl configure --only" : "hubctl patch";
+  $("#patchChip").textContent = isConfigure ? "hubctl configure" : "hubctl patch";
 
-  const phases = isConfigure ? PHASES["configure-only"] : PHASES.patch;
+  const phases = isConfigure ? PHASES.configure : PHASES.patch;
   $("#patchPlan").innerHTML = phases.map(([, label], i) =>
     `<div class="plan__i"><b>${i + 1}</b><span>${esc(label)}</span></div>`).join("");
 
@@ -1522,8 +1522,7 @@ function drawPatchPlan() {
   const refPart = `-- -e hub_deploy_ref=<b>${esc(ref || "<ref 없음>")}</b>${esc(tag)}`;
   const limit = esc(hosts.length ? hosts.join(",") : "<대상 없음>");
   $("#patchCmd").innerHTML = (isConfigure
-    ? `./bin/hubctl configure -e <b>${esc(env)}</b> -l <b>${limit}</b>`
-      + `<br>&nbsp;&nbsp;--only <b>${esc(CONFIGURE_ONLY_TAGS)}</b> ${refPart}`
+    ? `./bin/hubctl configure -e <b>${esc(env)}</b> -l <b>${limit}</b> ${refPart}`
     : `./bin/hubctl patch -l <b>${limit}</b> ${refPart}`
       + `<br><span style="color:var(--console-dim)">중간의 <b>[y/N]</b> 에는 y 를 자동으로 넣습니다</span>`)
     + branchNote($("#p-branch").value);
@@ -1531,9 +1530,13 @@ function drawPatchPlan() {
   const warn = [];
   if (hosts.length > FORKS) warn.push(`선택한 ${hosts.length}대는 ansible 기본 forks(${FORKS})보다 많아 ${FORKS}대씩 나눠 진행됩니다.`);
   const body = isConfigure
-    ? `<b>1.1.1.0 부터 새 이미지가 추가</b>돼서 patch 의 변경분만으로는 반영되지 않습니다.
-       그래서 GitOps 적재 · 시크릿(env 파일) · Flux 배선 세 단계만 다시 돌립니다.<br>
-       <b>이미 1.1.1.0 이상인 서버</b>라면 위에서 <b>patch</b> 로 바꾸세요 — 이미지가 이미 있어서 다시 적재할 이유가 없습니다.`
+    ? `서버가 보는 ref 를 <b>${esc(ref || "…")}</b> 로 <b>옮깁니다</b>. 새 앱·이미지가 담긴 ref 로 갈 때 쓰는 경로입니다
+       (부분 실행 <span class="mono">--only</span> 는 ref 를 못 바꿉니다 — 가드가 시작 전에 멈춥니다).<br>
+       <b>새 앱의 시크릿이 그 환경(${esc(env)}) Vault 마운트에 미리 있어야 합니다.</b> 없으면 secrets_fetch 가
+       <span class="mono">Invalid or missing path</span> 로 멈춥니다 — dev 에만 만들고 stage/prod 를 빠뜨리는 경우가 흔합니다.<br>
+       미러가 14분쯤 걸리고, 앱 반영은 그 뒤 <b>Flux 주기(최대 10분)</b>를 기다립니다.
+       바로 보려면 타겟에서 <span class="mono">flux reconcile kustomization apps -n flux-system</span>.
+       같은 명령을 다시 돌려도 안전합니다 (이미 반영된 서버는 changed=0).`
     : `번들을 만들고 <b>곧바로 적용</b>합니다. 터미널이라면 변경 앱 목록을 보고 <span class="mono">[y/N]</span> 을 눌렀을 자리인데,
        콘솔은 그 확인을 <b>시작할 때</b> 받습니다 — 시작하면 중간에 멈추지 않습니다.<br>
        앱이 추가·제거되는 등 구조가 바뀌면 <span class="mono">패치 스코프 밖</span> 이라며 멈춥니다 — 서버는 그대로입니다.
@@ -1555,17 +1558,19 @@ $("#patchForm").addEventListener("submit", (e) => {
   const isConfigure = patchMode() === "configure";
   const env = $("#p-env").value;
   const syncBranch = $("#p-branch").value;
+  // configure 는 **전체**로 돈다. `--only` 는 같은 ref 재수렴 전용이라 ref 를
+  // 바꾸는 이 경로에 붙이면 flux_wire 의 partial_guard 가 시작 전에 멈춘다
+  // (RUNBOOK-hubctl §3-8: "ref 를 바꾸는 일은 --only 로 하지 않는다").
   const body = isConfigure
-    ? { kind: "configure", hosts, env, ref, ref_type: isTag ? "tag" : null,
-        only: CONFIGURE_ONLY_TAGS, sync_branch: syncBranch }
+    ? { kind: "configure", hosts, env, ref, ref_type: isTag ? "tag" : null, sync_branch: syncBranch }
     : { kind: "patch", hosts, ref, ref_type: isTag ? "tag" : null, sync_branch: syncBranch };
   modal(`<h2>${hosts.length}대에 ${isConfigure ? "configure 를" : "패치를"} 적용할까요?</h2>
     <p class="note">대상: <b class="mono">${esc(hosts.join(", "))}</b><br>
     ref: <b class="mono">${esc(ref)}</b>${isTag ? " (태그)" : ""}${isConfigure ? `<br>환경: <b class="mono">${esc(env)}</b>` : ""}</p>
     <div class="alert alert--warn"><span class="alert__g" aria-hidden="true">!</span>
       <p class="note" style="color:var(--ink-2)">${isConfigure
-        ? `1.1.1.0 의 <b>새 이미지</b>를 반영합니다 — GitOps 적재 · 시크릿(env 파일) · Flux 배선을 다시 돌립니다.<br>
-           이미 1.1.1.0 이상인 서버라면 이 방식이 아니라 <b>patch</b> 입니다.`
+        ? `서버가 보는 ref 를 <b>${esc(ref)}</b> 로 옮기고 전체를 다시 수렴시킵니다 — 미러에만 14분쯤 걸립니다.<br>
+           새 앱 시크릿이 <b>${esc(env)}</b> Vault 마운트에 미리 있어야 합니다. 앱 반영은 그 뒤 Flux 주기(최대 10분)입니다.`
         : `번들을 만든 뒤 <b>확인 없이 그대로 적용</b>합니다 —
            터미널의 <span class="mono">[y/N]</span> 을 대신하는 것이 이 버튼입니다.
            변경 앱 목록은 실행 로그에 남지만, 보실 때는 이미 적용된 뒤입니다.`}<br>

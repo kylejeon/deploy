@@ -2719,3 +2719,34 @@ ansible.cfg 는 `host_key_checking = False` 라 타겟 접속은 영향 없었�
   만들어 실제 git 경로를 탄다)
 - `-rf` 같은 이름은 작업이 만들어지기 전에 막히는지
 - 브랜치 무시·이름 검사 해제를 각각 깨서 빨간불 확인함
+
+--------------------------------------------------------------------------------
+## 2026-09-04 (이어서 2) — `--only` 는 ref 를 바꾸는 데 쓰는 게 아니었다
+
+installtest 에서 `configure --only ... -e hub_deploy_ref=release/1.1.1.0` 이
+`flux_wire : partial_guard` 에 막혔다. 라이브 GitRepository 는 `branch: main`
+인데 이번 실행 ref 가 `release/1.1.1.0` 이라 **ref 를 바꾸려 한 것**이고,
+`--only` 는 그걸 하지 않는다.
+
+hub-provisioning 자체 문서가 못박고 있다 (RUNBOOK-hubctl §3-8):
+> ref 를 바꾸는 일은 --only 로 하지 않는다: 앱 버전 bump 는 hubctl patch,
+> 신규 앱이 담긴 다른 ref 로 옮기는 건 --only 없는 전체 configure
+> (어차피 미러 14분이 지배적이라 절감폭이 작다).
+
+§3-8 표의 `-e hub_deploy_ref=<라이브 ref>` 도 "지금 그 사이트가 이미 보고 있는
+ref" 라는 뜻이다. 내가 이걸 "올릴 ref" 로 읽었다.
+
+### 고침
+콘솔의 configure 모드는 이제 `--only` 를 **안 붙인다**. 전체 configure 로 돈다.
+- 단계 표시도 2칸 → configure 전체 7칸.
+- 모드 이름을 실제 규칙대로: patch = 앱 버전만, configure = 다른 ref 로 옮기기.
+- 경고에 실제로 걸리는 것들을 적었다: 새 앱 시크릿이 그 env Vault 마운트에
+  미리 있어야 하고(없으면 secrets_fetch 가 Invalid or missing path 로 중단),
+  반영은 Flux 주기 최대 10분(즉시 확인은 flux reconcile), 재실행은 안전.
+
+`build_command(only=...)` 자체는 남겨둔다 — hubctl 의 실제 기능이고 테스트가
+규칙을 문서화한다. 다만 콘솔은 지금 아무 데서도 안 쓴다.
+
+### 배운 것
+문서를 읽을 때 `<라이브 ref>` 같은 자리표시자의 **뜻**을 확인하지 않았다.
+가드 메시지가 그 자리에서 정확히 설명하고 있었는데, 그건 실행하고 나서야 봤다.
