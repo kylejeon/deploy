@@ -677,3 +677,39 @@ def test_the_patch_screen_offers_all_three_paths():
     assert set(re.findall(r"^  (\w+): \{", block.group(1), re.M)) == {
         "patch", "configure", "only"
     }
+
+
+def test_atomic_values_do_not_break_across_lines():
+    """소요·시각·상태는 한 덩어리다. 칸이 좁다고 쪼개지면 값이 둘로 보인다.
+
+    2026-09-04 대시보드 실측: 「2분 18 / 초」, 「09-04 / 19:00」, 「진행 / 중」이
+    각각 두 줄로 접혀 있었다. `.tag`(서버 이름)에만 nowrap 이 걸려 있었던 탓이다.
+    """
+    root = Path(__file__).resolve().parents[1] / "src" / "autodeploy" / "web" / "static"
+    css = (root / "console.css").read_text(encoding="utf-8")
+    js = (root / "console.js").read_text(encoding="utf-8")
+
+    assert ".nowrap{white-space:nowrap}" in css
+    # 알약은 셀 폭과 무관하게 한 줄이어야 한다.
+    pill = next(line for line in css.splitlines() if line.startswith(".pill{"))
+    assert "white-space:nowrap" in pill, "상태 알약이 '진행 / 중' 으로 접힌다"
+    # 표에서 실제로 그 유틸을 쓰고 있어야 한다 — CSS 에만 있으면 아무 일도 안 일어난다.
+    assert 'class="mono nowrap">${esc(duration(job))}' in js
+    assert 'class="mono dim nowrap">${esc(shortTime(job.created_at))}' in js
+
+
+def test_the_main_column_is_not_capped_at_a_laptop_width():
+    """1220px 상한은 넓은 화면에서 오른쪽을 통째로 비워둔다.
+
+    다만 폼 화면은 따로 묶어둔다 — 입력 한 줄이 1300px 로 늘어나면 읽기 나쁘다.
+    """
+    css = (
+        Path(__file__).resolve().parents[1]
+        / "src" / "autodeploy" / "web" / "static" / "console.css"
+    ).read_text(encoding="utf-8")
+    main = next(line for line in css.splitlines() if line.startswith("main{"))
+    cap = int(re.search(r"max-width:(\d+)px", main).group(1))
+    assert cap >= 1600, f"본문 폭이 아직 좁다: {cap}px"
+
+    form = next(line for line in css.splitlines() if line.startswith(".form-grid{"))
+    assert "max-width" in form, "폼까지 본문 폭을 따라가면 입력칸이 늘어난다"

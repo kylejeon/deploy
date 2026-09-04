@@ -90,12 +90,12 @@ select.input{appearance:none; background-image:linear-gradient(45deg,transparent
 .who{display:flex; align-items:center; gap:9px; padding:9px 10px; border:1px solid var(--line-soft); border-radius:8px; background:var(--ground)}
 .who__av{width:24px;height:24px;border-radius:50%;background:var(--surface-3);color:var(--ink-2);display:grid;place-items:center;font:600 11px/1 "IBM Plex Mono",monospace;flex:none}
 
-main{padding:26px 30px 72px; max-width:1220px; width:100%}
+main{padding:26px 30px 72px; max-width:1680px; width:100%}
 .topline{display:flex; align-items:center; gap:12px; flex-wrap:wrap; margin-bottom:22px}
 .topline h1{font-size:22px}
 .chip{display:inline-flex; align-items:center; gap:6px; padding:3px 9px; border-radius:999px; font:500 11.5px/1.5 "IBM Plex Mono",monospace; border:1px dashed var(--line); color:var(--ink-3); background:var(--surface)}
 
-.pill{display:inline-flex; align-items:center; gap:6px; padding:3px 9px 3px 7px; border-radius:999px; font:600 11.5px/1.6 "IBM Plex Sans KR",sans-serif; border:1px solid}
+.pill{display:inline-flex; align-items:center; gap:6px; padding:3px 9px 3px 7px; border-radius:999px; font:600 11.5px/1.6 "IBM Plex Sans KR",sans-serif; border:1px solid; white-space:nowrap}
 .pill__dot{width:6px;height:6px;border-radius:50%;background:currentColor;flex:none}
 .pill--run{color:var(--accent); background:var(--accent-soft); border-color:var(--accent-line)}
 .pill--ok{color:var(--ok); background:var(--ok-soft); border-color:var(--ok-line)}
@@ -175,6 +175,8 @@ tbody tr[data-open]{cursor:pointer}
 tbody tr:hover{background:var(--surface-2)}
 .jobid{font:600 12.5px/1.6 "IBM Plex Mono",monospace; color:var(--ink-2)}
 .retry-of{font:500 10.5px/1.6 "IBM Plex Mono",monospace; color:var(--ink-3); margin-left:6px}
+/* 한 덩어리로 읽어야 하는 값 — 칸이 좁다고 "2분 18 / 초" 로 쪼개지면 숫자가 두 개로 보인다. */
+.nowrap{white-space:nowrap}
 .tag{display:inline-block; padding:2px 7px; border-radius:5px; background:var(--surface-2); border:1px solid var(--line-soft); font:500 11.5px/1.6 "IBM Plex Mono",monospace; color:var(--ink-2); white-space:nowrap}
 
 .split{display:grid; grid-template-columns:minmax(280px,340px) 1fr; gap:16px; align-items:start}
@@ -272,7 +274,7 @@ tbody tr:hover{background:var(--surface-2)}
 .kv dt{color:var(--ink-3)}
 .kv dd{margin:0; font-family:"IBM Plex Mono",monospace; font-variant-numeric:tabular-nums}
 
-.form-grid{display:grid; grid-template-columns:1fr minmax(260px,320px); gap:16px; align-items:start}
+.form-grid{display:grid; grid-template-columns:1fr minmax(260px,320px); gap:16px; align-items:start; max-width:1220px}
 .types{display:flex; flex-direction:column; gap:8px}
 .type{display:grid; grid-template-columns:auto 1fr; gap:11px; padding:12px 13px; border:1px solid var(--line); border-radius:8px; cursor:pointer; background:var(--surface)}
 .type:hover{border-color:var(--accent-line)}

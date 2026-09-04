@@ -476,8 +476,8 @@ function jobRow(job, hostRow = null, first = true, last = true) {
     <td>${profileTag(job, hostRow)}</td>
     <td>${pill(status)}</td>
     <td class="dim">${esc(stepLabel(job, job.current_step))}</td>
-    <td class="mono">${esc(duration(job))}</td>
-    <td class="mono dim">${esc(shortTime(job.created_at))}</td>
+    <td class="mono nowrap">${esc(duration(job))}</td>
+    <td class="mono dim nowrap">${esc(shortTime(job.created_at))}</td>
     <td style="text-align:right"><span class="dim">›</span></td></tr>`;
 }
 
