@@ -86,7 +86,7 @@
             <div class="field"><label for="f-env">환경 <span class="dim">— Vault 금고 (-e)</span></label>
               <select class="input mono" id="f-env"><option value="dev" selected>dev (QA 기본)</option><option value="stage">stage</option><option value="prod">prod</option></select></div>
             <div class="field"><label for="f-ref">hub-deploy ref <span class="dim">— 비우면 기본값</span></label>
-              <input class="input mono" id="f-ref" placeholder="main, Release v1.1.0, feature/obs-stack"></div>
+              <input class="input mono" id="f-ref" placeholder="main, release/1.1.1.0"></div>
           </div>
           <div class="field"><label for="f-branch">설치 코드 <span class="dim">— hub-provisioning 브랜치. 시작 직전 이 브랜치로 맞춥니다</span></label>
             <select class="input mono" id="f-branch"><option value="main" selected>main (기본)</option><option value="dev">dev (시험용)</option></select></div>
@@ -111,7 +111,7 @@
               <span class="count push" id="pCount">0대 선택</span></div>
             <div class="servers" id="pSrvList"></div></div>
           <div class="field"><label for="p-ref">hub-deploy ref <span class="dim">— 올릴 버전 (필수)</span></label>
-            <input class="input mono" id="p-ref" placeholder="main, Release v1.1.0, feature/obs-stack"></div>
+            <input class="input mono" id="p-ref" placeholder="main, release/1.1.1.0"></div>
           <div class="field"><span class="lbl">적용 방식 <span class="dim" style="text-transform:none; letter-spacing:0">— ref 를 보고 골라두지만, 맞는 쪽으로 바꿔주세요</span></span>
             <div class="types" id="pModeList"></div>
             <p class="note dim" style="margin-top:8px">어느 방식이든 15~25분쯤 걸립니다 — 시간으로는 고르지 마세요.</p>
