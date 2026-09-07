@@ -571,11 +571,17 @@ configure 로 세 단계만 다시 돌린다.
 
 ### 반영 경로 셋 (RUNBOOK-OPS §1)
 
-| 방식 | 무엇을 하나 | ref |
-|---|---|---|
-| `patch` | 바뀐 앱 이미지만 나른다 | 그대로 |
-| `configure` (전체) | 새 앱이 담긴 **다른 ref 로 옮긴다** | **바뀐다** |
-| `configure --only` | 같은 ref 에서 새 앱·시크릿·배선만 다시 맞춘다 | 그대로 |
+| 방식 | 무엇을 하나 | ref | 앱 증감 |
+|---|---|---|---|
+| `patch` | 바뀐 앱 이미지만 골라 나른다 | **바뀐다** | 안 된다 (rc=4 거부) |
+| `configure` (전체) | 설치할 때와 같은 단계를 전부 다시 돈다 | **바뀐다** | 된다 |
+| `configure --only` | 같은 ref 에서 앱 설정·시크릿·배선만 다시 맞춘다 | 그대로 | 된다 |
+
+`patch` 를 "ref 는 그대로" 로 적어둔 시기가 있었는데 **틀렸다**. `patch_create`
+첫 assert 가 `-e hub_deploy_ref=<새 ref> 필수` 이고(roles/patch_create/tasks/main.yml),
+`patch_apply` 는 끝에 `flux_wire` 를 재사용해 GitRepository 를 새 ref 로 다시 건다.
+셋을 가르는 축은 ref 가 아니라 **앱 목록이 바뀌는가** 다 — 그래서 #51 이
+`added=['dicom-classifier']` 로 거부당하고 #55(전체 configure)만 통과했다.
 
 `--only` 는 **서버가 지금 보고 있는 ref** 를 그대로 넘겨야 한다. 다른 값이면
 `flux_wire` 의 `partial_guard` 가 시작 전에 멈춘다. 콘솔은 이 값을 사람에게

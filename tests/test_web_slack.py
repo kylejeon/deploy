@@ -713,3 +713,61 @@ def test_the_main_column_is_not_capped_at_a_laptop_width():
 
     form = next(line for line in css.splitlines() if line.startswith(".form-grid{"))
     assert "max-width" in form, "폼까지 본문 폭을 따라가면 입력칸이 늘어난다"
+
+
+def _patch_modes() -> dict[str, str]:
+    """PATCH_MODES 의 key → (label + 설명) 을 한 덩어리로 돌려준다."""
+    js = (
+        Path(__file__).resolve().parents[1]
+        / "src" / "autodeploy" / "web" / "static" / "console.js"
+    ).read_text(encoding="utf-8")
+    block = re.search(r"const PATCH_MODES = \{(.*?)\n\};", js, re.S).group(1)
+    return {
+        m.group(1): m.group(2)
+        for m in re.finditer(r"^  (\w+): \{(.*?)^  \},", block, re.S | re.M)
+    }
+
+
+def test_the_picker_says_which_modes_move_the_ref():
+    """세 방식을 가르는 축은 하나다 — ref 가 올라가는가.
+
+    예전 문구는 patch 를 "서버가 보고 있는 ref 는 그대로 두고" 라고 적었는데
+    **사실이 아니다**: roles/patch_create/tasks/main.yml 의 첫 assert 가
+    `-e hub_deploy_ref=<새 ref> 필수` 이고, patch_apply 는 끝에 flux 배선을
+    새 ref 로 다시 건다. 그렇게 적어두면 버전을 올리려는 사람이 patch 를
+    후보에서 지워버린다 — 앱 목록이 같을 때는 patch 가 맞는 길인데도.
+    """
+    modes = _patch_modes()
+    assert modes.keys() == {"patch", "configure", "only"}
+
+    # ref 를 올리는 둘은 그렇게 말해야 한다.
+    for key in ("patch", "configure"):
+        assert "ref 를 올립니다" in modes[key], f"{key} 가 ref 를 올린다고 말하지 않는다"
+    # 못 올리는 하나도 그렇게 말해야 한다 — 이게 #54 를 18초 만에 멈춘 이유다.
+    assert "ref 는 그대로 둡니다" in modes["only"]
+    assert "올리는 용도가 아닙니다" in modes["only"], "--only 로 버전이 오를 거라 믿게 된다"
+
+
+def test_the_picker_does_not_lean_on_runbook_jargon():
+    """런북의 낱말(재수렴·배선·가드·미러)은 운영 문서의 말이지 화면의 말이 아니다.
+
+    화면은 패치하러 들어온 사람이 라디오 버튼 셋을 몇 초 보고 고르는 자리다.
+    """
+    for key, text in _patch_modes().items():
+        for word in ("재수렴", "배선", "가드", "미러", "수렴시킵니다"):
+            assert word not in text, f"{key} 설명에 {word} 가 남아 있다"
+
+
+def test_the_modes_do_not_advertise_their_own_runtime():
+    """셋 다 14~26분이라(2026-09-04 실측) 시간은 고를 근거가 못 된다.
+
+    한쪽에만 적으면 그쪽만 느린 것처럼 읽힌다 — 실제로 --only 도 그 시간의
+    94% 를 미러에 쓴다. 시간 안내는 방식 목록 아래 한 줄로 모아둔다.
+    """
+    for key, text in _patch_modes().items():
+        assert "분" not in text, f"{key} 설명이 제 소요 시간을 광고한다"
+    html = (
+        Path(__file__).resolve().parents[1]
+        / "src" / "autodeploy" / "web" / "static" / "console.html"
+    ).read_text(encoding="utf-8")
+    assert "어느 방식이든 15~25분" in html, "시간 안내가 어디에도 없다"

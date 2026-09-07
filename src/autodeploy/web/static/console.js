@@ -87,16 +87,16 @@ function needsConfigure(ref) {
 
 const PATCH_MODES = {
   patch: {
-    label: "patch — 앱 버전만 올리기",
-    d: "서버가 보고 있는 ref 는 그대로 두고 바뀐 앱 이미지만 나릅니다. 앱이 추가·제거되면 거부합니다.",
+    label: "patch — ref 를 올립니다 · 앱 목록이 같을 때만",
+    d: "바뀐 앱 이미지만 골라 나릅니다. 앱이 하나라도 늘거나 줄면 시작하자마자 거부합니다 — 그때는 아래 configure.",
   },
   configure: {
-    label: "configure — 다른 ref 로 옮기기 (신규 앱 포함)",
-    d: "1.1.1.0 처럼 새 앱·이미지가 담긴 다른 ref 로 서버를 옮길 때. 전체를 다시 수렴시킵니다 (미러가 14분쯤 걸립니다).",
+    label: "configure — ref 를 올립니다 · 앱이 늘어도 됩니다",
+    d: "1.1.1.0 처럼 새 앱이 들어간 ref 로 옮길 때. 설치할 때와 같은 단계를 전부 다시 돕니다.",
   },
   only: {
-    label: "configure --only — 같은 ref 에서 재수렴",
-    d: "보고 있는 ref 는 그대로 두고 새 앱·시크릿·배선만 다시 맞춥니다. ref 는 서버에서 읽어와 채웁니다 — 다른 값을 넣으면 가드가 막습니다.",
+    label: "configure --only — ref 는 그대로 둡니다",
+    d: "ref 를 올리는 용도가 아닙니다. 지금 ref 에서 앱 설정·비밀값·Flux 연결만 다시 맞춥니다. ref 칸은 서버에서 읽어와 채웁니다.",
   },
 };
 
@@ -1595,7 +1595,7 @@ function drawPatchPlan() {
     && state.liveRefs[hosts[0]] !== `${$("#p-reftag").checked ? "tag" : "branch"}:${ref}`;
 
   const body = isOnly
-    ? `보고 있는 ref 는 <b>그대로</b> 두고 새 앱·시크릿·배선만 다시 맞춥니다.
+    ? `ref 는 <b>그대로</b> 두고 앱 설정·비밀값·Flux 연결만 다시 맞춥니다.
        ref 는 서버에서 읽어온 값이라 손대지 마세요 — 다르면
        <span class="mono">partial_guard</span> 가 시작 전에 멈춥니다.<br>
        ${liveMismatch ? `<b style="color:var(--err)">지금 값이 서버의 라이브 ref
@@ -1607,7 +1607,7 @@ function drawPatchPlan() {
        (부분 실행 <span class="mono">--only</span> 는 ref 를 못 바꿉니다 — 가드가 시작 전에 멈춥니다).<br>
        <b>새 앱의 시크릿이 그 환경(${esc(env)}) Vault 마운트에 미리 있어야 합니다.</b> 없으면 secrets_fetch 가
        <span class="mono">Invalid or missing path</span> 로 멈춥니다 — dev 에만 만들고 stage/prod 를 빠뜨리는 경우가 흔합니다.<br>
-       미러가 14분쯤 걸리고, 앱 반영은 그 뒤 <b>Flux 주기(최대 10분)</b>를 기다립니다.
+       앱 반영은 실행이 끝난 뒤 <b>Flux 주기(최대 10분)</b>를 더 기다립니다.
        바로 보려면 타겟에서 <span class="mono">flux reconcile kustomization apps -n flux-system</span>.
        같은 명령을 다시 돌려도 안전합니다 (이미 반영된 서버는 changed=0).`
     : `번들을 만들고 <b>곧바로 적용</b>합니다. 터미널이라면 변경 앱 목록을 보고 <span class="mono">[y/N]</span> 을 눌렀을 자리인데,
@@ -1618,7 +1618,7 @@ function drawPatchPlan() {
     <p class="note" style="color:var(--ink-2)">${body}
     ${warn.map((w) => `<br>${esc(w)}`).join("")}</p></div>`;
 
-  $("#patchSubmit").textContent = isOnly ? "재수렴 실행"
+  $("#patchSubmit").textContent = isOnly ? "설정 다시 맞추기"
     : isConfigure ? "configure 로 적용" : "패치 적용";
   // --only 에서 여러 대는 못 돌린다 — `-e hub_deploy_ref` 는 실행당 하나인데
   // 서버마다 보고 있는 ref 가 다를 수 있다.
@@ -1644,21 +1644,23 @@ $("#patchForm").addEventListener("submit", (e) => {
     ? { kind: "configure", hosts, env, ref, ref_type: isTag ? "tag" : null,
         sync_branch: syncBranch, ...(isOnly ? { only: CONFIGURE_ONLY_TAGS } : {}) }
     : { kind: "patch", hosts, ref, ref_type: isTag ? "tag" : null, sync_branch: syncBranch };
-  modal(`<h2>${hosts.length}대에 ${isOnly ? "재수렴을" : isConfigure ? "configure 를" : "패치를"} 적용할까요?</h2>
+  modal(`<h2>${isOnly ? `${hosts.length}대의 설정을 다시 맞출까요?`
+      : `${hosts.length}대에 ${isConfigure ? "configure 를" : "패치를"} 적용할까요?`}</h2>
     <p class="note">대상: <b class="mono">${esc(hosts.join(", "))}</b><br>
     ref: <b class="mono">${esc(ref)}</b>${isTag ? " (태그)" : ""}${isConfigure ? `<br>환경: <b class="mono">${esc(env)}</b>` : ""}</p>
     <div class="alert alert--warn"><span class="alert__g" aria-hidden="true">!</span>
       <p class="note" style="color:var(--ink-2)">${isOnly
-        ? `보고 있는 ref(<b>${esc(ref)}</b>)는 그대로 두고 새 앱·시크릿·배선만 다시 맞춥니다.<br>
+        ? `ref(<b>${esc(ref)}</b>)는 그대로 두고 앱 설정·비밀값·Flux 연결만 다시 맞춥니다.
+           <b>이 방식으로는 ref 가 올라가지 않습니다.</b><br>
            새 앱 시크릿이 <b>${esc(env)}</b> Vault 마운트에 미리 있어야 합니다.`
         : isConfigure
-        ? `서버가 보는 ref 를 <b>${esc(ref)}</b> 로 옮기고 전체를 다시 수렴시킵니다 — 미러에만 14분쯤 걸립니다.<br>
+        ? `서버가 보는 ref 를 <b>${esc(ref)}</b> 로 옮기고, 설치할 때와 같은 단계를 전부 다시 돕니다.<br>
            새 앱 시크릿이 <b>${esc(env)}</b> Vault 마운트에 미리 있어야 합니다. 앱 반영은 그 뒤 Flux 주기(최대 10분)입니다.`
         : `번들을 만든 뒤 <b>확인 없이 그대로 적용</b>합니다 —
            터미널의 <span class="mono">[y/N]</span> 을 대신하는 것이 이 버튼입니다.
            변경 앱 목록은 실행 로그에 남지만, 보실 때는 이미 적용된 뒤입니다.`}<br>
       되돌리려면 <span class="mono">hubctl rollback -l ${esc(hosts[0])} -K</span> 를 터미널에서 실행합니다.</p></div>`,
-    { label: isOnly ? "재수렴 실행" : isConfigure ? "configure 로 적용" : "패치 적용" },
+    { label: isOnly ? "설정 다시 맞추기" : isConfigure ? "configure 로 적용" : "패치 적용" },
     async () => {
       try {
         const created = await api("/api/jobs", { method: "POST", body });
