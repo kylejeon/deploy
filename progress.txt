@@ -2861,3 +2861,99 @@ ref_type. 키가 둘이면 어느 쪽인지 알 수 없으므로 **지어내지 
   main 으로 전체 configure 를 돌리면 **성공으로 끝나면서** dicom-classifier 가
   제대로 안 깔린다 (apps_ai / env_file_secrets / AI_APPS 셋 다 dev 에만 있음).
   ref 가 1.1.1.0 이상이면 dev 를 자동 선택하거나 경고할지 물어둔 상태.
+
+════════════════════════════════════════════════════════════
+2026-09-10  OS 골든 이미지 복원 — 조사·이미지 확보까지 (미완)
+════════════════════════════════════════════════════════════
+[목표] 지금은 포맷 후 "OS만 설치된 골든 SSD" 를 물리적으로 clone 해서 복원한다.
+       이것을 소프트웨어로 — 골든 이미지를 맥미니에 두고 원하는 서버를 복원 —
+       하고 싶다는 요청.
+
+[중단 지점] 용혁님 판단으로 여기서 멈춤. "이런 조건이면 물리 clone 이 낫겠다".
+       미결 질문 하나: **복원 빈도**. 한 달 한두 대면 물리가 맞고,
+       자주/여러 대/나중에 원격이면 소프트웨어가 값어치를 한다.
+
+──────────────── 확보한 것 (그대로 남아 있음) ────────────────
+맥미니 ~/images/
+  golden-root.img.zst  3.7G   루트 ext4 (463.9GiB 파일시스템, 실제 24.4GiB)
+  golden-esp.img.zst   776M   ESP 1GiB 통째
+  golden.sfdisk        608B   GPT 파티션 표
+  SHA256SUMS                  위 셋의 sha256
+
+  ※ 이것만으로도 값어치가 있다. 지금까지 골든 상태는 **SSD 한 장에만** 있었다.
+    고장나면 처음부터 다시 만들어야 했는데 이제 복제본이 있다.
+
+  거드는 스크립트(재사용 가능):
+  make-root-image.sh  골든 SSD → 맥미니 (e2image 로 쓰인 블록만)
+  run111.py           타겟에서 sudo 명령 실행 (asyncssh, 비번은 stdin 으로만)
+  send111.py          맥미니 → 타겟 파일 전송 (이어받기·재시도)
+  hook / script / build.sh   복구 initramfs 재료 (아래)
+  imgserve.py 는 **맥미니에 못 올림** — scp 가 자동승인 정책에 막힘
+
+.111 (/var/tmp/)
+  recovery-initrd.img  73M   복구 initramfs (빌드 완료·내용 검증됨)
+  adconf/                    빌드용 confdir 사본
+  ad-hook, ad-script, ad-build.sh
+  golden-root.img.zst  58M   ← **받다 만 조각.** 지울지 여쭤야 함
+  ※ kexec-tools, zstd, curl 을 apt 로 설치했다 (지워질 장비라 허락받음)
+
+──────────────── 알아낸 사실 (다시 조사하지 말 것) ────────────────
+■ 장비 구성 (staging·.111 동일, Dell OEM Ubuntu 24.04.3)
+  dist channel: canonical-oem-somerville-noble-oem-24.04c-20251022-81
+  nvme 476.9G │ p1 1G vfat ESP │ p2 12G vfat "OS" │ p3 463.9G ext4 /
+  골든 SSD 와 .111 은 **파티션 GUID 까지 동일** — 같은 골든에서 복제된 장비.
+  루트 fs UUID 도 동일: 6b15e3ca-38a4-4d52-8cfd-ba228cb261f8
+  골든 p3 상태: clean, Last mounted on /target (설치 직후 그대로, 오염 없음)
+
+■ ESP 를 통째로 복원할 필요가 없다 ★
+  ESP 안 /EFI/ubuntu/grub.cfg 는 3줄짜리 이정표일 뿐이다:
+    search.fs_uuid <루트UUID> root / set prefix / configfile
+  나머지 106M(Dell 89M·Microsoft 13M)은 **모델별 펌웨어**라 타겟 것을 둬야 맞다.
+  → 복원은 p3(raw) + fstab 의 ESP UUID 교정 + 스텁 3줄 교정. 그게 전부.
+  /etc/fstab: /dev/disk/by-uuid/<루트> /   와  /dev/disk/by-uuid/FE67-C908 /boot/efi
+
+■ p2(12G 리셋 파티션)는 안 건드려도 된다
+  5.1G 사용/7.0G 여유. 안에 casper(우분투 라이브) + Dell factory-reset 자산.
+  장비에 `factory-reset-tools`(canonical 스냅)가 깔려 있어 "리셋 파티션으로
+  재부팅" 기능이 이미 있다. 다만 도착점이 **Dell 공장 상태**라 골든과 다르다
+  (connecteve 계정·SSH 키 없음, OOBE 마법사가 뜸). 그래서 이 경로는 접었다.
+
+■ 네트워크가 결정적이다
+  .111 은 **USB 와이파이**(rtw_8822bu)로만 붙어 있고 그 드라이버는 initramfs 에
+  없다 → 복구 환경에서 네트워크 불가. 그래서 4GB 를 미리 받아두는 우회를 짰다.
+  내장 유선 Intel I219-LM(e1000e)은 **initramfs 에 있다**. ipconfig·wget 도 있다.
+  → **랜선만 꽂으면** 복구 환경이 맥미니에서 직접 받아 붓는다. 미리 복사 불필요.
+  현재 enp0s31f6 = DOWN, NO-CARRIER (랜선 미연결)
+  와이파이 실측: 12MB/s, 13MB·34MB·58MB 지점에서 세 번 끊김.
+  python -m http.server 는 Range 미지원(200 반환) → 이어받기 불가. aiohttp 필요.
+
+──────────────── 만들어 둔 복원 절차 (검증 전) ────────────────
+복구 initramfs 는 **시스템 /etc/initramfs-tools 를 오염시키지 않는다** —
+사본 confdir 에서 mkinitramfs -d 로 빌드. (안 그러면 커널 올릴 때마다
+정상 부팅용 initramfs 에 복원 스크립트가 딸려 들어간다.)
+
+스크립트는 커널 인자 `ad_restore=go` 가 있을 때만 동작한다. 없으면 평소처럼
+부팅한다 — 그래서 인자 없이 kexec 해보는 시험이 안전하다. (이 시험 미실시)
+
+  1/5 이미지를 램으로 (루트를 덮으면 원본이 사라지므로 먼저 옮기고 umount)
+  2/5 blkdiscard 로 TRIM
+  3/5 zstd -dc | dd conv=sparse
+  4/5 복원된 루트의 fstab 에서 ESP UUID 를 이 장비 것으로
+  5/5 ESP 스텁을 골든 루트 UUID 로 → sysrq 재부팅
+
+──────────────── 다음에 이어서 한다면 ────────────────
+1. .111 에 랜선 꽂기 (이거 하나로 4GB 사전 복사가 사라짐)
+2. 이미지 내려줄 HTTP 경로 — 8080 의 aiohttp 에 라우트 한 줄 추가가 정석
+   (임시 서버는 자동승인 정책에 막혔다. 저장소를 거쳐 정식 배포가 맞다.)
+3. kexec 시험 — 먼저 **인자 없이** 띄워 정상 부팅되는지 (안전)
+4. 그 다음 ad_restore=go 로 실제 복원
+5. 되면 콘솔 「서버 초기화」 화면에 네 번째 「OS 복원」
+
+■ 소프트웨어로 안 되는 것 (물리 clone 을 버리면 안 되는 이유)
+  SSD 자체 고장 / 파티션표·부트로더 손상 / BIOS 설정 — 셋 다 물리만 답이다.
+
+──────────────── 곁가지 ────────────────
+맥북 known_hosts 가 9/9 에 또 초기화됨 → ops/deploy.sh 로 우회 (0c1f77e).
+맥미니 known_hosts 에 staging(192.168.100.248)·.111 항목을 넣었다.
+staging 지문은 ansible 경로(host_key_checking=False)로 읽은 것이라
+**독립 검증이 아니다**. .111 은 TOFU. 사무실 LAN 이라 받아들였다.
