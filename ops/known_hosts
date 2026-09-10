@@ -1,0 +1,13 @@
+# 맥미니(콘솔 서버)의 호스트 키 — 저장소에 고정해 둔다.
+#
+# 맥북의 ~/.ssh/known_hosts 는 개인 장비라 주기적으로 초기화된다
+# (2026-09-04, 2026-09-09 두 번 실측 — 그때마다 배포가 막혔다).
+# 호스트 공개키는 비밀이 아니므로 여기 두고 이것만 쓴다. ~/.ssh 는 건드리지 않는다.
+#
+# 지문은 용혁님이 맥미니에서 직접 읽어 확인한 값이다 (2026-09-04):
+#   ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub
+#   SHA256:aLtltUm+bQVRLFx5HOesVJ7LeDnoSM7JXeODCVT9ohg
+#
+# 맥미니를 재설치하면 키가 바뀐다. 그때는 위 명령을 다시 읽어 대조한 뒤 갱신할 것.
+autodeploy ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAILBo/RzyJ2+FwNTccv+8/h5WkyckeNZdidW0DO4FlE2R
+100.116.199.41 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAILBo/RzyJ2+FwNTccv+8/h5WkyckeNZdidW0DO4FlE2R
