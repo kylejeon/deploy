@@ -771,3 +771,43 @@ def test_the_modes_do_not_advertise_their_own_runtime():
         / "src" / "autodeploy" / "web" / "static" / "console.html"
     ).read_text(encoding="utf-8")
     assert "어느 방식이든 15~25분" in html, "시간 안내가 어디에도 없다"
+
+
+def _console_js() -> str:
+    return (
+        Path(__file__).resolve().parents[1]
+        / "src" / "autodeploy" / "web" / "static" / "console.js"
+    ).read_text(encoding="utf-8")
+
+
+def test_a_registered_server_can_be_registered_again():
+    """등록이 끝나면 버튼이 사라져서 다시 돌릴 길이 없었다.
+
+    등록은 키만 심는 게 아니다 — 절전 mask·시리얼 읽기·hybrid PC 준비(AnyDesk)를
+    함께 한다. 그중 하나가 실패해도 등록 자체는 성공으로 끝나므로, 나중에 채울
+    수단이 없으면 그 서버는 영영 반쪽으로 남는다 (2026-09-14 medrex).
+    """
+    js = _console_js()
+    cell = js.split("const key = s.key_installed_at", 1)[1].split("return `<tr>", 1)[0]
+    # **등록된 쪽 가지만** 떼어낸다. 삼항 전체를 보면 등록 전 가지의 「키 등록」
+    # 버튼에도 data-key 가 있어서, 버튼을 지워도 검사가 통과해버린다(실제로 그랬다).
+    registered = cell.split("\n      : ", 1)[0]
+    assert "등록됨" in registered and "키 등록" not in registered, "가지를 잘못 잘랐다"
+    assert "data-key=" in registered, "등록된 줄에 다시 누를 버튼이 없다"
+
+
+def test_a_hybrid_server_without_anydesk_says_so():
+    """빈칸으로 두면 아무도 눈치채지 못한다 — samsun 은 일주일이 걸렸다."""
+    js = _console_js()
+    memo = js.split("function memoCell", 1)[1].split("function serialCell", 1)[0]
+    assert 'startsWith("hybrid")' in memo, "프로파일을 안 본다"
+    assert "AnyDesk 없음" in memo
+    assert "s.key_installed_at" in memo, "등록 전 서버까지 경고하면 늘 빨갛다"
+
+
+def test_a_failed_anydesk_install_is_not_reported_as_a_missing_id():
+    """둘은 손쓸 방법이 다르다. 설치 실패를 'ID 를 못 읽었다' 로 말하면 안 된다."""
+    js = _console_js()
+    head = js.split("function prepResultModal", 1)[1].split("const lines =", 1)[0]
+    assert "r.anydesk_installed === false" in head, "설치 실패를 구분하지 않는다"
+    assert "설치되지 않았습니다" in head

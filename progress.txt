@@ -2957,3 +2957,48 @@ ref_type. 키가 둘이면 어느 쪽인지 알 수 없으므로 **지어내지 
 맥미니 known_hosts 에 staging(192.168.100.248)·.111 항목을 넣었다.
 staging 지문은 ansible 경로(host_key_checking=False)로 읽은 것이라
 **독립 검증이 아니다**. .111 은 TOFU. 사무실 LAN 이라 받아들였다.
+
+════════════════════════════════════════════════════════════
+2026-09-15  AnyDesk 가 조용히 안 깔리던 결함
+════════════════════════════════════════════════════════════
+[증상] medrex(hybrid-with-ai)에 AnyDesk ID 가 없다는 지적.
+       확인해보니 ID 가 아니라 **AnyDesk 자체가 안 깔려 있었다.**
+       samsun 도 같은 상태 — 우연이 아니라 재발하는 결함이었다.
+
+[원인] node_prep.sh 7번 절의 판정이 틀렸다.
+  curl ... | gpg --dearmor -o KEY   의 종료코드는 **마지막 명령(gpg)** 것이라
+  curl 실패를 못 잡는다. 게다가 -o 파일은 gpg 가 시작할 때 이미 만들어져서
+  **0 바이트 키**가 남는다. 그 상태로 else 로 빠져 "폐쇄망?" 만 찍고 넘어갔고,
+  등록은 그대로 **성공**으로 끝났다.
+  흔적: /etc/apt/keyrings/anydesk.gpg 가 0 바이트, 시각이 key_installed_at 과 동일
+        medrex 0B 09-14 05:14 / samsun 0B 09-07 01:42
+  왜 그때 curl 이 실패했나: 둘 다 **OS 설치 5분 뒤**에 node_prep 이 돌았다.
+  네트워크·DNS 가 아직 안 잡힌 시점. 지금 같은 명령을 돌리면 정상(rc=0, 1759B).
+  node_prep 자체는 정상 동작했다 — 3번(Wayland)·4번(절전)은 적용돼 있었다.
+
+[고침]
+  node_prep.sh
+    - 판정을 종료코드가 아니라 [[ -s "$_key" ]] (크기)로. 이게 핵심이다.
+    - 5회 재시도 + sleep 5 (설치 직후엔 네트워크가 덜 잡혀 있다)
+    - 2>/dev/null 제거, 실패 사유를 tail -1 로 로그에 남김
+    - 실패 시 0바이트 키를 지움 (남기면 다음 apt-get update 가 서명 오류)
+    - 끝에 ANYDESK_OK=1|0 을 못박아 출력
+  ssh_keys.py  parse_anydesk_installed() + KeyRegistration.anydesk_installed
+               (None = 옛 스크립트라 알 수 없음. False 로 단정하면 안 된다)
+  api.py       등록 응답에 anydesk_installed 추가
+  console.js
+    - 등록 결과 모달: 설치 실패를 "ID 를 못 읽음" 과 **구분**해서 경고
+    - 서버 표 메모 칸: hybrid 인데 ID 가 없으면 「AnyDesk 없음」 빨간 칩
+      (빈칸이면 아무도 눈치 못 챈다 — samsun 은 일주일이 걸렸다)
+    - SSH 키 칸: 등록됨 옆에 ↻ 재등록 버튼
+      등록은 키만 심는 게 아니라 절전 mask·시리얼·PC 준비를 함께 하는데,
+      하나가 실패해도 등록은 성공으로 끝난다. 나중에 채울 수단이 없었다.
+
+[검사] 6개 추가. red-light 확인.
+  ※ test_a_registered_server_can_be_registered_again 은 처음에 **가짜였다** —
+    삼항 전체를 잘라 등록 전 가지의 data-key 까지 포함해서, 버튼을 지워도
+    통과했다. 가지를 제대로 잘라 다시 만들고 사보타주로 재확인.
+  전체 957 통과.
+
+[남은 일] medrex·samsun 재등록은 아직 안 함 (콘솔 ↻ 로 누르면 됨).
+  .111(madisesang) /var/tmp 에 어제 OS 복원 시험 잔재 — 지울지 미정.

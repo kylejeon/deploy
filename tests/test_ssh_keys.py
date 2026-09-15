@@ -16,6 +16,7 @@ from autodeploy.ssh_keys import (
     build_mask_command,
     is_desktop_profile,
     parse_anydesk_id,
+    parse_anydesk_installed,
     prepare_desktop,
     mask_sleep_targets,
     register_key,
@@ -572,3 +573,59 @@ async def test_a_registration_without_prep_never_reports_that_step(tmp_path):
 
     assert "prep" not in seen
     assert seen == list(steps_for(prepare=False))
+
+
+# ── AnyDesk 설치 여부 ─────────────────────────────────
+def test_a_missing_anydesk_is_told_apart_from_a_missing_id():
+    """설치 실패와 "ID 를 못 읽음" 은 손쓸 방법이 다르다.
+
+    2026-09-07 samsun · 2026-09-14 medrex 둘 다 **설치 자체**가 안 됐는데
+    화면은 "ID 를 못 읽었다" 로만 말했다. 그래서 며칠이 지나서야 사람이
+    원격 지원이 불가하다는 걸 알았다.
+    """
+    assert parse_anydesk_installed(["ANYDESK_OK=1"]) is True
+    assert parse_anydesk_installed(["ANYDESK_OK=0"]) is False
+    # 표시가 아예 없으면 옛 스크립트다 — False(=안 깔림)로 단정하면 안 된다.
+    assert parse_anydesk_installed(["  이미 설치됨: 6.3.0"]) is None
+    assert parse_anydesk_installed([]) is None
+
+
+def test_the_last_anydesk_verdict_wins():
+    """스크립트를 두 번 돌린 로그가 합쳐질 수 있다. 마지막 판정이 지금 상태다."""
+    assert parse_anydesk_installed(["ANYDESK_OK=0", "ANYDESK_OK=1"]) is True
+
+
+def test_the_registration_carries_the_anydesk_verdict():
+    from autodeploy.ssh_keys import KeyRegistration
+    assert KeyRegistration(pubkey="k", sleep_masked=True).anydesk_installed is None
+
+
+# ── node_prep.sh 의 키 받기 ───────────────────────────
+def test_the_gpg_key_fetch_is_judged_by_size_not_exit_code():
+    """실제로 이 판정 때문에 두 대가 AnyDesk 없이 "등록 성공" 으로 끝났다.
+
+    `curl ... | gpg --dearmor -o KEY` 의 종료코드는 **마지막 명령(gpg)** 것이라
+    curl 실패를 못 잡는다. 게다가 `-o` 파일은 gpg 가 시작할 때 이미 만들어져서
+    **0 바이트 키**가 남는다. 크기로 판정해야 한다.
+    """
+    sh = (
+        Path(__file__).resolve().parents[1]
+        / "src" / "autodeploy" / "node_prep.sh"
+    ).read_text(encoding="utf-8")
+    body = sh.split("7. AnyDesk 설치", 1)[1].split("8. AnyDesk 무인", 1)[0]
+
+    assert '[[ -s "$_key" ]]' in body, "크기로 판정하지 않는다 — 0바이트 키를 성공으로 본다"
+    # 설치 직후에는 네트워크가 덜 잡혀 있다. 한 번만 시도하면 그대로 실패로 끝난다.
+    assert "for _try in" in body and "sleep 5" in body, "재시도가 없다"
+    # 실패 사유를 지우면 폐쇄망인지 DNS 문제인지 알 길이 없다.
+    assert "tail -1" in body, "실패 사유를 로그에 남기지 않는다"
+    # 빈 키를 남기면 다음 apt-get update 가 서명 오류로 막힌다.
+    assert 'rm -f "$_key"' in body, "실패했을 때 빈 키를 치우지 않는다"
+
+
+def test_the_script_states_whether_anydesk_ended_up_installed():
+    sh = (
+        Path(__file__).resolve().parents[1]
+        / "src" / "autodeploy" / "node_prep.sh"
+    ).read_text(encoding="utf-8")
+    assert "ANYDESK_OK=1" in sh and "ANYDESK_OK=0" in sh

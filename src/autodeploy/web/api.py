@@ -661,6 +661,8 @@ async def post_ssh_key(request: web.Request) -> web.Response:
             "prep_error": registration.prep_error,
             "prep_log": [masker(line) for line in registration.prep_log],
             "anydesk_id": registration.anydesk_id,
+            # 설치 자체가 안 된 것과, 깔렸는데 ID 를 못 읽은 것은 손쓸 방법이 다르다.
+            "anydesk_installed": registration.anydesk_installed,
             "serial": registration.serial,
             "serial_error": registration.serial_error,
         }

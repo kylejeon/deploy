@@ -165,6 +165,7 @@ NODE_PREP_SCRIPT = Path(__file__).with_name("node_prep.sh")
 # 등록은 성공했는데 접속 ID 만 조용히 사라졌다. 스크립트는 고쳤지만, 파서도
 # 한 겹 더 버티게 둔다 — 이 값을 못 읽으면 사람이 그 PC 에 접속할 길이 없다.
 _ANYDESK_ID_RE = re.compile(r"ANYDESK_ID=(\d+)")
+_ANYDESK_OK_RE = re.compile(r"ANYDESK_OK=([01])")
 
 
 def is_desktop_profile(profile: str) -> bool:
@@ -239,6 +240,20 @@ def parse_anydesk_id(lines: Sequence[str]) -> str | None:
     return None
 
 
+def parse_anydesk_installed(lines: Sequence[str]) -> bool | None:
+    """AnyDesk 가 실제로 깔렸는가. 표시가 없으면 `None` — 옛 스크립트다.
+
+    ID 가 없는 것만으로는 원인을 모른다. 설치가 안 된 것과, 깔렸는데 서비스가
+    아직 안 떠서 ID 를 못 읽은 것은 손쓸 방법이 다르다.
+    (2026-09-07 samsun · 2026-09-14 medrex 둘 다 **설치 자체**가 안 됐다.)
+    """
+    for line in reversed(lines):
+        m = _ANYDESK_OK_RE.search(line)
+        if m:
+            return m.group(1) == "1"
+    return None
+
+
 # 등록이 지나가는 단계. 화면이 진행 상태를 그릴 때 이 순서를 그대로 쓴다.
 # `prep` 은 hybrid 일 때만 낀다.
 STEP_CONNECT = "connect"
@@ -271,6 +286,8 @@ class KeyRegistration:
     prep_log: tuple[str, ...] = ()
     prep_error: str | None = None
     anydesk_id: str | None = None
+    # AnyDesk 가 깔렸는가. None 은 "옛 스크립트라 알 수 없다".
+    anydesk_installed: bool | None = None
     # 본체 시리얼. 못 읽어도 등록은 성공이다 (절전 mask 와 같은 이유).
     serial: str | None = None
     serial_error: str | None = None
@@ -387,5 +404,6 @@ async def register_key(
         pubkey=pubkey, sleep_masked=masked, sleep_error=mask_error,
         prep_ran=prep_ran, prep_log=tuple(prep_log), prep_error=prep_error,
         anydesk_id=parse_anydesk_id(prep_log),
+        anydesk_installed=parse_anydesk_installed(prep_log),
         serial=serial, serial_error=serial_error,
     )

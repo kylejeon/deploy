@@ -103,21 +103,52 @@ if command -v anydesk &>/dev/null; then
     echo "  이미 설치됨: $(anydesk --version 2>/dev/null || echo unknown)"
 else
     install -m 0755 -d /etc/apt/keyrings
+    _key=/etc/apt/keyrings/anydesk.gpg
+    _err=/tmp/anydesk-key.err
+    _ok=""
 
-    if curl -fsSL https://keys.anydesk.com/repos/DEB-GPG-KEY \
-        | gpg --dearmor -o /etc/apt/keyrings/anydesk.gpg 2>/dev/null; then
+    # 이 단계는 **OS 설치 몇 분 뒤**에 돌 때가 많다. 그때는 네트워크나 DNS 가
+    # 아직 안 잡혀 있을 수 있다. 실측 두 건이 그랬다 —
+    #   2026-09-07 samsun (OS 설치 → 5분 뒤), 2026-09-14 medrex (→ 5분 뒤).
+    # 두 대 모두 curl 이 실패했는데, `-o` 로 지정한 파일은 gpg 가 시작할 때
+    # 이미 만들어져서 **0 바이트 키만 남고** 조용히 다음으로 넘어갔다.
+    # 그래서 AnyDesk 없이 "등록 성공" 으로 끝났고, 며칠 뒤 화면을 보고서야 알았다.
+    #
+    # 판정을 종료코드가 아니라 `-s`(크기가 0 이 아닌가)로 한다. 파이프라인의
+    # 종료코드는 마지막 명령(gpg)의 것이라 curl 실패를 못 잡는다.
+    for _try in 1 2 3 4 5; do
+        rm -f "$_key"
+        curl -fsSL --max-time 20 https://keys.anydesk.com/repos/DEB-GPG-KEY 2>"$_err" \
+            | gpg --dearmor -o "$_key" 2>>"$_err"
+        if [[ -s "$_key" ]]; then _ok=1; break; fi
+        echo "  키 받기 실패 (${_try}/5): $(tail -1 "$_err" 2>/dev/null)"
+        sleep 5
+    done
+    rm -f "$_err"
 
+    if [[ -n "$_ok" ]]; then
         cat > /etc/apt/sources.list.d/anydesk.list <<'EOF'
 deb [signed-by=/etc/apt/keyrings/anydesk.gpg] http://deb.anydesk.com/ all main
 EOF
         apt-get update
         apt-get install -y anydesk
     else
-        echo "  !! 저장소 접근 실패 (폐쇄망?)."
+        # 빈 키를 남기면 다음 실행이 "키가 있다"고 오해하고, 사람이 손으로
+        # apt-get update 를 돌렸을 때 서명 오류로 막힌다.
+        rm -f "$_key"
+        echo "  !! 저장소 접근 실패 (폐쇄망이거나 네트워크가 아직 안 잡힘)."
         echo "  !! .deb 를 직접 내려받아 설치하세요:"
         echo "  !!   sudo apt install -y ./anydesk_*_amd64.deb"
         echo "  !! 다운로드: https://anydesk.com/en/downloads/linux"
     fi
+fi
+
+# 설치됐는지 못박아 확인한다. 이 줄이 없으면 실패가 조용히 묻힌다.
+if command -v anydesk &>/dev/null; then
+    echo "ANYDESK_OK=1"
+else
+    echo "  !! AnyDesk 가 설치되지 않았습니다 — 원격 지원이 불가합니다."
+    echo "ANYDESK_OK=0"
 fi
 
 
