@@ -601,26 +601,27 @@ def test_the_registration_carries_the_anydesk_verdict():
 
 
 # ── node_prep.sh 의 키 받기 ───────────────────────────
-def test_the_gpg_key_fetch_is_judged_by_size_not_exit_code():
-    """실제로 이 판정 때문에 두 대가 AnyDesk 없이 "등록 성공" 으로 끝났다.
+def test_the_script_never_installs_anydesk():
+    """설치는 사람이 한다 (2026-09-29 결정).
 
-    `curl ... | gpg --dearmor -o KEY` 의 종료코드는 **마지막 명령(gpg)** 것이라
-    curl 실패를 못 잡는다. 게다가 `-o` 파일은 gpg 가 시작할 때 이미 만들어져서
-    **0 바이트 키**가 남는다. 크기로 판정해야 한다.
+    이미 깔려 있는 장비에 설치가 다시 돌면 문제가 생겼다. 손으로 넣은 .deb 와
+    저장소 판이 서로 맞물리지 않는다 — 설치 주체가 둘이면 어느 쪽이 이겼는지
+    알 수 없다. 그래서 스크립트는 **확인만** 한다.
+
+    저장소 등록까지 막는 이유: 소스가 남아 있으면 사람이 무심코 돌린
+    `apt-get upgrade` 가 손으로 맞춰둔 판을 갈아버린다.
     """
     sh = (
         Path(__file__).resolve().parents[1]
         / "src" / "autodeploy" / "node_prep.sh"
     ).read_text(encoding="utf-8")
-    body = sh.split("7. AnyDesk 설치", 1)[1].split("8. AnyDesk 무인", 1)[0]
-
-    assert '[[ -s "$_key" ]]' in body, "크기로 판정하지 않는다 — 0바이트 키를 성공으로 본다"
-    # 설치 직후에는 네트워크가 덜 잡혀 있다. 한 번만 시도하면 그대로 실패로 끝난다.
-    assert "for _try in" in body and "sleep 5" in body, "재시도가 없다"
-    # 실패 사유를 지우면 폐쇄망인지 DNS 문제인지 알 길이 없다.
-    assert "tail -1" in body, "실패 사유를 로그에 남기지 않는다"
-    # 빈 키를 남기면 다음 apt-get update 가 서명 오류로 막힌다.
-    assert 'rm -f "$_key"' in body, "실패했을 때 빈 키를 치우지 않는다"
+    for forbidden in (
+        "apt-get install -y anydesk",
+        "keys.anydesk.com",
+        "deb.anydesk.com",
+        "/etc/apt/sources.list.d/anydesk.list",
+    ):
+        assert forbidden not in sh, f"설치 흔적이 남아 있다: {forbidden}"
 
 
 def test_the_script_states_whether_anydesk_ended_up_installed():

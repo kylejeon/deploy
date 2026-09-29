@@ -3002,3 +3002,40 @@ staging 지문은 ansible 경로(host_key_checking=False)로 읽은 것이라
 
 [남은 일] medrex·samsun 재등록은 아직 안 함 (콘솔 ↻ 로 누르면 됨).
   .111(madisesang) /var/tmp 에 어제 OS 복원 시험 잔재 — 지울지 미정.
+
+════════════════════════════════════════════════════════════
+2026-09-29  AnyDesk 자동 설치 제거 (용혁님 결정)
+════════════════════════════════════════════════════════════
+[이유] 이미 설치된 장비에 설치가 다시 돌면 문제가 생긴다는 보고.
+  손으로 넣은 .deb 와 저장소(deb.anydesk.com) 판이 맞물리지 않는다 —
+  설치 주체가 둘이면 어느 쪽이 이겼는지 알 수 없다. 설치는 사람이 한다.
+
+[뺀 것] node_prep.sh 7번 절의 설치 일체
+  - keys.anydesk.com GPG 키 받기 + 5회 재시도 (2026-09-15 에 넣었던 것)
+  - /etc/apt/sources.list.d/anydesk.list 등록
+  - apt-get update / apt-get install -y anydesk
+  저장소 등록까지 뺀 이유: 소스가 남아 있으면 나중에 누가 apt-get upgrade 를
+  돌렸을 때 손으로 맞춰둔 판이 갈린다.
+
+[남긴 것] — 손으로 설치한 뒤 다시 등록하면 이어서 채워진다
+  7번: 있는지 확인만 + ANYDESK_OK=1|0 출력 + 수동 설치 안내
+  8번: 무인 접근(Full Access) 설정, ID 조회 — 원래부터 `command -v anydesk`
+       조건부라 없으면 통째로 건너뛴다. 손대지 않았다.
+  ANYDESK_OK 의 뜻이 바뀌었다: "설치에 성공했나" → "이 장비에 있나".
+  콘솔이 쓰는 신호로는 그대로 유효하다.
+
+[화면 문구] 이제 "다시 등록하면 깔린다" 가 거짓이라 고쳤다.
+  등록 결과창: "이 PC 에 AnyDesk 가 없습니다 … 직접 설치하신 뒤 ↻"
+  서버 표 칩 tooltip: "직접 설치한 뒤 ↻ 를 누르면 채워집니다"
+  「AnyDesk 없음」 빨간 칩은 유지 — 수동 설치라도 "아직 없다"는 신호는 필요하다.
+
+[검사] test_the_gpg_key_fetch_is_judged_by_size_not_exit_code 를
+  test_the_script_never_installs_anydesk 로 교체 (red-light 확인).
+  금지어: apt-get install -y anydesk / keys.anydesk.com / deb.anydesk.com /
+          sources.list.d/anydesk.list
+  957 통과.
+
+[남은 정리] 옛 스크립트가 실패하며 남긴 0바이트 키가 있다.
+  medrex /etc/apt/keyrings/anydesk.gpg (09-14), samsun (09-07).
+  anydesk.list 는 그 장비들에 안 만들어졌으므로 당장 해는 없지만 찌꺼기다.
+  지울지는 용혁님께 여쭤야 함 (허락 없이 파일 삭제 금지).

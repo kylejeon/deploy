@@ -810,4 +810,5 @@ def test_a_failed_anydesk_install_is_not_reported_as_a_missing_id():
     js = _console_js()
     head = js.split("function prepResultModal", 1)[1].split("const lines =", 1)[0]
     assert "r.anydesk_installed === false" in head, "설치 실패를 구분하지 않는다"
-    assert "설치되지 않았습니다" in head
+    assert "AnyDesk 가 없습니다" in head
+    assert "직접 설치" in head, "사람이 설치한다는 안내가 없다"

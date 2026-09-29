@@ -95,59 +95,27 @@ else
 fi
 
 # ===============================================================
-# 7. AnyDesk 설치
+# 7. AnyDesk 확인 — **설치하지 않는다**
+#
+#    자동 설치를 뺐다 (2026-09-29). 이미 깔려 있는 장비에 설치가 다시 돌면
+#    문제가 생겼다. 손으로 .deb 로 깔아둔 것과 저장소 판이 서로 맞물리지
+#    않는다 — 설치 주체가 둘이면 어느 쪽이 이겼는지 알 수 없다.
+#    그래서 설치는 사람이 하고, 이 스크립트는 **있는지 확인만** 한다.
+#
+#    아래 8번(무인 접근 설정·ID 조회)은 AnyDesk 가 있을 때만 돈다. 나중에
+#    손으로 설치한 뒤 SSH 키 등록을 다시 누르면 그때 이어서 채워진다.
 # ===============================================================
-log "AnyDesk 설치"
+log "AnyDesk 확인"
 
 if command -v anydesk &>/dev/null; then
-    echo "  이미 설치됨: $(anydesk --version 2>/dev/null || echo unknown)"
-else
-    install -m 0755 -d /etc/apt/keyrings
-    _key=/etc/apt/keyrings/anydesk.gpg
-    _err=/tmp/anydesk-key.err
-    _ok=""
-
-    # 이 단계는 **OS 설치 몇 분 뒤**에 돌 때가 많다. 그때는 네트워크나 DNS 가
-    # 아직 안 잡혀 있을 수 있다. 실측 두 건이 그랬다 —
-    #   2026-09-07 samsun (OS 설치 → 5분 뒤), 2026-09-14 medrex (→ 5분 뒤).
-    # 두 대 모두 curl 이 실패했는데, `-o` 로 지정한 파일은 gpg 가 시작할 때
-    # 이미 만들어져서 **0 바이트 키만 남고** 조용히 다음으로 넘어갔다.
-    # 그래서 AnyDesk 없이 "등록 성공" 으로 끝났고, 며칠 뒤 화면을 보고서야 알았다.
-    #
-    # 판정을 종료코드가 아니라 `-s`(크기가 0 이 아닌가)로 한다. 파이프라인의
-    # 종료코드는 마지막 명령(gpg)의 것이라 curl 실패를 못 잡는다.
-    for _try in 1 2 3 4 5; do
-        rm -f "$_key"
-        curl -fsSL --max-time 20 https://keys.anydesk.com/repos/DEB-GPG-KEY 2>"$_err" \
-            | gpg --dearmor -o "$_key" 2>>"$_err"
-        if [[ -s "$_key" ]]; then _ok=1; break; fi
-        echo "  키 받기 실패 (${_try}/5): $(tail -1 "$_err" 2>/dev/null)"
-        sleep 5
-    done
-    rm -f "$_err"
-
-    if [[ -n "$_ok" ]]; then
-        cat > /etc/apt/sources.list.d/anydesk.list <<'EOF'
-deb [signed-by=/etc/apt/keyrings/anydesk.gpg] http://deb.anydesk.com/ all main
-EOF
-        apt-get update
-        apt-get install -y anydesk
-    else
-        # 빈 키를 남기면 다음 실행이 "키가 있다"고 오해하고, 사람이 손으로
-        # apt-get update 를 돌렸을 때 서명 오류로 막힌다.
-        rm -f "$_key"
-        echo "  !! 저장소 접근 실패 (폐쇄망이거나 네트워크가 아직 안 잡힘)."
-        echo "  !! .deb 를 직접 내려받아 설치하세요:"
-        echo "  !!   sudo apt install -y ./anydesk_*_amd64.deb"
-        echo "  !! 다운로드: https://anydesk.com/en/downloads/linux"
-    fi
-fi
-
-# 설치됐는지 못박아 확인한다. 이 줄이 없으면 실패가 조용히 묻힌다.
-if command -v anydesk &>/dev/null; then
+    echo "  설치됨: $(anydesk --version 2>/dev/null || echo unknown)"
     echo "ANYDESK_OK=1"
 else
-    echo "  !! AnyDesk 가 설치되지 않았습니다 — 원격 지원이 불가합니다."
+    echo "  설치되어 있지 않습니다. 이 스크립트는 설치하지 않습니다."
+    echo "  손으로 설치한 뒤 SSH 키 등록을 다시 실행하면"
+    echo "  무인 접근 설정과 접속 ID 조회가 이어집니다."
+    echo "    받기: https://anydesk.com/en/downloads/linux"
+    echo "    설치: sudo apt install -y ./anydesk_*_amd64.deb"
     echo "ANYDESK_OK=0"
 fi
 

@@ -954,7 +954,7 @@ function memoCell(s) {
        두면 아무도 눈치채지 못한다 — samsun 은 일주일, medrex 는 하루가 지나서야
        사람이 물어봤다. 빠졌다는 사실 자체를 값으로 적는다. */
     parts.push(`<span class="tag" style="color:var(--err); border-color:var(--err-line)"`
-      + ` title="hybrid 인데 AnyDesk ID 가 없습니다 — SSH 키 칸의 ↻ 로 다시 등록하면 채워집니다">`
+      + ` title="hybrid 인데 AnyDesk ID 가 없습니다 — AnyDesk 를 직접 설치한 뒤 SSH 키 칸의 ↻ 를 누르면 채워집니다">`
       + `AnyDesk 없음</span>`);
   }
   return parts.length ? parts.join(" ") : "–";
@@ -1375,9 +1375,9 @@ function prepResultModal(host, r) {
        원격 지원이 불가하다는 걸 알게 된다 (2026-09-07 samsun · 09-14 medrex). */
     : r.anydesk_installed === false
     ? `<div class="alert"><span class="alert__g">✕</span><p class="note" style="color:var(--ink-2)">
-        키 등록은 끝났지만 <b>AnyDesk 가 설치되지 않았습니다</b> — 이 PC 는 지금 원격 지원이 불가합니다.<br>
-        설치 직후에는 네트워크가 아직 안 잡혀 저장소에 못 닿는 경우가 있습니다.
-        <b>잠시 뒤 다시 등록</b>하면 그때 깔립니다. 폐쇄망이면 아래 로그의 안내대로 .deb 를 직접 설치하세요.</p></div>`
+        키 등록은 끝났지만 <b>이 PC 에 AnyDesk 가 없습니다</b> — 지금은 원격 지원이 불가합니다.<br>
+        AnyDesk 는 <b>직접 설치</b>하셔야 합니다. 설치한 뒤 서버 목록의 <b>↻</b> 를 누르면
+        무인 접근 설정과 접속 ID 조회가 이어집니다.</p></div>`
     : `<p class="note">${r.anydesk_id
         ? `AnyDesk 접속 ID <b class="mono">${esc(r.anydesk_id)}</b> — 서버 목록의 메모 칸에 적어뒀습니다.`
         : `AnyDesk 는 깔렸는데 접속 ID 를 아직 못 읽었습니다. 서비스가 뜬 뒤 다시 등록하면 받아옵니다.`}<br>
