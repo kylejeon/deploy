@@ -23,6 +23,7 @@ _KIND_LABEL = {
     "rollback": "롤백",
     "verify": "검증",
     "clean": "초기화",
+    "kit": "설치 킷",
 }
 _STATUS_LABEL = {
     "succeeded": ("✅", "성공"),

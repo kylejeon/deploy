@@ -261,3 +261,58 @@ async def test_jobs_only_tags_column_added(tmp_path):
         ) as cur:
             rows = [r["only_tags"] for r in await cur.fetchall()]
     assert rows == ["flux_wire"], "재생성 때 칸이 사라지면 재시도가 명령을 못 만든다"
+
+
+# ── v2 → v3 (설치 킷) ─────────────────────────────────────────────
+#
+# 운영 맥미니의 DB 는 v2 다 (kind CHECK 에 'kit' 가 없고 킷 컬럼도 없다). v2 정의는
+# 지금 schema.sql 에서 v3 부분만 걷어내 만든다 — 손으로 옮겨 적으면 어긋난다.
+
+def _v2_schema() -> str:
+    import re
+    from pathlib import Path
+
+    import autodeploy
+
+    sql = (Path(autodeploy.__file__).with_name("schema.sql")).read_text(encoding="utf-8")
+    sql = sql.replace(",'kit')", ")")
+    sql = re.sub(r"^\s*-- v3: 설치 킷.*\n", "", sql, flags=re.M)
+    sql = re.sub(r"^\s*kit_\w+\s+TEXT,.*\n", "", sql, flags=re.M)
+    sql = re.sub(r"^\s*-- 설치 킷으로 깔린.*\n", "", sql, flags=re.M)
+    sql = re.sub(r"^\s*kit_(version|addon|read_at)\s+\w+,\s*\n", "", sql, flags=re.M)
+    assert "'kit'" not in sql and "kit_" not in sql
+    return sql
+
+
+@pytest.mark.asyncio
+async def test_v2_db_takes_kit_jobs_after_migration(tmp_path):
+    path = tmp_path / "state.db"
+    async with aiosqlite.connect(path) as db:
+        await db.executescript(_v2_schema())
+        await db.execute(
+            "INSERT INTO jobs (kind, status, env, ref, started_by) VALUES ('install','succeeded','dev','main','web:y')"
+        )
+        await db.execute("INSERT INTO server_meta (host, serial) VALUES ('alpha', 'SN1')")
+        await db.commit()
+
+    await init_db(path)
+
+    assert list(tmp_path.glob("state.db.bak-*")), "재생성 전에 백업해야 한다"
+    async with connect(path) as db:
+        await db.execute(
+            "INSERT INTO jobs (kind, status, kit_action, kit_version, kit_addon, started_by)"
+            " VALUES ('kit','queued','install','1.2.0.2','suite','web:y')"
+        )
+        await db.execute("UPDATE server_meta SET kit_version='1.2.0.2', kit_addon='suite' WHERE host='alpha'")
+        await db.commit()
+        async with db.execute("SELECT kind, env, ref FROM jobs ORDER BY id") as cur:
+            rows = [tuple(r) for r in await cur.fetchall()]
+        async with db.execute("SELECT serial, kit_version FROM server_meta") as cur:
+            meta = tuple(await cur.fetchone())
+    assert rows == [("install", "dev", "main"), ("kit", None, None)]
+    assert meta == ("SN1", "1.2.0.2")
+
+    # 두 번째 기동은 아무것도 다시 만들지 않는다
+    before = set(tmp_path.glob("state.db.bak-*"))
+    await init_db(path)
+    assert set(tmp_path.glob("state.db.bak-*")) == before

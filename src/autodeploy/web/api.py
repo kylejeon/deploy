@@ -25,6 +25,8 @@ from autodeploy.inventory import (
     upsert_server,
     validate_server,
 )
+from autodeploy.kit_runner import read_kit_version
+from autodeploy.kits import KitCache
 from autodeploy.models import JobKind
 from autodeploy.node_info import fetch_live_ref, fetch_serial
 from autodeploy.ssh_keys import (
@@ -206,6 +208,9 @@ async def get_servers(request: web.Request) -> web.Response:
             "live_ref": meta.get(s.host, {}).get("live_ref"),
             "live_ref_type": meta.get(s.host, {}).get("live_ref_type"),
             "live_ref_at": meta.get(s.host, {}).get("live_ref_at"),
+            "kit_version": meta.get(s.host, {}).get("kit_version"),
+            "kit_addon": meta.get(s.host, {}).get("kit_addon"),
+            "kit_read_at": meta.get(s.host, {}).get("kit_read_at"),
         }
         for s in inventory.servers
     ]
@@ -801,6 +806,8 @@ async def post_job(request: web.Request) -> web.Response:
         return json_error(400, "hosts 는 배열이어야 합니다")
 
     service = request.app[keys.JOB_SERVICE]
+    if kind is JobKind.KIT:
+        return await _post_kit_jobs(request, service, data, hosts)
     req = JobRequest(
         kind=kind,
         started_by=f"web:{request['session'].user.username}",
@@ -824,6 +831,92 @@ async def post_job(request: web.Request) -> web.Response:
         {"id": job_id, "queue_position": request.app[keys.QUEUE].position(job_id)},
         status=201,
     )
+
+
+async def _post_kit_jobs(request: web.Request, service, data: dict, hosts: list) -> web.Response:
+    """설치 킷은 **서버마다 작업 하나**다. 큐가 차례로 돌린다.
+
+    한 대가 실패해도 나머지는 그대로 돈다. 대상 검증은 작업을 하나도 만들기 전에
+    전부 끝낸다 — 세 대 중 두 대만 만들어지고 세 번째에서 거절되면 사람이 어디까지
+    됐는지 헷갈린다.
+    """
+    names = list(dict.fromkeys(str(h).strip() for h in hosts if str(h).strip()))
+    if not names:
+        return json_error(400, "대상 서버를 하나 이상 선택하세요")
+    reqs = [
+        JobRequest(
+            kind=JobKind.KIT,
+            started_by=f"web:{request['session'].user.username}",
+            hosts=(h,),
+            kit_action=_opt(data, "kit_action"),
+            kit_version=_opt(data, "kit_version"),
+            kit_addon=_opt(data, "kit_addon"),
+            confirm=_opt(data, "confirm"),
+        )
+        for h in names
+    ]
+    ids: list[int] = []
+    try:
+        for req in reqs:
+            await service.check(req)
+        for req in reqs:
+            ids.append(await service.create(req))
+    except JobError as exc:
+        return json_error(400, str(exc), created=ids)
+    except JobConflict as exc:
+        return json_error(409, str(exc), created=ids)
+    return json_response(
+        {"id": ids[0], "ids": ids, "queue_position": request.app[keys.QUEUE].position(ids[0])},
+        status=201,
+    )
+
+
+@routes.get("/api/kits")
+async def get_kits(request: web.Request) -> web.Response:
+    """빌드 PC 의 킷 목록 (헤더만 읽는다) + 맥미니 캐시에 받아 둔 것."""
+    cfg = request.app[keys.KIT]
+    if cfg is None:
+        return json_error(503, "설치 킷 설정이 없습니다")
+    try:
+        kits = await request.app[keys.JOB_SERVICE].list_kits()
+    except Exception as exc:
+        log.info("킷 목록 실패: %s", exc)
+        return json_error(502, request.app[keys.MASKER](f"빌드 PC 의 킷 목록을 읽지 못했습니다: {exc}"))
+    cache = KitCache(cfg.cache_dir, keep_versions=cfg.keep_versions)
+    cached = cache.cached_names()
+    return json_response({
+        "source": cfg.source,
+        "password_set": bool(cfg.password),
+        "cache": {"dir": str(cache.dir), "used_bytes": cache.used_bytes(), "keep_versions": cache.keep_versions},
+        "kits": [{**k.as_dict(), "cached": k.name in cached} for k in kits],
+    })
+
+
+@routes.post("/api/servers/{host}/kit-version")
+async def post_server_kit_version(request: web.Request) -> web.Response:
+    """설치된 게이트웨이 버전·패키지를 읽는다. `.env` 가 root 전용이라 sudo 를 쓴다."""
+    host = request.match_info["host"]
+    server = load_inventory(request.app[keys.INVENTORY_PATH]).get(host)
+    if server is None:
+        return json_error(404, f"등록되지 않은 서버입니다: {host}")
+    async with connect(request.app[keys.DB_PATH]) as db:
+        meta = await repository.get_server_meta(db)
+    if not (meta.get(host) or {}).get("key_installed_at"):
+        return json_error(400, f"{host} 은(는) SSH 키가 등록되지 않아 접속할 수 없습니다 — 먼저 키 등록을 실행하세요")
+    masker = request.app[keys.MASKER]
+    try:
+        version, addon = await read_kit_version(
+            host=server.ansible_host, username=server.ansible_user, key_path=DEFAULT_KEY_PATH,
+            sudo_password=request.app[keys.BECOME_PASSWORD],
+        )
+    except Exception as exc:
+        log.info("킷 버전 조회 실패 (%s): %s", host, type(exc).__name__)
+        return json_error(400, masker(f"타겟에 접속할 수 없습니다: {exc}"))
+    async with connect(request.app[keys.DB_PATH]) as db:
+        await repository.set_server_kit(db, host, version, addon)
+        meta = await repository.get_server_meta(db)
+    return json_response({"host": host, "kit_version": version, "kit_addon": addon,
+                          "kit_read_at": (meta.get(host) or {}).get("kit_read_at")})
 
 
 @routes.post("/api/jobs/{job_id}/cancel")

@@ -55,7 +55,59 @@ HUBCTL_SECRET_ENV: tuple[str, ...] = (
     # 타겟 PC 준비 스크립트가 AnyDesk 무인 접근 비밀번호로 쓴다. 이 목록에
     # 없으면 스크립트 출력에 섞여 콘솔 로그·Slack·내려받은 로그에 평문으로 남는다.
     "ANYDESK_PASSWORD",
+    # 설치 킷(.run)의 비밀번호. 킷은 출력하지 않지만, 혹시 섞여도 가린다.
+    "KIT_PASSWORD",
 )
+
+
+DEFAULT_KIT_SOURCE = "connecteve@192.168.100.207:newhub/src/dist"
+DEFAULT_KIT_CACHE = "~/Library/Application Support/autodeploy/kits"
+
+
+@dataclass(frozen=True, slots=True)
+class KitConfig:
+    """설치 킷 경로 (kit_runner).
+
+    source: 빌드 PC 의 킷 폴더 `user@host:dir` (사무실 LAN, 맥미니 키로 접속).
+    cache: 맥미니에 받아 두는 곳. keep_versions 개 버전만 남긴다.
+    password: 킷 비밀번호 (.env 의 KIT_PASSWORD). 비어 있으면 킷 작업을 시작하지 않는다.
+    """
+
+    source: str = DEFAULT_KIT_SOURCE
+    cache_dir: Path = Path(DEFAULT_KIT_CACHE).expanduser()
+    keep_versions: int = 2
+    password: str = ""
+
+    @property
+    def source_host(self) -> tuple[str, str]:
+        """(user, host)"""
+        login = self.source.partition(":")[0]
+        user, _, host = login.rpartition("@")
+        return (user or "connecteve"), host
+
+    @property
+    def source_dir(self) -> str:
+        return self.source.partition(":")[2] or "."
+
+
+def resolve_kit_config(env: Mapping[str, str] | None = None) -> KitConfig:
+    e = env if env is not None else os.environ
+    source = e.get("KIT_SOURCE", "").strip() or DEFAULT_KIT_SOURCE
+    if ":" not in source or "@" not in source.partition(":")[0]:
+        raise SettingsError(f"KIT_SOURCE 는 user@host:dir 형식이어야 합니다: {source!r}")
+    raw_keep = e.get("KIT_KEEP_VERSIONS", "").strip() or "2"
+    try:
+        keep = int(raw_keep)
+    except ValueError:
+        raise SettingsError(f"KIT_KEEP_VERSIONS 는 정수여야 합니다: {raw_keep!r}") from None
+    if keep < 1:
+        raise SettingsError("KIT_KEEP_VERSIONS 는 1 이상이어야 합니다")
+    return KitConfig(
+        source=source,
+        cache_dir=Path(e.get("KIT_CACHE_DIR", "").strip() or DEFAULT_KIT_CACHE).expanduser(),
+        keep_versions=keep,
+        password=e.get("KIT_PASSWORD", "").rstrip("\r\n"),
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -215,6 +267,7 @@ class Settings:
         public_url="http://127.0.0.1:8080",
     )
     node_prep: NodePrepConfig = NodePrepConfig()
+    kit: KitConfig = KitConfig()
 
 
 def load_settings(env: Mapping[str, str] | None = None) -> Settings:
@@ -283,4 +336,5 @@ def load_settings(env: Mapping[str, str] | None = None) -> Settings:
         become_password=resolve_become_password(e),
         web=resolve_web_config(e),
         node_prep=resolve_node_prep(e),
+        kit=resolve_kit_config(e),
     )

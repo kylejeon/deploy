@@ -30,11 +30,17 @@ _JOBS_NEW_COLUMNS: tuple[tuple[str, str], ...] = (
     ("target_port", "INTEGER DEFAULT 22"),
     ("only_tags", "TEXT"),
     ("sync_branch", "TEXT"),
+    ("kit_action", "TEXT"),
+    ("kit_version", "TEXT"),
+    ("kit_addon", "TEXT"),
+    ("kit_name", "TEXT"),
+    ("kit_mode", "TEXT"),
 )
 
 # jobs 테이블 재생성 시 옮길 컬럼 (신·구 공통. ALTER를 먼저 돌린 뒤라 전부 존재한다)
 _JOBS_CARRY_COLUMNS: tuple[str, ...] = (
     "id", "kind", "status", "env", "ref", "ref_type", "clean_mode", "only_tags", "sync_branch",
+    "kit_action", "kit_version", "kit_addon", "kit_name", "kit_mode",
     "exit_code", "cancel_by", "current_step", "started_by", "slack_channel",
     "slack_thread_ts", "slack_permalink", "admin_web_url", "script_commit_sha", "error_message",
     "target_ip", "target_port", "deployment_type", "hospital_code",
@@ -83,11 +89,12 @@ async def _table_sql(db: aiosqlite.Connection, table: str) -> str:
 
 async def _jobs_needs_rebuild(db: aiosqlite.Connection) -> bool:
     """구 jobs 정의는 status CHECK에 'awaiting'이 없고 legacy 컬럼이 NOT NULL이다.
+    v3 이전 정의는 kind CHECK에 'kit'(설치 킷)가 없다.
 
     SQLite는 CHECK 제약과 NOT NULL을 ALTER로 못 고치므로 테이블을 재생성해야 한다.
     """
     sql = await _table_sql(db, "jobs")
-    return bool(sql) and "'awaiting'" not in sql
+    return bool(sql) and ("'awaiting'" not in sql or "'kit'" not in sql)
 
 
 async def _migrate(db: aiosqlite.Connection) -> None:
@@ -118,7 +125,7 @@ async def _migrate(db: aiosqlite.Connection) -> None:
     if "serial" not in meta_cols:
         await db.execute("ALTER TABLE server_meta ADD COLUMN serial TEXT")
     # 그 서버가 지금 보고 있는 배포 ref. 읽어봐야 아는 값이라 처음엔 비어 있다.
-    for name in ("live_ref", "live_ref_type", "live_ref_at"):
+    for name in ("live_ref", "live_ref_type", "live_ref_at", "kit_version", "kit_addon", "kit_read_at"):
         if name not in meta_cols:
             decl = "TIMESTAMP" if name.endswith("_at") else "TEXT"
             await db.execute(f"ALTER TABLE server_meta ADD COLUMN {name} {decl}")
@@ -128,12 +135,12 @@ async def _migrate(db: aiosqlite.Connection) -> None:
 
 
 async def _rebuild_jobs(db: aiosqlite.Connection) -> None:
-    """jobs 재생성: status CHECK에 'awaiting' 추가 + legacy 컬럼 nullable 완화.
+    """jobs 재생성: status CHECK에 'awaiting', kind CHECK에 'kit' 추가 + legacy 컬럼 nullable 완화.
 
     자식 테이블(job_events/script_logs/job_hosts)은 id를 그대로 옮기므로 참조가 유지된다.
     외래키를 끈 채 DROP→RENAME 하고, 끝나고 무결성을 검사한다.
     """
-    log.warning("jobs 테이블 재생성 시작 (status CHECK + legacy nullable)")
+    log.warning("jobs 테이블 재생성 시작 (status·kind CHECK + legacy nullable)")
     carried = ", ".join(_JOBS_CARRY_COLUMNS)
     await db.execute("PRAGMA foreign_keys=OFF")
     await db.executescript(
@@ -141,7 +148,7 @@ async def _rebuild_jobs(db: aiosqlite.Connection) -> None:
         CREATE TABLE jobs_v2 (
           id                INTEGER PRIMARY KEY AUTOINCREMENT,
           kind              TEXT NOT NULL DEFAULT 'install'
-                              CHECK(kind IN ('install','configure','patch','rollback','verify','clean','ssh_key')),
+                              CHECK(kind IN ('install','configure','patch','rollback','verify','clean','ssh_key','kit')),
           status            TEXT NOT NULL
                               CHECK(status IN ('queued','running','awaiting','succeeded','failed','cancelled')),
           env               TEXT,
@@ -150,6 +157,11 @@ async def _rebuild_jobs(db: aiosqlite.Connection) -> None:
           clean_mode        TEXT,
           only_tags         TEXT,
           sync_branch       TEXT,
+          kit_action        TEXT,
+          kit_version       TEXT,
+          kit_addon         TEXT,
+          kit_name          TEXT,
+          kit_mode          TEXT,
           exit_code         INTEGER,
           cancel_by         TEXT,
           current_step      TEXT,

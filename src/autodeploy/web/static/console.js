@@ -49,7 +49,36 @@ const PHASES = {
   patch: [["create", "번들 생성 (patch-create.yml)"], ["apply", "번들 적용 (patch-apply.yml)"]],
   rollback: [["rollback", "직전 패치 복귀 (patch-rollback.yml)"]],
   clean: [["clean", "초기화 (clean.yml)"]],
+  /* 설치 킷 — 서버의 `kits.KIT_STEPS` 와 1:1. kit_0~8 은 킷이 내는 `::step:: N/8`.
+     세 번째 값은 대략의 비중이다 (빌드 PC 1.2.0.2 시험 기준, 중계 전송 제외). */
+  kit_install: [
+    ["kit_check", "사전 점검"],
+    ["kit_fetch", "킷 준비 (빌드 PC → 맥미니)"],
+    ["kit_send", "전송 (맥미니 → 서버)"],
+    ["kit_0", "설치 파일 풀기"],
+    ["kit_1", "PC 확인"],
+    ["kit_2", "Docker"],
+    ["kit_3", "이미지 적재", 25],
+    ["kit_4", "모델 파일"],
+    ["kit_5", "설정 파일"],
+    ["kit_6", "비밀값"],
+    ["kit_7", "서비스 시작", 40],
+    ["kit_8", "점검"],
+    ["kit_verify", "검증"],
+  ],
+  kit_uninstall: [
+    ["kit_check", "사전 점검"],
+    ["kit_remove", "삭제 (uninstall.sh)"],
+    ["kit_verify", "검증"],
+  ],
 };
+/* 킷 작업 종류 — 서버의 `kits.KIT_ACTIONS` 와 같은 키. */
+const KIT_ACTIONS = {
+  install: { label: "설치 · 업그레이드", d: "설치되지 않은 서버는 새로 설치하고, 설치된 서버는 패치(맞으면) 또는 전체 킷으로 올립니다. 설치된 패키지는 그대로 둡니다." },
+  "uninstall-keep": { label: "삭제 (데이터 유지)", d: "서비스·이미지·프로그램을 지우고 데이터와 비밀값은 남깁니다. 다시 설치하면 이어서 씁니다." },
+  "uninstall-all": { label: "전체 삭제", d: "데이터(DB·영상·처리 이력·라이선스)와 비밀값까지 지웁니다. 되돌릴 수 없습니다." },
+};
+const ADDON_LABEL = { suite: "Suite", orthanc: "Orthanc", none: "단독" };
 /* SSH 키 등록이 지나가는 단계 — 서버의 `ssh_keys.steps_for()` 와 1:1.
    여기 없는 키가 오면 키를 그대로 보여준다 (틀린 이름을 지어내지 않는다). */
 const KEY_STEPS = {
@@ -100,7 +129,8 @@ const PATCH_MODES = {
   },
 };
 
-const KIND_LABEL = { install: "설치", configure: "configure", patch: "patch", rollback: "rollback", verify: "verify", clean: "초기화" };
+const KIND_LABEL = { install: "설치", configure: "configure", patch: "patch", rollback: "rollback", verify: "verify", clean: "초기화", kit: "킷" };
+const KIT_MODE_LABEL = { install: "새 설치", upgrade: "업그레이드", patch: "패치", "uninstall-keep": "삭제 (데이터 유지)", "uninstall-all": "전체 삭제" };
 
 const MODES = {
   reset: { flag: "", level: "reset", keep: "false", label: "초기화 (다시 설치할 서버)",
@@ -161,6 +191,11 @@ const pill = (st) => {
 };
 function kindTag(job) {
   if (job.kind === "install") return "";
+  if (job.kind === "kit") {
+    const danger = (job.kit_action || "").startsWith("uninstall");
+    const what = KIT_MODE_LABEL[job.kit_mode] || (KIT_ACTIONS[job.kit_action] || {}).label || job.kit_action;
+    return `<span class="kind${danger ? " kind--clean" : " kind--patch"}">킷 ${esc(what || "")}</span>`;
+  }
   const cls = job.kind === "clean" ? " kind--clean" : (job.kind === "patch" || job.kind === "rollback") ? " kind--patch" : "";
   const mode = job.clean_mode && MODES[job.clean_mode];
   const extra = mode ? ` ${mode.level}${mode.flag ? " " + mode.flag : ""}` : "";
@@ -193,8 +228,13 @@ function serialNote(job, hostRow) {
 const ENV_LABEL = { dev: "Dev", stage: "Staging", prod: "Prod" };
 const envLabel = (env) => ENV_LABEL[env] || env;
 
-const phasesOf = (job) =>
-  (job.only_tags ? PHASES["configure-only"] : PHASES[job.kind]) || PHASES.install;
+const phasesOf = (job) => {
+  if (job.kind === "kit") return (job.kit_action || "").startsWith("uninstall") ? PHASES.kit_uninstall : PHASES.kit_install;
+  return (job.only_tags ? PHASES["configure-only"] : PHASES[job.kind]) || PHASES.install;
+};
+/* 킷 작업의 버전 칸: 고른 버전 → 실제로 쓴 파일(패치인지) */
+const kitRef = (job) => job.kind !== "kit" ? ""
+  : job.kit_version ? `${job.kit_version}${job.kit_mode === "patch" ? " (패치)" : ""}` : "";
 
 function toast(message, kind) {
   const el = document.createElement("div");
@@ -292,7 +332,7 @@ function routeFromHash() {
 async function showDash() {
   await refreshDash();
   state.pollTimer = setInterval(refreshDash, DASH_POLL_MS);
-  loadPreflight();
+  /* hubctl 자격 점검(loadPreflight)은 킷 경로에서 쓰지 않는다 — 화면에서만 뺐다. */
 }
 
 async function refreshDash() {
@@ -472,7 +512,7 @@ function jobRow(job, hostRow = null, first = true, last = true) {
     <td class="col-chk" data-nogo>${pick}</td>
     <td><span class="jobid">#${job.id}</span> ${kindTag(job)}</td>
     <td><span class="tag">${server}</span>${serialNote(job, hostRow)}</td>
-    <td>${job.env ? `<span class="env">${esc(job.env)}</span> ` : ""}<span class="mono dim">${esc(job.ref || "")}</span></td>
+    <td>${job.env ? `<span class="env">${esc(job.env)}</span> ` : ""}<span class="mono dim">${esc(job.ref || kitRef(job))}</span></td>
     <td>${profileTag(job, hostRow)}</td>
     <td>${pill(status)}</td>
     <td class="dim">${esc(stepLabel(job, job.current_step))}</td>
@@ -604,10 +644,17 @@ function renderJob() {
           <dt>시작</dt><dd>${esc(shortTime(job.created_at))}</dd>
           <dt>소요</dt><dd id="jDur">${esc(duration(job))}</dd>
           <dt>실행자</dt><dd>${esc(job.started_by || "–")}</dd>
+          ${job.kind === "kit" ? `
+          <dt>작업</dt><dd>${esc((KIT_ACTIONS[job.kit_action] || {}).label || job.kit_action || "–")}${job.kit_mode
+            ? ` <span class="dim">— ${esc(KIT_MODE_LABEL[job.kit_mode] || job.kit_mode)}</span>` : ""}</dd>
+          ${job.kit_version ? `<dt>버전</dt><dd class="mono">${esc(job.kit_version)}</dd>` : ""}
+          ${job.kit_name ? `<dt>킷 파일</dt><dd class="mono">${esc(job.kit_name)}</dd>` : ""}
+          ${job.kit_addon && job.kit_action === "install"
+            ? `<dt>패키지</dt><dd>${esc(ADDON_LABEL[job.kit_addon] || job.kit_addon)} <span class="dim">— 새 설치일 때만 쓰입니다</span></dd>` : ""}` : `
           <dt>환경</dt><dd>${job.env
             ? `${esc(envLabel(job.env))} <span class="mono dim">(-e ${esc(job.env)})</span>`
             : `– <span class="dim">이 종류는 -e 를 받지 않습니다</span>`}</dd>
-          <dt>ref</dt><dd>${esc(job.ref || "–")}${job.ref_type ? ` (${esc(job.ref_type)})` : ""}</dd>
+          <dt>ref</dt><dd>${esc(job.ref || "–")}${job.ref_type ? ` (${esc(job.ref_type)})` : ""}</dd>`}
           ${job.sync_branch && job.sync_branch !== "main"
             ? `<dt>설치 코드</dt><dd><span class="mono" style="color:var(--warn)">${esc(job.sync_branch)}</span>
                 <span class="dim">— hub-provisioning 브랜치 (main 아님)</span></dd>` : ""}
@@ -904,18 +951,24 @@ function confirmCancel(id) {
 
 async function retry(job, hosts) {
   if (!hosts.length) return;
-  const payload = { kind: job.kind, hosts, env: job.env, ref: job.ref, ref_type: job.ref_type,
-                    clean_mode: job.clean_mode, only: job.only_tags,
-                    sync_branch: job.sync_branch };
+  const payload = job.kind === "kit"
+    ? { kind: "kit", hosts, kit_action: job.kit_action, kit_version: job.kit_version, kit_addon: job.kit_addon }
+    : { kind: job.kind, hosts, env: job.env, ref: job.ref, ref_type: job.ref_type,
+        clean_mode: job.clean_mode, only: job.only_tags,
+        sync_branch: job.sync_branch };
   if (job.kind === "clean") payload.confirm = hosts[0];
+  if (job.kind === "kit" && job.kit_action === "uninstall-all") payload.confirm = "삭제";
   modal(`<h2>${esc(hosts.length)}대를 다시 실행할까요?</h2>
     <p class="note">대상: <b class="mono">${esc(hosts.join(", "))}</b><br>
-    Ansible 은 멱등해서 이미 끝난 부분은 건너뜁니다.</p>`,
+    ${job.kind === "kit" ? "같은 버전·작업으로 다시 실행합니다. 이미 보낸 킷 파일은 다시 보내지 않습니다."
+      : "Ansible 은 멱등해서 이미 끝난 부분은 건너뜁니다."}</p>`,
     { label: "재시도" },
     async () => {
       try {
         const created = await api("/api/jobs", { method: "POST", body: payload });
-        toast(`작업 #${created.id} 을(를) 만들었습니다`);
+        toast(created.ids && created.ids.length > 1
+          ? `작업 ${created.ids.map((i) => "#" + i).join(", ")} 을(를) 만들었습니다`
+          : `작업 #${created.id} 을(를) 만들었습니다`);
         go("job", created.id);
       } catch (e) { toast(e.message, "danger"); }
     });
@@ -933,7 +986,7 @@ async function loadServers() {
 async function showServers() {
   try { await loadServers(); }
   catch (e) {
-    $("#srvRows").innerHTML = `<tr><td colspan="7"><div class="alert"><span class="alert__g">✕</span>
+    $("#srvRows").innerHTML = `<tr><td colspan="9"><div class="alert"><span class="alert__g">✕</span>
       <p class="note" style="color:var(--ink-2)">${esc(e.message)}</p></div></td></tr>`;
     return;
   }
@@ -975,6 +1028,37 @@ function serialCell(s) {
   return `<span class="row" style="gap:6px; flex-wrap:nowrap">${value}${again}</span>`;
 }
 
+/* 설치 킷으로 깔린 게이트웨이 버전·패키지. 킷 작업이 끝날 때 적히고 ↻ 로 다시 읽는다
+   (.env 가 root 전용이라 sudo 를 쓴다). 서버는 콘솔 밖에서도 바뀔 수 있어 읽은 시각을 툴팁에 둔다. */
+function kitCell(s) {
+  if (!s.key_installed_at) return `<span class="dim" title="SSH 키를 등록해야 읽을 수 있습니다">–</span>`;
+  const when = s.kit_read_at ? `${shortTime(s.kit_read_at)} 에 읽은 값` : "아직 읽지 않았습니다";
+  const value = s.kit_version
+    ? `<span class="mono" title="${esc(when)}">${esc(s.kit_version)}</span>`
+      + (s.kit_addon ? ` <span class="tag">${esc(ADDON_LABEL[s.kit_addon] || s.kit_addon)}</span>` : "")
+    : s.kit_read_at ? `<span class="dim" title="${esc(when)}">없음</span>` : "";
+  const again = `<button class="btn btn--xs" data-kitver="${esc(s.host)}"
+    title="타겟에 접속해 설치된 버전을 다시 읽습니다">${s.kit_read_at ? "↻" : "조회"}</button>`;
+  return `<span class="row" style="gap:6px; flex-wrap:nowrap">${value} ${again}</span>`;
+}
+
+async function readKitVersion(button) {
+  const host = button.dataset.kitver;
+  const before = button.textContent;
+  button.disabled = true;
+  button.textContent = "읽는 중…";
+  try {
+    const r = await api(`/api/servers/${encodeURIComponent(host)}/kit-version`, { method: "POST" });
+    toast(r.kit_version ? `${host}: ${r.kit_version}${r.kit_addon ? " · " + (ADDON_LABEL[r.kit_addon] || r.kit_addon) : ""}`
+                        : `${host}: 설치되어 있지 않습니다`);
+    await showServers();
+  } catch (e) {
+    toast(e.message, "danger");
+    button.disabled = false;
+    button.textContent = before;
+  }
+}
+
 function renderServers() {
   const rows = state.servers.map((s) => {
     /* 등록이 끝난 뒤에도 다시 누를 길을 둔다. 등록은 키만 심는 게 아니라
@@ -992,6 +1076,7 @@ function renderServers() {
       <td class="mono dim">${esc(s.ansible_user)}@${esc(s.ansible_host)}</td>
       <td class="mono dim">${esc(s.site_name)}</td>
       <td><span class="tag" title="${esc(PROFILES[s.profile] || "")}">${esc(s.profile)}</span></td>
+      <td>${kitCell(s)}</td>
       <td>${serialCell(s)}</td>
       <td>${key}</td>
       <td class="dim">${memoCell(s)}</td>
@@ -1000,7 +1085,7 @@ function renderServers() {
         <button class="btn btn--xs btn--ghost-danger" data-del="${esc(s.host)}">삭제</button></div></td></tr>`;
   }).join("");
 
-  $("#srvRows").innerHTML = rows || `<tr><td colspan="8" class="dim" style="text-align:center; padding:24px">
+  $("#srvRows").innerHTML = rows || `<tr><td colspan="9" class="dim" style="text-align:center; padding:24px">
     등록된 서버가 없습니다. 오른쪽 위 <b>＋ 서버 추가</b>로 시작하세요.</td></tr>`;
 
   $("#yamlPrev").innerHTML = state.servers.length ? yamlPreview() : `<span class="c"># 아직 서버가 없습니다</span>`;
@@ -1008,6 +1093,7 @@ function renderServers() {
   $$("#srvRows [data-del]").forEach((b) => b.addEventListener("click", () => confirmDelete(b.dataset.del)));
   $$("#srvRows [data-key]").forEach((b) => b.addEventListener("click", () => sshKeyModal(b.dataset.key)));
   $$("#srvRows [data-serial]").forEach((b) => b.addEventListener("click", () => readSerial(b)));
+  $$("#srvRows [data-kitver]").forEach((b) => b.addEventListener("click", () => readKitVersion(b)));
 }
 
 /* 시리얼이 비어 있는 서버는 콘솔을 열 때 알아서 한 번 읽어둔다.
@@ -1393,29 +1479,96 @@ function prepResultModal(host, r) {
 
 /* ══ 새 설치 ════════════════════════════════════════════ */
 
+/* ══ 킷 설치 ══════════════════════════════════════════════
+
+   hubctl 새 설치 자리다. 킷은 빌드 PC dist/ 에 있고, 목록은 헤더만 읽어 온다.
+   어느 파일(전체·패치)을 쓸지는 **서버가 사전 점검에서** 설치된 버전을 보고
+   정한다 — 아래 "서버별 계획" 은 서버 화면에 적힌 마지막 버전으로 미리 보여줄
+   뿐이다 (서버의 `kits.choose_kit` 과 같은 규칙). */
+
+state.kits = [];
+
+/* 1.2.0 < 1.2.0.0 < 1.2.0.1 — 0 으로 채우지 않는다 (서버의 version_key 와 같다). */
+function cmpVersion(a, b) {
+  const x = String(a).split(".").map(Number), y = String(b).split(".").map(Number);
+  for (let i = 0; i < Math.min(x.length, y.length); i++) if (x[i] !== y[i]) return x[i] - y[i];
+  return x.length - y.length;
+}
+const fmtGB = (n) => n >= (1 << 30) ? `${(n / (1 << 30)).toFixed(1)}GB` : `${Math.round(n / (1 << 20))}MB`;
+const kitAction = () => ($('input[name="kaction"]:checked') || {}).value || "install";
+
+function kitPlanFor(server, version) {
+  const installed = server.kit_version;
+  const action = kitAction();
+  if (action !== "install") {
+    if (server.kit_read_at && !installed) return { warn: true, text: "설치되어 있지 않습니다 (지울 것이 없음)" };
+    return { text: `${KIT_ACTIONS[action].label}${installed ? ` — 지금 ${installed}` : ""}` };
+  }
+  const same = state.kits.filter((k) => k.version === version);
+  const full = same.find((k) => k.kind === "full");
+  if (!installed) {
+    const known = server.kit_read_at ? "새 설치" : "새 설치 (설치 버전을 읽은 적 없음 — 사전 점검에서 정합니다)";
+    return full ? { text: `${known} · 전체 킷 ${fmtGB(full.size)}` } : { warn: true, text: "전체 킷이 없습니다" };
+  }
+  if (cmpVersion(installed, version) > 0) return { warn: true, text: `설치된 ${installed} 가 더 새롭습니다 — 내려 설치하지 않습니다` };
+  const patch = same.find((k) => k.kind === "patch" && k.bases.includes(installed));
+  if (patch) return { text: `패치 ${installed} → ${version} · ${fmtGB(patch.size)}` };
+  if (full) return { text: `${installed === version ? "전체 킷으로 다시 설치" : "전체 킷으로 업그레이드"} ${installed} → ${version} · ${fmtGB(full.size)}` };
+  return { warn: true, text: `${installed} 에 맞는 패치가 없고 전체 킷도 없습니다` };
+}
+
 async function showNew() {
   try { await loadServers(); } catch (e) { toast(e.message, "danger"); }
   const list = $("#nSrvList");
   list.innerHTML = state.servers.length ? state.servers.map((s) => {
     const blocked = !s.key_installed_at;
+    const ver = s.kit_version ? `설치 ${esc(s.kit_version)}${s.kit_addon ? " · " + esc(ADDON_LABEL[s.kit_addon] || s.kit_addon) : ""}`
+      : s.kit_read_at ? "설치 안 됨" : "설치 버전 모름";
     return `<label class="srv" title="${blocked ? "SSH 키 등록이 필요합니다" : ""}">
       <input type="checkbox" name="nsrv" value="${esc(s.host)}"${blocked ? " disabled" : ""}>
       <span><span class="mono" style="font-weight:600">${esc(s.host)}</span>
         <span class="dim" style="font-size:12.5px"> ${esc(s.memo || s.site_name)}</span><br>
-        <span class="mono dim" style="font-size:12px">${esc(s.ansible_host)} · ${esc(s.profile)}</span></span>
+        <span class="mono dim" style="font-size:12px">${esc(s.ansible_host)} · ${ver}</span></span>
       <span>${blocked ? `<span class="tag" style="color:var(--err)">키 미등록</span>` : `<span class="tag">준비됨</span>`}</span>
     </label>`;
   }).join("") : `<p class="note">등록된 서버가 없습니다. <b>서버</b> 화면에서 먼저 추가하세요.</p>`;
 
-  $("#f-branch").onchange = drawPlan;
+  $("#kActionList").innerHTML = Object.entries(KIT_ACTIONS).map(([key, a], i) =>
+    `<label class="type${key === "uninstall-all" ? " type--danger" : ""}"><input type="radio" name="kaction" value="${key}"${i === 0 ? " checked" : ""}>
+      <span><span class="type__n">${esc(a.label)}</span><span class="type__d">${esc(a.d)}</span></span></label>`).join("");
+
   $$('input[name="nsrv"]').forEach((c) => c.addEventListener("change", drawPlan));
+  $$('input[name="kaction"]').forEach((c) => c.addEventListener("change", drawPlan));
   $("#nAll").onchange = (e) => {
     $$('input[name="nsrv"]:not(:disabled)').forEach((c) => { c.checked = e.target.checked; });
     drawPlan();
   };
-  $("#f-env").onchange = drawPlan;
-  $("#f-ref").oninput = drawPlan;
-  $("#f-reftag").onchange = drawPlan;
+  $("#k-version").onchange = drawPlan;
+  $("#k-addon").onchange = drawPlan;
+
+  const select = $("#k-version");
+  select.innerHTML = `<option value="">불러오는 중…</option>`;
+  $("#kitNote").textContent = "";
+  drawPlan();
+  try {
+    const data = await api("/api/kits");
+    state.kits = data.kits;
+    const versions = [...new Set(data.kits.map((k) => k.version))].sort((a, b) => cmpVersion(b, a));
+    select.innerHTML = versions.length ? versions.map((v) => {
+      const kinds = data.kits.filter((k) => k.version === v);
+      const full = kinds.find((k) => k.kind === "full");
+      const patch = kinds.find((k) => k.kind === "patch");
+      const parts = [full ? `전체 ${fmtGB(full.size)}` : "", patch ? `패치 ${fmtGB(patch.size)} (기준 ${patch.bases.join(", ") || "?"})` : ""].filter(Boolean);
+      return `<option value="${esc(v)}">${esc(v)} — ${esc(parts.join(" · "))}</option>`;
+    }).join("") : `<option value="">킷이 없습니다</option>`;
+    $("#kitNote").innerHTML = `킷 출처 <span class="mono">${esc(data.source)}</span> · 맥미니 캐시 ${esc(fmtGB(data.cache.used_bytes))}`
+      + ` (최근 ${esc(data.cache.keep_versions)}개 버전만 남김)`
+      + (data.password_set ? "" : ` · <b style="color:var(--err)">키트 비밀번호(KIT_PASSWORD)가 설정되지 않아 설치할 수 없습니다</b>`);
+  } catch (e) {
+    state.kits = [];
+    select.innerHTML = `<option value="">목록을 읽지 못했습니다</option>`;
+    $("#kitNote").innerHTML = `<b style="color:var(--err)">${esc(e.message)}</b>`;
+  }
   drawPlan();
 }
 
@@ -1423,46 +1576,62 @@ const pickedHosts = () => $$('input[name="nsrv"]:checked').map((c) => c.value);
 
 function drawPlan() {
   const hosts = pickedHosts();
+  const action = kitAction();
+  const install = action === "install";
   $("#nCount").textContent = `${hosts.length}대 선택`;
-  $("#plan").innerHTML = PHASES.install.map(([, label], i) =>
+  $("#kInstallRow").hidden = !install;
+  $("#plan").innerHTML = (install ? PHASES.kit_install : PHASES.kit_uninstall).map(([, label], i) =>
     `<div class="plan__i"><b>${i + 1}</b><span>${esc(label)}</span></div>`).join("");
 
-  const env = $("#f-env").value;
-  const ref = $("#f-ref").value.trim();
-  const tail = ref ? ` -- -e hub_deploy_ref=${ref}${$("#f-reftag").checked ? " -e hub_deploy_ref_type=tag" : ""}` : "";
-  const limit = hosts.length ? hosts.join(",") : "<대상 없음>";
-  const branch = $("#f-branch").value;
-  $("#cmdPrev").innerHTML = `./bin/hubctl install -e <b>${esc(env)}</b> -l <b>${esc(limit)}</b>${esc(tail)}`
-    + branchNote(branch);
+  const version = $("#k-version").value;
+  const plans = hosts.map((h) => {
+    const server = state.servers.find((s) => s.host === h) || { host: h };
+    return [h, kitPlanFor(server, version)];
+  });
+  $("#cmdPrev").innerHTML = plans.length
+    ? plans.map(([h, p]) => `<div><b>${esc(h)}</b> ${p.warn ? `<span style="color:var(--err)">${esc(p.text)}</span>` : esc(p.text)}</div>`).join("")
+    : `<span class="dim">&lt;대상 없음&gt;</span>`;
 
   const warn = [];
-  if (hosts.length > FORKS) warn.push(`선택한 ${hosts.length}대는 ansible 기본 forks(${FORKS})보다 많아 ${FORKS}대씩 나눠 진행됩니다.`);
-  if (hosts.length > 1) warn.push("환경과 ref 는 실행당 하나라 선택한 전부에 공통 적용됩니다.");
+  if (install) warn.push("서버마다 15~25분 걸립니다. 처음 보내는 서버는 전송 시간이 더 듭니다 (중계 연결이면 전체 킷에 몇 시간).");
+  if (install) warn.push("설치가 시작된 뒤에는 취소되지 않습니다 — 받기·보내기 중에만 취소됩니다.");
+  if (action === "uninstall-all") warn.push("데이터와 비밀값(phi_keys.json)까지 지웁니다. 되돌릴 수 없습니다.");
+  if (hosts.length > 1) warn.push(`${hosts.length}대는 작업 ${hosts.length}개로 나뉘어 차례로 돕니다.`);
   $("#newWarn").innerHTML = `<div class="alert alert--warn"><span class="alert__g" aria-hidden="true">!</span>
-    <p class="note" style="color:var(--ink-2)">30분~1시간 걸립니다. 진행상황은 Slack 채널에도 게시됩니다.
-    ${warn.map((w) => `<br>${esc(w)}`).join("")}</p></div>`;
-  $("#newSubmit").disabled = hosts.length === 0;
+    <p class="note" style="color:var(--ink-2)">${warn.map(esc).join("<br>")}</p></div>`;
+  $("#newSubmit").textContent = install ? "설치 시작" : action === "uninstall-all" ? "전체 삭제" : "삭제";
+  $("#newSubmit").className = `btn btn--block ${install ? "btn--primary" : "btn--danger"}`;
+  $("#newSubmit").disabled = hosts.length === 0 || (install && !version);
 }
 
 $("#newForm").addEventListener("submit", (e) => {
   e.preventDefault();
   const hosts = pickedHosts();
   if (!hosts.length) return;
-  const env = $("#f-env").value;
-  const ref = $("#f-ref").value.trim();
-  modal(`<h2>${hosts.length}대에 설치를 시작할까요?</h2>
+  const action = kitAction();
+  const version = $("#k-version").value;
+  const addon = $("#k-addon").value;
+  const body = { kind: "kit", hosts, kit_action: action };
+  if (action === "install") Object.assign(body, { kit_version: version, kit_addon: addon });
+  const all = action === "uninstall-all";
+  modal(`<h2${all ? ' style="color:var(--err)"' : ""}>${esc(hosts.length)}대 — ${esc(KIT_ACTIONS[action].label)}</h2>
     <p class="note">대상: <b class="mono">${esc(hosts.join(", "))}</b><br>
-    환경: <b class="mono">${esc(env)}</b>${ref ? ` · ref: <b class="mono">${esc(ref)}</b>` : ""}</p>`,
-    { label: "설치 시작" },
+    ${action === "install" ? `버전: <b class="mono">${esc(version)}</b> · 새 설치 패키지: <b>${esc(ADDON_LABEL[addon])}</b>` : esc(KIT_ACTIONS[action].d)}</p>
+    ${all ? `<div class="field"><label for="m-confirm">확인을 위해 <b>삭제</b> 를 입력하세요</label>
+      <input class="input" id="m-confirm" placeholder="삭제" autocomplete="off"></div>` : ""}`,
+    { label: action === "install" ? "설치 시작" : "삭제 실행", danger: action !== "install" },
     async () => {
+      if (all) {
+        const typed = $("#m-confirm").value.trim();
+        if (typed !== "삭제") { toast("'삭제' 를 입력해야 합니다", "warn"); throw new Error("mismatch"); }
+        body.confirm = typed;
+      }
       try {
-        const created = await api("/api/jobs", {
-          method: "POST",
-          body: { kind: "install", hosts, env, ref: ref || null, ref_type: ref && $("#f-reftag").checked ? "tag" : null,
-          sync_branch: $("#f-branch").value },
-        });
-        toast(`작업 #${created.id} 을(를) 시작했습니다`);
-        go("job", created.id);
+        const created = await api("/api/jobs", { method: "POST", body });
+        toast(created.ids && created.ids.length > 1
+          ? `작업 ${created.ids.map((i) => "#" + i).join(", ")} 을(를) 시작했습니다`
+          : `작업 #${created.id} 을(를) 시작했습니다`);
+        go(created.ids && created.ids.length > 1 ? "dash" : "job", created.ids && created.ids.length > 1 ? undefined : created.id);
       } catch (e) { toast(e.message, "danger"); throw e; }
     });
 });

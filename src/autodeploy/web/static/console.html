@@ -23,9 +23,10 @@
     <nav class="nav" id="nav">
       <button class="nav__item" data-go="dash"><span class="nav__glyph" aria-hidden="true">▦</span>대시보드<span class="nav__badge" id="navBadge" hidden></span></button>
       <button class="nav__item" data-go="srv"><span class="nav__glyph" aria-hidden="true">▤</span>서버</button>
-      <button class="nav__item" data-go="new"><span class="nav__glyph" aria-hidden="true">＋</span>새 설치</button>
-      <button class="nav__item" data-go="patch"><span class="nav__glyph" aria-hidden="true">◈</span>패치</button>
-      <button class="nav__item nav__item--danger" data-go="clean"><span class="nav__glyph" aria-hidden="true">⌫</span>서버 초기화</button>
+      <button class="nav__item" data-go="new"><span class="nav__glyph" aria-hidden="true">＋</span>킷 설치</button>
+      <!-- hubctl(k0s) 경로. 기존 사이트를 포맷·재설치하며 킷으로 옮겨 화면에서만 뺐다 (코드는 남김). -->
+      <button class="nav__item" data-go="patch" hidden><span class="nav__glyph" aria-hidden="true">◈</span>패치</button>
+      <button class="nav__item nav__item--danger" data-go="clean" hidden><span class="nav__glyph" aria-hidden="true">⌫</span>서버 초기화</button>
     </nav>
     <div class="rail__foot">
       <div class="who">
@@ -38,7 +39,7 @@
 
   <main>
     <section id="view-dash">
-      <div class="topline"><h1>설치 현황</h1><span class="chip" id="dashChip">hubctl</span></div>
+      <div class="topline"><h1>설치 현황</h1><span class="chip" id="dashChip">설치 킷</span></div>
       <div class="stack gap-24">
         <div id="pfSlot"></div>
         <div id="liveSlot"></div>
@@ -49,7 +50,7 @@
             <button class="btn btn--sm" id="jobsDelAll">전체 삭제</button></div>
           <div class="scroll-x"><table>
             <thead><tr><th class="col-chk"><input type="checkbox" id="jobsAll" aria-label="끝난 작업 전체 선택"></th>
-              <th>작업</th><th>서버</th><th>환경 · ref</th><th>프로파일</th><th>상태</th><th>단계</th><th>소요</th><th>시작</th><th></th></tr></thead>
+              <th>작업</th><th>서버</th><th>버전 · ref</th><th>프로파일</th><th>상태</th><th>단계</th><th>소요</th><th>시작</th><th></th></tr></thead>
             <tbody id="rows"></tbody>
           </table></div>
         </div>
@@ -64,7 +65,7 @@
       <div class="stack gap-16">
         <div id="srvNotice"></div>
         <div class="card"><div class="scroll-x"><table>
-          <thead><tr><th>이름</th><th>주소</th><th>site_name</th><th>프로파일</th><th>시리얼</th><th>SSH 키</th><th>메모</th><th></th></tr></thead>
+          <thead><tr><th>이름</th><th>주소</th><th>site_name</th><th>프로파일</th><th>설치 버전</th><th>시리얼</th><th>SSH 키</th><th>메모</th><th></th></tr></thead>
           <tbody id="srvRows"></tbody>
         </table></div></div>
         <div class="card">
@@ -75,29 +76,30 @@
     </section>
 
     <section id="view-new" hidden>
-      <div class="topline"><h1>새 설치 시작</h1><span class="chip" id="newChip">hubctl install</span></div>
+      <div class="topline"><h1>킷 설치</h1><span class="chip" id="newChip">connevo-gateway .run</span></div>
       <form class="form-grid" id="newForm">
         <div class="card"><div class="card__body stack gap-20">
-          <div class="field"><span class="lbl">대상 서버 <span class="dim" style="text-transform:none; letter-spacing:0">— 여러 대 선택 시 한 번에 설치 (hubctl -l a,b,c)</span></span>
+          <div class="field"><span class="lbl">대상 서버 <span class="dim" style="text-transform:none; letter-spacing:0">— 서버마다 작업이 하나씩 만들어져 차례로 돕니다</span></span>
             <div class="pickall"><label class="row gap-8" style="gap:7px; cursor:pointer"><input type="checkbox" id="nAll"> <span style="font-size:13px">전체 선택</span></label>
               <span class="count push" id="nCount">0대 선택</span></div>
             <div class="servers" id="nSrvList"></div></div>
-          <div class="two">
-            <div class="field"><label for="f-env">환경 <span class="dim">— Vault 금고 (-e)</span></label>
-              <select class="input mono" id="f-env"><option value="dev" selected>dev (QA 기본)</option><option value="stage">stage</option><option value="prod">prod</option></select></div>
-            <div class="field"><label for="f-ref">hub-deploy ref <span class="dim">— 비우면 기본값</span></label>
-              <input class="input mono" id="f-ref" placeholder="main, release/1.1.1.0"></div>
+          <div class="field"><span class="lbl">작업</span><div class="types" id="kActionList"></div></div>
+          <div class="two" id="kInstallRow">
+            <div class="field"><label for="k-version">버전 <span class="dim">— 빌드 PC dist/ 의 킷</span></label>
+              <select class="input mono" id="k-version"></select></div>
+            <div class="field"><label for="k-addon">패키지 <span class="dim">— 새로 설치하는 서버에만 적용</span></label>
+              <select class="input" id="k-addon">
+                <option value="suite" selected>① 게이트웨이 + Suite (임상 앱)</option>
+                <option value="orthanc">② 게이트웨이 + Orthanc (PACS·뷰어)</option>
+                <option value="none">③ 게이트웨이 단독</option></select></div>
           </div>
-          <div class="field"><label for="f-branch">설치 코드 <span class="dim">— hub-provisioning 브랜치. 시작 직전 이 브랜치로 맞춥니다</span></label>
-            <select class="input mono" id="f-branch"><option value="main" selected>main (기본)</option><option value="dev">dev (시험용)</option></select></div>
-          <label class="type"><input type="checkbox" id="f-reftag">
-            <span><span class="type__n">태그로 지정</span><span class="type__d">ref가 브랜치가 아니라 태그일 때 체크 — <span class="mono">hub_deploy_ref_type=tag</span>가 함께 전달됩니다</span></span></label>
+          <p class="note dim" id="kitNote"></p>
         </div></div>
         <aside class="preview">
           <div><span class="lbl">실행 단계</span><div class="plan" id="plan" style="margin-top:9px"></div></div>
-          <div><span class="lbl">실행 명령</span><div class="cmd" id="cmdPrev" style="margin-top:9px"></div></div>
+          <div><span class="lbl">서버별 계획</span><div class="cmd" id="cmdPrev" style="margin-top:9px"></div></div>
           <div id="newWarn"></div>
-          <button class="btn btn--primary btn--block" type="submit" id="newSubmit">설치 시작</button>
+          <button class="btn btn--primary btn--block" type="submit" id="newSubmit">시작</button>
         </aside>
       </form>
     </section>

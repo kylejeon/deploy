@@ -246,7 +246,7 @@ async def get_server_meta(db: aiosqlite.Connection) -> dict[str, dict[str, str |
     """host -> {"memo": ..., "key_installed_at": ..., "anydesk_id": ..., "serial": ...}"""
     async with db.execute(
         "SELECT host, memo, key_installed_at, anydesk_id, serial,"
-        " live_ref, live_ref_type, live_ref_at FROM server_meta"
+        " live_ref, live_ref_type, live_ref_at, kit_version, kit_addon, kit_read_at FROM server_meta"
     ) as cur:
         rows = await cur.fetchall()
     return {
@@ -258,9 +258,27 @@ async def get_server_meta(db: aiosqlite.Connection) -> dict[str, dict[str, str |
             "live_ref": r["live_ref"],
             "live_ref_type": r["live_ref_type"],
             "live_ref_at": r["live_ref_at"],
+            "kit_version": r["kit_version"],
+            "kit_addon": r["kit_addon"],
+            "kit_read_at": r["kit_read_at"],
         }
         for r in rows
     }
+
+
+async def set_server_kit(
+    db: aiosqlite.Connection, host: str, version: str | None, addon: str | None
+) -> None:
+    """설치 킷으로 깔린 버전·패키지. 지워졌으면 둘 다 NULL. 읽은 시각을 함께 남긴다."""
+    await db.execute(
+        """INSERT INTO server_meta (host, kit_version, kit_addon, kit_read_at, updated_at)
+           VALUES (?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+           ON CONFLICT(host) DO UPDATE SET kit_version=excluded.kit_version,
+             kit_addon=excluded.kit_addon, kit_read_at=CURRENT_TIMESTAMP,
+             updated_at=CURRENT_TIMESTAMP""",
+        (host, version, addon),
+    )
+    await db.commit()
 
 
 async def set_server_live_ref(
@@ -359,6 +377,7 @@ async def delete_server_meta(db: aiosqlite.Connection, host: str) -> None:
 
 _JOB_COLUMNS = (
     "id", "kind", "status", "env", "ref", "ref_type", "clean_mode", "only_tags", "sync_branch",
+    "kit_action", "kit_version", "kit_addon", "kit_name", "kit_mode",
     "exit_code", "cancel_by", "current_step", "started_by",
     "slack_channel", "slack_thread_ts", "slack_permalink", "error_message",
     "created_at", "started_at", "finished_at",

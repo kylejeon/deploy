@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from contextlib import suppress
 from collections.abc import Sequence
 from dataclasses import dataclass, field
@@ -38,6 +39,8 @@ from autodeploy.hubctl import (
     build_sync_command,
 )
 from autodeploy.inventory import load_inventory
+from autodeploy.kit_runner import KitRequest, KitResult, KitRunner, KitTarget
+from autodeploy.kits import ADDONS, KIT_ACTIONS, KitCache, KitError, list_source_kits, version_key
 from autodeploy.masking import SecretMasker
 from autodeploy.models import JobKind, JobStatus
 from autodeploy.queue import CancelOutcome, JobQueue, JobTicket
@@ -93,6 +96,10 @@ class JobRequest:
     sync_branch: str | None = None
     clean_mode: str | None = None
     confirm: str | None = None
+    # 설치 킷 (kind=kit). 서버 한 대당 작업 하나다.
+    kit_action: str | None = None
+    kit_version: str | None = None
+    kit_addon: str | None = None
 
 
 @dataclass(slots=True)
@@ -117,6 +124,9 @@ class JobService:
         log_dir: str | Path | None = None,
         notifier=None,
         console_url: str | None = None,
+        kit=None,
+        kit_runner_factory=None,
+        kit_lister=None,
     ) -> None:
         self.db_path = Path(db_path).expanduser()
         self.hubctl_repo = Path(hubctl_repo).expanduser()
@@ -135,6 +145,11 @@ class JobService:
         # Slack 게시. 없으면 조용히 건너뛴다 (F7 은 선택 기능이다).
         self._notifier = notifier
         self._console_url = console_url
+        # 설치 킷 (settings.KitConfig). 러너·목록은 테스트가 바꿔 끼운다.
+        self._kit = kit
+        self._kit_runner_factory = kit_runner_factory or self._default_kit_runner
+        self._kit_lister = kit_lister or self._default_kit_lister
+        self._kit_list_cache: tuple[float, list] | None = None
 
     # ── 생성 ────────────────────────────────────────────────────────
 
@@ -149,30 +164,35 @@ class JobService:
         hosts = tuple(dict.fromkeys(h.strip() for h in req.hosts if h and h.strip()))
         profiles = await self._check_hosts(kind, hosts, confirm=req.confirm)
 
-        # 명령을 먼저 조립한다 — env/ref/clean_mode 오류를 DB 에 흔적을 남기기 전에 잡는다.
-        try:
-            build_command(
-                kind,
-                hosts=hosts,
-                env=req.env,
-                ref=req.ref,
-                ref_type=req.ref_type,
-                only=req.only,
-                clean_mode=req.clean_mode,
-                phase=phase,
-            )
-            build_sync_command(req.sync_branch or SYNC_BRANCH)
-        except HubctlError as exc:
-            raise JobError(str(exc)) from exc
+        if kind is JobKind.KIT:
+            await self._check_kit_request(req, hosts)
+        else:
+            # 명령을 먼저 조립한다 — env/ref/clean_mode 오류를 DB 에 흔적을 남기기 전에 잡는다.
+            try:
+                build_command(
+                    kind,
+                    hosts=hosts,
+                    env=req.env,
+                    ref=req.ref,
+                    ref_type=req.ref_type,
+                    only=req.only,
+                    clean_mode=req.clean_mode,
+                    phase=phase,
+                )
+                build_sync_command(req.sync_branch or SYNC_BRANCH)
+            except HubctlError as exc:
+                raise JobError(str(exc)) from exc
 
+        kit_job = kind is JobKind.KIT
         async with connect(self.db_path) as db:
             cur = await db.execute(
                 "INSERT INTO jobs"
                 " (kind, status, env, ref, ref_type, clean_mode, only_tags,"
-                "  sync_branch, started_by)"
-                " VALUES (?, 'queued', ?, ?, ?, ?, ?, ?, ?)",
+                "  sync_branch, kit_action, kit_version, kit_addon, started_by)"
+                " VALUES (?, 'queued', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (kind.value, req.env, req.ref, req.ref_type, req.clean_mode,
-                 req.only, req.sync_branch or SYNC_BRANCH, req.started_by),
+                 req.only, None if kit_job else (req.sync_branch or SYNC_BRANCH),
+                 req.kit_action, req.kit_version, req.kit_addon, req.started_by),
             )
             job_id = int(cur.lastrowid)
             if hosts:
@@ -224,6 +244,138 @@ class JobService:
                 raise JobError("확인을 위해 대상 호스트명을 정확히 입력하세요")
 
         return {s.host: s.profile for s in inventory.servers if s.host in set(hosts)}
+
+    # ── 설치 킷 ─────────────────────────────────────────────────────
+
+    async def _check_kit_request(self, req: JobRequest, hosts: tuple[str, ...]) -> None:
+        """킷 작업은 서버 한 대씩이다. 여러 대는 API 가 작업을 서버마다 만든다."""
+        if len(hosts) != 1:
+            raise JobError("설치 킷 작업은 서버 한 대씩 만듭니다")
+        if self._kit is None:
+            raise JobError("설치 킷 설정이 없습니다")
+        if req.kit_action not in KIT_ACTIONS:
+            raise JobError(f"알 수 없는 킷 작업입니다: {req.kit_action!r}")
+        if req.kit_action == "uninstall-all" and (req.confirm or "").strip() != "삭제":
+            raise JobError("전체 삭제는 확인을 위해 '삭제' 를 입력해야 합니다")
+        if req.kit_action != "install":
+            return
+        if not self._kit.password:
+            raise JobError("키트 비밀번호가 설정되어 있지 않습니다 — 맥미니 .env 의 KIT_PASSWORD 를 채운 뒤 데몬을 다시 시작하세요")
+        if not version_key(req.kit_version or ""):
+            raise JobError(f"킷 버전이 올바르지 않습니다: {req.kit_version!r}")
+        if req.kit_addon not in ADDONS:
+            raise JobError(f"패키지는 {', '.join(ADDONS)} 중 하나입니다")
+        try:
+            kits = await self._kit_lister()
+        except Exception as exc:
+            raise JobError(f"빌드 PC 의 킷 목록을 읽지 못했습니다: {exc}") from exc
+        if not any(version_key(k.version) == version_key(req.kit_version) for k in kits):
+            raise JobError(f"빌드 PC 에 {req.kit_version} 킷이 없습니다")
+
+    async def check(self, req: JobRequest) -> None:
+        """만들지 않고 검증만 한다. 여러 대를 한 번에 만들 때 전부 먼저 확인하려고."""
+        kind = JobKind(req.kind)
+        hosts = tuple(dict.fromkeys(h.strip() for h in req.hosts if h and h.strip()))
+        await self._check_hosts(kind, hosts, confirm=req.confirm)
+        if kind is JobKind.KIT:
+            await self._check_kit_request(req, hosts)
+
+    async def list_kits(self):
+        return await self._kit_lister()
+
+    async def _default_kit_lister(self):
+        """빌드 PC 목록. 30초 동안은 같은 결과를 쓴다 — 여러 대를 만들 때 대마다
+        빌드 PC 에 다시 붙지 않으려고."""
+        from autodeploy.ssh_keys import DEFAULT_KEY_PATH
+
+        if self._kit is None:
+            raise KitError("설치 킷 설정이 없습니다")
+        now = time.monotonic()
+        cached = self._kit_list_cache
+        if cached and now - cached[0] < 30:
+            return cached[1]
+        kits = await list_source_kits(self._kit.source, key_path=DEFAULT_KEY_PATH)
+        self._kit_list_cache = (now, kits)
+        return kits
+
+    def _default_kit_runner(self, target: KitTarget, kreq: KitRequest, emit) -> KitRunner:
+        from autodeploy.ssh import AsyncSSHClient
+        from autodeploy.ssh_keys import DEFAULT_KEY_PATH
+
+        cfg = self._kit
+
+        def ssh_factory():
+            return AsyncSSHClient(target.address, username=target.user, port=target.port,
+                                  key_path=DEFAULT_KEY_PATH)
+
+        return KitRunner(
+            target=target, request=kreq, list_kits=self._kit_lister,
+            cache=KitCache(cfg.cache_dir, keep_versions=cfg.keep_versions),
+            ssh_factory=ssh_factory, source=cfg.source, key_path=DEFAULT_KEY_PATH,
+            sudo_password=self._become_password, kit_password=cfg.password, emit=emit,
+        )
+
+    async def _execute_kit(self, job_id: int, ticket: JobTicket, *, hosts, req: JobRequest) -> None:
+        host = hosts[0]
+        what = {"install": f"설치·업그레이드 → {req.kit_version}",
+                "uninstall-keep": "삭제 (데이터 유지)", "uninstall-all": "전체 삭제"}.get(req.kit_action or "", req.kit_action)
+        async with connect(self.db_path) as db:
+            await db.execute(
+                "UPDATE jobs SET status='running', started_at=COALESCE(started_at,"
+                " CURRENT_TIMESTAMP), current_step='kit_check' WHERE id=?", (job_id,))
+            await db.execute(
+                "UPDATE job_hosts SET status='running' WHERE job_id=? AND status='queued'", (job_id,))
+            await repository.add_event(db, job_id, "kit_check", "info", f"설치 킷: {host} {what}")
+        self.broker.publish(job_id, {"type": "status", "status": "running", "step": "kit_check"})
+        await self._notify_started(job_id, req, hosts, f"설치 킷 {what}")
+
+        sink = _LogSink(self, job_id, "kit_check", current="kit_check")
+        await sink.start()
+
+        def emit(step: str, text: str, kind: LineKind) -> None:
+            sink.feed("stdout", ParsedLine(self._masker(text), kind, None, step))
+
+        result: KitResult
+        try:
+            server = load_inventory(self.inventory_path).get(host)
+            if server is None:
+                raise JobError(f"인벤토리에 없는 서버입니다: {host}")
+            runner = self._kit_runner_factory(
+                KitTarget(host=host, address=server.ansible_host, user=server.ansible_user),
+                KitRequest(job_id=job_id, action=req.kit_action or "", version=req.kit_version,
+                           addon=req.kit_addon),
+                emit,
+            )
+            ticket.bind_cancel(runner.cancel)
+            if ticket.cancel_requested:
+                result = KitResult(status="cancelled", error="시작 전 취소됨")
+            else:
+                result = await runner.run()
+        except Exception as exc:
+            log.exception("작업 %d 킷 실행 실패", job_id)
+            result = KitResult(status="failed", error=f"실행할 수 없습니다: {exc}")
+        finally:
+            await sink.close()
+
+        async with connect(self.db_path) as db:
+            await db.execute("UPDATE jobs SET kit_name=?, kit_mode=? WHERE id=?",
+                             (result.kit_name, result.mode, job_id))
+            if result.warn:
+                await repository.add_event(db, job_id, "kit_verify", "warn", self._masker(result.warn))
+            await db.commit()
+            if result.status == "succeeded":
+                await repository.set_server_kit(db, host, result.installed_after, result.addon)
+
+        if result.status == "cancelled":
+            await self._finalize_cancelled(job_id, by=None, reason=result.error or "취소됨")
+            await self._notify_finished(job_id, JobStatus.CANCELLED, None)
+            return
+        status = JobStatus.SUCCEEDED if result.status == "succeeded" else JobStatus.FAILED
+        await self._finalize(
+            job_id, hosts, status=status, exit_code=result.exit_code,
+            error=self._masker(result.error) if result.error else None,
+            recaps={}, host_states={host: status.value},
+        )
 
     # ── 취소 / 승인 ─────────────────────────────────────────────────
 
@@ -304,6 +456,9 @@ class JobService:
     async def _execute(
         self, job_id: int, ticket: JobTicket, *, hosts, req: JobRequest, phase: str | None
     ) -> None:
+        if req.kind is JobKind.KIT:
+            await self._execute_kit(job_id, ticket, hosts=hosts, req=req)
+            return
         # 생성 때 조립한 것은 검증용이고, 실제로 도는 것은 여기서 만든다.
         # 인자를 한쪽에만 넣으면 화면이 시킨 것과 다른 명령이 돈다.
         command = build_command(
@@ -468,7 +623,7 @@ class JobService:
 
     async def _finalize(
         self, job_id: int, hosts, *, status: JobStatus, exit_code: int | None,
-        error: str | None, recaps: dict,
+        error: str | None, recaps: dict, host_states: dict[str, str] | None = None,
     ) -> None:
         async with connect(self.db_path) as db:
             if status is JobStatus.AWAITING:
@@ -487,7 +642,8 @@ class JobService:
                     host_state, recap = "cancelled", None
                 else:
                     recap = recaps.get(host)
-                    host_state = host_status(recaps, host)
+                    # 킷 작업은 RECAP 이 없다 — 러너가 결과를 직접 준다.
+                    host_state = (host_states or {}).get(host) or host_status(recaps, host)
                 await db.execute(
                     "UPDATE job_hosts SET status=?, recap_ok=?, recap_changed=?,"
                     " recap_failed=?, recap_unreachable=? WHERE job_id=? AND host=?",

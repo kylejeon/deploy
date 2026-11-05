@@ -3039,3 +3039,55 @@ staging 지문은 ansible 경로(host_key_checking=False)로 읽은 것이라
   medrex /etc/apt/keyrings/anydesk.gpg (09-14), samsun (09-07).
   anydesk.list 는 그 장비들에 안 만들어졌으므로 당장 해는 없지만 찌꺼기다.
   지울지는 용혁님께 여쭤야 함 (허락 없이 파일 삭제 금지).
+
+════════════════════════════════════════════════════════════
+2026-11-05  설치 킷(CONNEVO Gateway .run) 경로 — hubctl 화면 교체
+════════════════════════════════════════════════════════════
+[결정 (용혁님)]
+  - 기존 hubctl(k0s) 사이트는 포맷 후 킷으로 재설치. hubctl 화면(새 설치·패치·
+    서버 초기화·자격 점검)은 메뉴에서만 뺌, 코드는 남김 (삭제는 허락 후).
+  - 맥미니와 빌드 PC 는 같은 LAN·같은 tailnet. 맥미니 100.97.41.88 / 192.168.100.211,
+    빌드 PC 100.83.165.116 / 192.168.100.207. 킷을 미리 옮기지 않고 LAN 으로 받는다.
+  - 키트 비밀번호는 맥미니 .env (KIT_PASSWORD).
+  - 여러 대 = 서버마다 작업 하나. 맥미니 캐시는 최근 2개 버전. 서버의 .run 은 성공하면 지움.
+
+[한 것]
+  kits.py        빌드 PC 킷 목록(헤더만 읽음: VERSION/KIND/BASES/PAYLOAD_*), 옛 킷은
+                 킷 폴더 PATCH 에서 기준 버전. choose_kit(패치↔전체, 내려 설치 거부),
+                 KitCache(페이로드 sha256 확인·.ok·prune). version_key 는 0 채우지 않음
+                 (1.2.0 ≠ 1.2.0.0 — 이미지 구성이 다른 별개 릴리스).
+  kit_runner.py  사전 점검 → 킷 준비(rsync, LAN) → 전송(rsync --partial, 6회 이어받기)
+                 + 서버에서 .run --check → systemd-run 유닛으로 실행 → 로그 따라 읽기
+                 (끊기면 15초 뒤 이어서, 30분 한도) → 검증(VERSION·웹 200) → .run 삭제.
+                 킷 실행 시작 뒤에는 취소 안 함. sudo/키트 비밀번호는 stdin 으로만.
+  web/jobs.py    kind=kit: 검증(_check_kit_request), _execute_kit, 결과로 server_meta 갱신.
+  web/api.py     POST /api/jobs kind=kit → 서버마다 작업(전부 검증 후 생성),
+                 GET /api/kits, POST /api/servers/{host}/kit-version.
+  db             jobs.kind CHECK 에 'kit' (재생성 + 백업), jobs.kit_action/version/addon/
+                 name/mode, server_meta.kit_version/addon/read_at.
+  settings       KitConfig (KIT_PASSWORD 는 마스킹 목록에도).
+  console        "킷 설치" 화면, 단계 PHASES.kit_install/kit_uninstall, 서버 표 "설치 버전".
+  검사           1005 통과 (+48: test_kits, test_kit_runner, test_web_kits, 마이그레이션).
+                 red-light: 비밀번호 파일 삭제·.run 삭제를 빼면 실패하는 것 확인.
+  실측           빌드 PC dist/ 에 목록 명령을 실제로 돌려 6개 킷 파싱·선택 확인,
+                 페이로드 sha256 계산이 헤더값과 일치 (patch-1.2.0.2: 721de35f8835).
+
+[newhub 쪽 (킷, 별도 저장소)]
+  run-header.sh  무인 --install/--upgrade/--uninstall --keep-data|--all, --info,
+                 ::step:: / ::result:: 줄, 종료 코드 0~9, 헤더에 BASES.
+  install.sh     ::step:: 표시, 종료 코드, 초기 비밀번호를 화면·로그에 내지 않음.
+  (빌드 PC 컨테이너에서 21개 경우 시험 통과. 1.2.0.2 킷에는 아직 안 들어감 — 다음 킷부터)
+
+[어디까지]
+  코드·검사 완료. 커밋·맥미니 배포 안 함 (용혁님 확인 대기).
+  맥미니 .env 에 KIT_PASSWORD 아직 없음.
+
+[다음]
+  1. 커밋 → ops/deploy.sh → launchctl kickstart (진행 중 작업 없을 때)
+  2. 맥미니 .env 에 KIT_PASSWORD 추가 (작은따옴표)
+  3. 1.2.0.2 이하 킷도 쓸 수 있다: 헤더에 BASES= 줄이 없으면 옛 킷으로 보고 업그레이드·
+     패치에도 --install 을 준다 (옛 킷은 --upgrade 를 모르고 메뉴로 빠진다). 다만 진행
+     단계가 "설치 파일 풀기"에 머물고 로그만 흐른다. 옛 install.sh 가 찍는 초기 비밀번호
+     줄은 러너가 가린다(redact). 무인 모드가 든 다음 킷부터 단계가 움직인다.
+  4. 시험 서버 한 대로 새 설치 → 패치 → 삭제(데이터 유지) → 전체 삭제 실측
+  5. 실측 후 hubctl 화면 코드 정리 여부 여쭙기

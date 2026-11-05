@@ -53,6 +53,8 @@ import re
 from dataclasses import dataclass
 from enum import StrEnum
 
+from autodeploy.kits import KIT_STEPS
+
 
 class LineKind(StrEnum):
     """로그 한 줄의 분류. 웹 콘솔이 색을 입히는 기준."""
@@ -123,7 +125,11 @@ def is_step(key: str | None) -> bool:
     작업 종류 이름(`install`)은 단계가 아니다. 그걸 current_step 에 적어두면
     화면이 단계 목록에서 못 찾아 진행 표시가 통째로 멈춘다 — 실제로 그랬다.
     """
-    return key in _STEP_RANK
+    return key in _STEP_RANK or key in _KIT_STEP_SET
+
+
+# 킷 작업(kit_runner)의 단계. ansible 파서는 이 키를 만들지 않는다 — 러너가 직접 붙인다.
+_KIT_STEP_SET = frozenset(KIT_STEPS)
 
 STEP_LABELS: dict[str, str] = {
     "preflight": "사전 점검",

@@ -111,6 +111,9 @@ def create_app(
     static_dir: str | Path | None = None,
     forward_bind: str = "127.0.0.1",
     node_prep: NodePrepConfig | None = None,
+    kit=None,
+    kit_runner_factory=None,
+    kit_lister=None,
 ) -> web.Application:
     """콘솔 앱. 실행은 `run_web` 또는 호출자의 AppRunner 가 맡는다."""
     hubctl_repo = Path(hubctl_repo).expanduser()
@@ -118,6 +121,7 @@ def create_app(
         middlewares=[session_middleware, require_auth_middleware, csrf_middleware]
     )
     app[keys.NODE_PREP] = node_prep or NodePrepConfig()
+    app[keys.KIT] = kit
     app[keys.BECOME_PASSWORD] = become_password
     app[keys.SSH_PROGRESS] = ProgressBoard()
     app[keys.DB_PATH] = Path(db_path).expanduser()
@@ -162,6 +166,9 @@ def create_app(
         log_dir=log_dir,
         notifier=notifier,
         console_url=console_url,
+        kit=kit,
+        kit_runner_factory=kit_runner_factory,
+        kit_lister=kit_lister,
     )
 
     app.on_startup.append(_start_forwards)

@@ -48,3 +48,4 @@ NODE_PREP: web.AppKey["NodePrepConfig"] = web.AppKey("node_prep")
 BECOME_PASSWORD = web.AppKey("become_password", str)
 # 오래 걸리는 SSH 키 등록의 진행 상태. 화면이 1초에 한 번 물어본다.
 SSH_PROGRESS: web.AppKey["ProgressBoard"] = web.AppKey("ssh_progress")
+KIT: web.AppKey[Any] = web.AppKey("kit")  # settings.KitConfig

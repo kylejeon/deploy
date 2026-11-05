@@ -7,7 +7,7 @@ CREATE TABLE IF NOT EXISTS jobs (
   id                INTEGER PRIMARY KEY AUTOINCREMENT,
   -- v2: 작업 종류. ssh_key 는 F9(키 등록) 전용.
   kind              TEXT NOT NULL DEFAULT 'install'
-                      CHECK(kind IN ('install','configure','patch','rollback','verify','clean','ssh_key')),
+                      CHECK(kind IN ('install','configure','patch','rollback','verify','clean','ssh_key','kit')),
   status            TEXT NOT NULL
                       CHECK(status IN ('queued','running','awaiting','succeeded','failed','cancelled')),
   -- v2: hubctl 인자
@@ -17,6 +17,12 @@ CREATE TABLE IF NOT EXISTS jobs (
   clean_mode        TEXT,          -- reset|reset-keep|uninstall
   only_tags         TEXT,          -- configure --only (1.1.1.0 신규 이미지 전환)
   sync_branch       TEXT,          -- 실행 직전 맞춘 hub-provisioning 브랜치 (기본 main)
+  -- v3: 설치 킷 (kind='kit')
+  kit_action        TEXT,          -- install | uninstall-keep | uninstall-all
+  kit_version       TEXT,          -- 고른 버전 (install)
+  kit_addon         TEXT,          -- suite | orthanc | none (새 설치일 때 쓰인다)
+  kit_name          TEXT,          -- 실제로 쓴 파일 (사전 점검에서 정한다: 전체 또는 패치)
+  kit_mode          TEXT,          -- install | upgrade | patch | uninstall-keep | uninstall-all
   exit_code         INTEGER,
   cancel_by         TEXT,
   current_step      TEXT,
@@ -120,5 +126,9 @@ CREATE TABLE IF NOT EXISTS server_meta (
   live_ref         TEXT,
   live_ref_type    TEXT,        -- branch | tag
   live_ref_at      TIMESTAMP,   -- 언제 읽은 값인지 (서버는 콘솔 밖에서도 바뀐다)
+  -- 설치 킷으로 깔린 게이트웨이의 버전·패키지. 킷 작업이 끝날 때와 서버 화면의 ↻ 로 읽는다.
+  kit_version      TEXT,
+  kit_addon        TEXT,
+  kit_read_at      TIMESTAMP,
   updated_at       TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );

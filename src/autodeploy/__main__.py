@@ -63,6 +63,7 @@ async def _start_web(settings, web_client, notifier_enabled: bool):
             trust_forwarded=settings.web.trust_forwarded,
             forward_bind=settings.web.host,
             node_prep=settings.node_prep,
+            kit=settings.kit,
         )
         runner, _ = await run_web(app, host=settings.web.host, port=settings.web.port)
     except Exception:

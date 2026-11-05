@@ -31,6 +31,8 @@ class JobKind(StrEnum):
     VERIFY = "verify"
     CLEAN = "clean"
     SSH_KEY = "ssh_key"
+    # 설치 킷(.run) 한 대 — 설치·업그레이드·패치·삭제 (kit_runner). hubctl 을 쓰지 않는다.
+    KIT = "kit"
 
 
 class HostStatus(StrEnum):
